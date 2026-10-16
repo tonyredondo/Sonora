@@ -1,0 +1,65 @@
+[
+  {
+    "file": "metadata-noche.png",
+    "run": "targeted-final-2",
+    "test": "MetadataLyricsUITests",
+    "appearance": "Noche",
+    "sha256": "b165a563f430359e29d16b711eddf0e565fd680098eb3a78053c608ec69576fe"
+  },
+  {
+    "file": "metadata-papel.png",
+    "run": "targeted-final-2",
+    "test": "MetadataLyricsUITests",
+    "appearance": "Papel",
+    "sha256": "1232ae93093911a657dc74071118a375e1648ba1c271c2a44bc53102f7cf2c3f"
+  },
+  {
+    "file": "lyrics-noche.png",
+    "run": "targeted-final-2",
+    "test": "MetadataLyricsUITests",
+    "appearance": "Noche",
+    "sha256": "01a789cd07a94501be7880da84f91cc8890c08ed25f788d4abc539239e82ca46"
+  },
+  {
+    "file": "lyrics-papel.png",
+    "run": "targeted-final-2",
+    "test": "MetadataLyricsUITests",
+    "appearance": "Papel",
+    "sha256": "8c7837271610e0f0bac39abe38420f83adb058764bf90d40fad8683a16ba7109"
+  },
+  {
+    "file": "listening-noche.png",
+    "run": "library-lifecycle-green-advanced-ui3",
+    "test": "AdvancedListeningUITests",
+    "appearance": "Noche",
+    "sha256": "18834760684a1eb5350004bdb832e917abc5a6684bc479ccd1e1e89f11324338"
+  },
+  {
+    "file": "listening-papel.png",
+    "run": "library-lifecycle-green-advanced-ui3",
+    "test": "AdvancedListeningUITests",
+    "appearance": "Papel",
+    "sha256": "ba170803ccaf179478fb7959642dfa85db7846d670b0a7e01cc90a42055a2d34"
+  },
+  {
+    "file": "adaptive-papel.png",
+    "run": "library-lifecycle-green-advanced-ui3",
+    "test": "AdvancedListeningUITests",
+    "appearance": "Papel",
+    "sha256": "01d04be5c35eedaa7ffcfa16f7386b03df296f3074281bff9e82e782f0cec707"
+  },
+  {
+    "file": "library-noche.png",
+    "run": "manualnativecaptureafterapp-audio-final",
+    "test": "AXenavigation+simctlscreenshot",
+    "appearance": "Noche",
+    "sha256": "9d53f6f5cc65e7e5a63458766d3b76a0d41581f133fb0b0aa55ea747ee249e7d"
+  },
+  {
+    "file": "albums-noche.png",
+    "run": "manualnativecaptureafterapp-audio-final",
+    "test": "AXenavigation+simctlscreenshot",
+    "appearance": "Noche",
+    "sha256": "5d699816411fe85202aa32df7e541ffdc5e4fdb5f0ca9b98050c26bcfe3e59b8"
+  }
+]

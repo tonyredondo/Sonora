@@ -1,0 +1,52 @@
+[
+  {
+    "file": "result-noche.png",
+    "sha256": "447cf1bd2c6e3000695abef2b717f8fc18e17475f48086db75586428bfc614b0",
+    "sourceAttachment": "4C69AA11-6747-4DAE-A028-04C2A0E165A5.png",
+    "test": "VolumeAnalysisUITests/testAnalyzeSongSaveTagsAndRestoreLocalResult",
+    "sourceResult": ".superpowers/sdd/replaygain-analyzer/native-ui-3.xcresult",
+    "device": "iPhone17 Simulator / iOS27",
+    "date": "2026-10-16",
+    "visuallyInspected": true
+  },
+  {
+    "file": "restored-papel.png",
+    "sha256": "26b11c12d5bb593b817abb85d54f84956ba480fa445c50624221e4e533c18e55",
+    "sourceAttachment": "4B23DFEE-F872-4DAF-A2BE-E7A737A547D9.png",
+    "test": "VolumeAnalysisUITests/testAnalyzeSongSaveTagsAndRestoreLocalResult",
+    "sourceResult": ".superpowers/sdd/replaygain-analyzer/native-ui-3.xcresult",
+    "device": "iPhone17 Simulator / iOS27",
+    "date": "2026-10-16",
+    "visuallyInspected": true
+  },
+  {
+    "file": "tags-saved-noche.png",
+    "sha256": "a5a4a5f085901c84689ceac156f9d5aa8febd1075f467f758535e7aaf1879507",
+    "sourceAttachment": "5087A6F7-6279-4B6E-84E0-E61ED65FFBEE.png",
+    "test": "VolumeAnalysisUITests/testAnalyzeSongSaveTagsAndRestoreLocalResult",
+    "sourceResult": ".superpowers/sdd/replaygain-analyzer/native-ui-3.xcresult",
+    "device": "iPhone17 Simulator / iOS27",
+    "date": "2026-10-16",
+    "visuallyInspected": true
+  },
+  {
+    "file": "selection-noche.png",
+    "sha256": "736358b239f3b106c6ce84dc50a7f23f6ebecb0c1b5cf7a6080898a17bf16aa6",
+    "sourceAttachment": "DD770939-7F2A-4F82-9716-3577E2D51D20.png",
+    "test": "VolumeAnalysisUITests/testSelectionAndRecursiveSourceFolderActions",
+    "sourceResult": ".superpowers/sdd/replaygain-analyzer/native-ui-3.xcresult",
+    "device": "iPhone17 Simulator / iOS27",
+    "date": "2026-10-16",
+    "visuallyInspected": true
+  },
+  {
+    "file": "album-papel-largest.png",
+    "sha256": "ab33a9130d0b544e16bf79ac3ca1725dc9900121469e6c9cc500a5bf6a826071",
+    "sourceAttachment": "631FC3E5-2A61-4FAC-919D-6D0C69DAC393.png",
+    "test": "VolumeAnalysisUITests/testAlbumAnalysisAtLargestTextSize",
+    "sourceResult": ".superpowers/sdd/replaygain-analyzer/native-ui-3.xcresult",
+    "device": "iPhone17 Simulator / iOS27",
+    "date": "2026-10-16",
+    "visuallyInspected": true
+  }
+]
