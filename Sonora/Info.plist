@@ -9,6 +9,17 @@
 <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
 <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
 <key>LSRequiresIPhoneOS</key><true/>
+<key>NSLocalNetworkUsageDescription</key><string>Sonora se conecta a tu servidor de música para buscar información, letras y carátulas.</string>
+<key>NSAppTransportSecurity</key><dict>
+<key>NSAllowsLocalNetworking</key><true/>
+<key>NSExceptionDomains</key><dict>
+<key>10.0.0.0/8</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+<key>172.16.0.0/12</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+<key>192.168.0.0/16</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+<key>127.0.0.0/8</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+<key>100.64.0.0/10</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+</dict></dict>
+
 <key>UILaunchScreen</key><dict/>
 <key>UIApplicationSceneManifest</key><dict>
 <key>UIApplicationSupportsMultipleScenes</key><true/>

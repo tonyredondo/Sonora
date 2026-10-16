@@ -1,7 +1,7 @@
 //! Versioned, read-only provider API and asynchronous lookup jobs.
 
 use crate::{
-    config::Config,
+    config::{Config, Provider},
     jobs::{BatchInput, Jobs},
     providers::{Client, Error, Priority, TrackInput},
 };
@@ -45,6 +45,7 @@ pub fn router(config: Config) -> Result<Router, Error> {
             get(|| async { Json(json!({"status":"ok","version":env!("CARGO_PKG_VERSION")})) }),
         )
         .route("/v1/recordings", get(search))
+        .route("/v1/status", get(status))
         .route("/v1/recordings/{id}", get(recording))
         .route("/v1/releases/{id}", get(release))
         .route("/v1/lyrics", get(lyrics))
@@ -55,6 +56,21 @@ pub fn router(config: Config) -> Result<Router, Error> {
         .layer(DefaultBodyLimit::max(256 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), authorize))
         .with_state(state))
+}
+
+async fn status(State(app): State<App>) -> Json<serde_json::Value> {
+    let providers: serde_json::Map<String, serde_json::Value> = Provider::ALL
+        .into_iter()
+        .map(|provider| {
+            let settings = app.client.config().provider(provider);
+            let configured = provider != Provider::Acoustid || settings.client_key.is_some();
+            (
+                provider.name().to_owned(),
+                json!({"enabled":settings.enabled,"configured":configured}),
+            )
+        })
+        .collect();
+    Json(json!({"providers":providers}))
 }
 async fn authorize(State(app): State<App>, request: Request<Body>, next: Next) -> Response {
     if request.uri().path() != "/health" {

@@ -2,7 +2,7 @@
 
 A Rust service for MusicBrainz metadata, AcoustID identification, LRCLIB lyrics and Cover Art Archive artwork. It caches downloaded responses in SQLite and shares a separate request budget for each provider across all callers. Audio decoding, fingerprint generation, candidate selection and tag writes belong on the iPhone.
 
-This directory provides the backend API. Sonora's iOS interface does not call it yet. The service has no audio upload endpoint and does not edit music files or publish data to providers.
+This directory provides the backend API used by Sonora's [metadata assistant](../docs/metadata-assistant.md). The service has no audio upload endpoint and does not edit music files or publish data to providers.
 
 ## Build and configure
 
@@ -25,7 +25,7 @@ Only one file is loaded; credentials from separate files are never merged. A mis
 
 See [the complete example](sonora-proxy.example.toml). Credentials are plaintext as requested. Configuration values and provider request URLs/bodies are excluded from logs and parse errors. MusicBrainz, LRCLIB and Cover Art Archive public lookups do not require credentials. AcoustID identification needs your own application `client_key` in `[acoustid]`; registering/submitting fingerprints is outside this API.
 
-The default listener is `127.0.0.1:8089`. If `[server].api_token` is set, every `/v1/` call requires `Authorization: Bearer <token>`. Binding to another interface requires a token of at least 24 characters. `/health` is public and returns only status/version. Remote deployments need an appropriate HTTPS endpoint; this binary serves HTTP and does not install a service or change network settings.
+The default listener is `127.0.0.1:8089`. If `[server].api_token` is set, every `/v1/` call requires `Authorization: Bearer <token>`. Binding to another interface requires a token of at least 24 characters. `/health` is public and returns only status/version. Use the host's reachable address in Sonora, not `0.0.0.0`. Public deployments need an HTTPS endpoint; the app also permits HTTP on private/local or Tailscale addresses. This binary serves HTTP and does not install a service or change network settings.
 
 ## Cache and scheduling
 
@@ -48,6 +48,7 @@ All JSON provider responses use an envelope with `provider`, `sources` (upstream
 | Method | Path | Input / result |
 | --- | --- | --- |
 | GET | `/health` | Status and binary version |
+| GET | `/v1/status` | Authenticated provider availability; credentials are never returned |
 | GET | `/v1/recordings` | `title`, optional `artist`, `album`, `duration`; up to 20 recording candidates and their release editions |
 | GET | `/v1/recordings/{mbid}` | Recording details, credits, genres and release choices |
 | GET | `/v1/releases/{mbid}` | Full MusicBrainz release JSON, including media/discs, track positions, dates and credits |
@@ -84,6 +85,6 @@ cargo fmt --manifest-path proxy/Cargo.toml --check
 cargo clippy --locked --manifest-path proxy/Cargo.toml --all-targets -- -D warnings
 ```
 
-Integration tests run real HTTP clients against local synthetic provider servers and actual temporary SQLite files. They exercise restart reuse, conditional validation, deduplication, per-provider pacing, retries, cancellation, queue/memory bounds, authentication, partial batch results and artwork redirects. They do not need real keys, send personal music metadata, or consume production provider quotas. AcoustID's live authenticated lookup still needs a user-supplied registered client key. An iPhone consumer and deployment are separate work.
+Integration tests run real HTTP clients against local synthetic provider servers and actual temporary SQLite files. They exercise restart reuse, conditional validation, deduplication, per-provider pacing, retries, cancellation, queue/memory bounds, authentication, partial batch results and artwork redirects. They do not need real keys, send personal music metadata, or consume production provider quotas. AcoustID's live authenticated lookup still needs a user-supplied registered client key. See the [iPhone assistant guide](../docs/metadata-assistant.md) for client and offline behavior.
 
 Provider contracts: [MusicBrainz rate limiting](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting), [AcoustID web service](https://acoustid.org/webservice), [LRCLIB documentation](https://lrclib.net/docs), [Cover Art Archive API](https://musicbrainz.org/doc/Cover_Art_Archive/API), [HTTP caching](https://www.rfc-editor.org/rfc/rfc9111.html). Provider/data terms and lyrics/artwork permissions apply independently of cache retention.

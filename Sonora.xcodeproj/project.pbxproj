@@ -75,6 +75,14 @@
 				"version" = "2.3.2";
 			};
 		};
+		"8EF25DA101CCEFAE99A8CE2C" = {
+			"isa" = "XCRemoteSwiftPackageReference";
+			"repositoryURL" = "https://github.com/wallisch/ChromaSwift";
+			"requirement" = {
+				"kind" = "revision";
+				"revision" = "900b29aff4129541c19e5e2b91f9cd4068afd19d";
+			};
+		};
 		"24666A0C09377C5D4257166B" = {
 			"isa" = "XCSwiftPackageProductDependency";
 			"package" = "B9B87D5E94B684C3C666B918";
@@ -90,6 +98,11 @@
 			"package" = "BDF3E933608849B06F57CAEA";
 			"productName" = "taglib";
 		};
+		"D67553ABC6348C7E98E15A9D" = {
+			"isa" = "XCSwiftPackageProductDependency";
+			"package" = "8EF25DA101CCEFAE99A8CE2C";
+			"productName" = "ChromaSwift";
+		};
 		"28C0600C66CA813C5FE5D348" = {
 			"isa" = "PBXBuildFile";
 			"productRef" = "24666A0C09377C5D4257166B";
@@ -101,6 +114,10 @@
 		"2F97454A648CFE09CB2EC4F8" = {
 			"isa" = "PBXBuildFile";
 			"productRef" = "EBE6A4EBB4E8954DC24AA360";
+		};
+		"A61904F5312331F8D4F1A8B4" = {
+			"isa" = "PBXBuildFile";
+			"productRef" = "D67553ABC6348C7E98E15A9D";
 		};
 		"ED8772ADEC3A6C25161BC957" = {
 			"isa" = "XCBuildConfiguration";
@@ -146,7 +163,7 @@
 		"BD92572B49AC16A86614498D" = {
 			"isa" = "PBXFrameworksBuildPhase";
 			"buildActionMask" = 2147483647;
-			"files" = ("28C0600C66CA813C5FE5D348", "8A61EBFC78BC2170855CE827", "2F97454A648CFE09CB2EC4F8");
+			"files" = ("28C0600C66CA813C5FE5D348", "8A61EBFC78BC2170855CE827", "2F97454A648CFE09CB2EC4F8", "A61904F5312331F8D4F1A8B4");
 			"runOnlyForDeploymentPostprocessing" = 0;
 		};
 		"8ECC8B5D05B79F879ACDF1A2" = {
@@ -241,7 +258,7 @@
 			"buildPhases" = ("949D493B91791558E87BC5D7", "BD92572B49AC16A86614498D", "8ECC8B5D05B79F879ACDF1A2");
 			"buildRules" = ();
 			"dependencies" = ();
-			"packageProductDependencies" = ("24666A0C09377C5D4257166B", "8D6A224FA1D1DD751157EB0C", "EBE6A4EBB4E8954DC24AA360");
+			"packageProductDependencies" = ("24666A0C09377C5D4257166B", "8D6A224FA1D1DD751157EB0C", "EBE6A4EBB4E8954DC24AA360", "D67553ABC6348C7E98E15A9D");
 			"fileSystemSynchronizedGroups" = ("3C3B0F03DC089F93B8457928");
 		};
 		"DF53765BF9D03B65CB04A4C8" = {
@@ -381,7 +398,7 @@
 			"projectDirPath" = "";
 			"projectRoot" = "";
 			"targets" = ("7D1043473D55BFA90E8530D3", "04D13FD0AA6F0197CF2C9990", "82103C82A4F70E52845B5087");
-			"packageReferences" = ("B9B87D5E94B684C3C666B918", "B747EAD6A8D7189EE159E1E4", "BDF3E933608849B06F57CAEA");
+			"packageReferences" = ("B9B87D5E94B684C3C666B918", "B747EAD6A8D7189EE159E1E4", "BDF3E933608849B06F57CAEA", "8EF25DA101CCEFAE99A8CE2C");
 			"preferredProjectObjectVersion" = 77;
 		};
 	};

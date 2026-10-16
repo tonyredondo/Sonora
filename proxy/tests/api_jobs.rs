@@ -94,6 +94,33 @@ async fn api_requires_configured_bearer_token_but_health_is_public() {
 }
 
 #[tokio::test]
+async fn protected_status_reports_capabilities_without_disclosing_credentials() {
+    let directory = TempDir::new().unwrap();
+    let mut configuration = config(&directory);
+    configuration.server.api_token = Some("test-only-access-token".into());
+    configuration.acoustid.client_key = Some("test-only-client-secret".into());
+    let router = api::router(configuration).unwrap();
+    assert_eq!(
+        request(&router, "GET", "/v1/status", json!(null), None)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, body) = request(
+        &router,
+        "GET",
+        "/v1/status",
+        json!(null),
+        Some("test-only-access-token"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["providers"]["acoustid"]["configured"], true);
+    assert_eq!(body["providers"]["musicbrainz"]["enabled"], true);
+    assert!(!body.to_string().contains("test-only"));
+}
+
+#[tokio::test]
 async fn invalid_batches_and_provider_parameters_are_rejected_before_jobs_start() {
     let directory = TempDir::new().unwrap();
     let router = api::router(config(&directory)).unwrap();

@@ -33,7 +33,7 @@ ttl_seconds = 604800
 
 [acoustid]
 enabled = true
-# Register an application at https://acoustid.org/api-key before fingerprint lookups.
+# Register an application at https://acoustid.org/new-application before fingerprint lookups.
 # client_key = "your-acoustid-application-key"
 min_interval_ms = 350
 ttl_seconds = 2592000

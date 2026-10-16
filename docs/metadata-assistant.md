@@ -1,0 +1,48 @@
+# Metadata assistant
+
+Open **Editar información → Completar información** for an editable song. Search by title, artist and optionally album, or choose **Reconocer por el audio**. Choose the recording and the release edition, then review each proposed field, artwork and lyrics. **Solo completar campos vacíos** is enabled initially. Disable it to select replacements for existing information.
+
+**Aplicar al editor** updates the unsaved form. The existing **Guardar → Guardar en archivo** action validates and writes the tags with file-conflict detection. Cancelling the editor leaves the original file unchanged. Read-only formats and virtual CUE songs retain their existing editing restrictions.
+
+MusicBrainz supplies recording, artist, album, release date, genre and track/disc information. Track positions are proposed only when the selected recording occurs once in the edition. LRCLIB supplies plain or synchronized lyrics for the selected title, artist, album and the actual file duration. Cover Art Archive supplies that edition's artwork. Missing artwork or lyrics is reported independently; it does not discard the other proposals. A duration difference over three seconds is shown for review.
+
+## Connection
+
+In **Ajustes → Asistente de información**, enter the server URL and its access token, save, then check the connection. The token is stored in this app's Keychain item; it is not included in UserDefaults, cache entries, URLs or bundled source. A connection check calls the authenticated `/v1/status` endpoint and reports whether AcoustID has an application key.
+
+The URL must use HTTPS, or HTTP on localhost, a `.local` hostname, a private IPv4 address or the Tailscale IPv4 range. The app has scoped local-network ATS allowances and requests local-network access when needed. Public HTTP and embedded URL credentials are rejected. The client does not follow redirects, so the configured bearer token cannot be sent to a redirected endpoint. `0.0.0.0` is a server bind address; use the Mac's reachable address in the app.
+
+The [proxy configuration](../proxy/sonora-proxy.example.toml) separates two credentials:
+
+- `[server].api_token`: the access token shared with Sonora; a non-loopback listener requires at least 24 characters.
+- `[acoustid].client_key`: the application key obtained by [registering an application](https://acoustid.org/new-application). It stays on the server. It is different from AcoustID's personal fingerprint-submission key.
+
+MusicBrainz, LRCLIB and Cover Art Archive lookups work without provider accounts or keys. No AcoustID key is fabricated. The app reports the missing configuration and keeps text search available.
+
+## Offline behavior
+
+**Modo desconectado** prevents assistant HTTP requests. Previously requested searches, recording details, editions, lyrics and artwork are stored on the iPhone and survive relaunch. A missing local entry is identified explicitly. While the lookup screen remains open, an unsuccessful offline search retries when the assistant returns online. Closing it cancels its work.
+
+Local copies are labelled with their save date. Without the manual toggle, a network failure can also use a saved response with a warning. Authentication errors remain visible. The app cache holds at most 100 MB or 1,000 entries, evicting the least recently used entries. Its freshness caps are seven days for metadata, 30 days for identification/lyrics and 90 days for artwork. Offline mode can use older entries. **Borrar información guardada** clears only this cache, after confirmation.
+
+Playback and manual metadata editing are independent of the proxy. Audio still needs to be present locally: an undownloaded iCloud file cannot play or be fingerprinted without downloading it first. Use Sonora's managed local-folder copies when preparing cloud music for offline use. The proxy's separate SQLite cache reduces provider traffic; it is not the iPhone's offline cache.
+
+## Audio recognition
+
+Chromaprint is pinned through ChromaSwift at revision `900b29aff4129541c19e5e2b91f9cd4068afd19d`. Sonora uses its C API, the existing file decoders and Apple's sample-rate converter, without the wrapper's AVFoundation-only decoder. The package excludes FFmpeg/avresample and uses Accelerate/vDSP.
+
+The analysis reads at most the first 120 seconds, on a cancellable worker, using bounded PCM buffers. It sends the encoded fingerprint and full track duration to the proxy. It does not upload audio or write fingerprint tags. Files that are too short to produce a fingerprint report an error. Candidate recordings are fetched from MusicBrainz and still require explicit selection.
+
+## Simulator verification
+
+Use normal ad-hoc Simulator signing (`CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-`) for the Keychain tests. The native assistant UI scenario uses only the marked synthetic Sonora QA folder and this localhost fixture:
+
+```sh
+python3 scripts/metadata-fixture-server.py --log /tmp/sonora-metadata-fixture.jsonl
+```
+
+After installing Sonora and seeding/selecting the demo folder, run `SonoraUITests/MetadataAssistantUITests` on that simulator. The fixture's fixed token is test data. It never contacts external providers. The scenario checks connection, recording/edition choice, review before file writes, persistent offline reuse, both themes and explicit lyric/tag saving. Stop the fixture after the test and restore the app's intended server connection.
+
+Real AcoustID identification requires the registered application key. Minimum-iOS runtime, live iCloud, and physical-device energy/network-route behavior need their own device validation.
+
+The 2026-10-16 Simulator run on iPhone 17 / iOS 27 passed all 98 app/audio tests and both assistant UI scenarios, with no failures or skips. The Core suite passed 31 tests; the proxy passed 35 Rust tests plus formatting and Clippy. Fingerprint tests compare independent AVFoundation decoding, verify the 120-second sampling cap with a 125-second file, and cover cancellation, short audio, path escape and unchanged source bytes. The UI run checks actual file saving, cancelling unsaved proposals, offline reuse after relaunch, both appearances and visible authentication failures.
