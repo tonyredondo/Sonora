@@ -7,6 +7,7 @@ import Foundation
     private var restoration: Task<Void, Never>?
     init(player: PlaybackController) { self.player = player }
     func restore() async {
+        MetadataAssistantSettings.shared.start()
         if let restoration { await restoration.value; return }
         let task = Task { await player.restoreFolder() }
         restoration = task

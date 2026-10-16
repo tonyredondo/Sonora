@@ -6,6 +6,8 @@ The first local implementation targets **iOS 17+** with SwiftUI. **Noche** is th
 
 See the [library, metadata and listening guide](docs/library-and-metadata.md), the [new native screens](docs/screenshots/library/README.md), the [EQ and Crossfade screenshots](docs/screenshots/listening-tools/README.md), and the [first folder-player gallery](docs/screenshots/README.md).
 
+The [metadata assistant](docs/metadata-assistant.md) connects to the [Rust metadata proxy](proxy/README.md) for cached MusicBrainz/AcoustID lookups, LRCLIB lyrics and Cover Art Archive downloads. Choose a recording and release edition, review the proposals and apply them to the existing editor. Connection settings and an on-device cache support offline use.
+
 ## Current implementation
 
 - Recursive folder scanning in natural relative-path order, an editable queue, and automatic advancement.
@@ -34,7 +36,7 @@ Crossfade mixes decoded PCM at 48 kHz stereo using complementary linear gains, t
 
 EQ covers 31 Hz–16 kHz with ±12 dB band gains and a −24…+12 dB preamp. Presets lower the preamp to leave margin; this is not a clipping limiter. Manual boosts may require further attenuation. Bands above the source's Nyquist frequency are disabled. Bypass preserves the saved curve and restores the original level. The automatic-mix beta analyzes two eight-second PCM windows per track with a 500 ms analysis budget. It aligns compatible steady pulses, adapts the overlap, and may skip up to one second of the incoming intro. It does not stretch tempo or change pitch. Uncertain or incompatible pairs use identified Crossfade; late preparation preserves continuous playback. Simulator measurements of the synthetic pulse fixture were about 35–50 ms per analysis. This is Sonora's limited local algorithm, not Apple's AutoMix implementation.
 
-Signed-in iCloud downloads, revoked access, physical-device interruptions, Bluetooth/AirPlay, the minimum-iOS runtime, battery use, and release packaging still need device/provider validation. The simulator uses synthetic audio. Automatic lyric/metadata lookup, library sync, WMA and DSD remain future scope. The beta still needs listening evaluations with varied real music and physical-device energy/route measurements before a release. See the [CUE, playlist, local-copy and CarPlay guide](docs/portable-library.md) for format limits and activation requirements.
+Signed-in iCloud downloads, revoked access, physical-device interruptions, Bluetooth/AirPlay, the minimum-iOS runtime, battery use, and release packaging still need device/provider validation. The simulator uses synthetic audio. Library sync, WMA and DSD remain future scope. The beta still needs listening evaluations with varied real music and physical-device energy/route measurements before a release. See the [CUE, playlist, local-copy and CarPlay guide](docs/portable-library.md) for format limits and activation requirements.
 
 ## Build and try
 
@@ -61,7 +63,7 @@ xcodebuild test -project Sonora.xcodeproj -scheme Sonora \
   -destination 'platform=iOS Simulator,id=<SIMULATOR_UDID>' \
   -clonedSourcePackagesDirPath .build/SourcePackages \
   -derivedDataPath .build/DerivedData -scmProvider system \
-  -only-testing:SonoraTests CODE_SIGNING_ALLOWED=NO
+  -only-testing:SonoraTests CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
 ```
 
 On 2026-10-16, the expanded app/audio suite passed 54 tests on iPhone 17 Simulator / iOS 27.0. These include real metadata writes, unchanged decoded-audio hashes, multi-source restoration, listening controls, and automatic-mix analysis/alignment through EQ. Source-truncation recovery and the other Crossfade transport cases also passed five consecutive focused iterations. The Core suite passed 13 tests. Six native UI scenarios passed across bounded runs, including both themes, the fixed player at maximum text size, settings persistence, and actual individual/batch tag writes through Files.

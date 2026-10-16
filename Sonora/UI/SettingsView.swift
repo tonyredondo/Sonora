@@ -20,6 +20,10 @@ struct SettingsView: View {
                     NavigationLink("Entre canciones") { TransitionSettingsView(player: player) }
                     NavigationLink("Escucha") { ListeningSettingsView(player: player) }
                 }
+                Section("Tu música") {
+                    NavigationLink("Asistente de información") { MetadataConnectionView() }
+                        .accessibilityIdentifier("metadataAssistantSettings")
+                }
                 Section {
                     Text("La música se reproduce desde sus carpetas. El editor de información guarda los cambios en el archivo original cuando pulsas Guardar.")
                         .foregroundStyle(.secondary)

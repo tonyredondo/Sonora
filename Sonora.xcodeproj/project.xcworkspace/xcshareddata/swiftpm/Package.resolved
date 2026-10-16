@@ -1,5 +1,5 @@
 {
-  "originHash" : "236bfb54b07f326097a5caeec7e03b73cb6ba9423ef42de308f8904f72748c89",
+  "originHash" : "f2b51d1ad824ac5df736f81bcdbb0f4d31eb09f79f45a5d6ced6c57fa39c2fd7",
   "pins" : [
     {
       "identity" : "avfaudioextensions",
@@ -17,6 +17,14 @@
       "state" : {
         "revision" : "0cceb710cad35b9aaf5bb6b65faf71436b6aa7c3",
         "version" : "2.0.3"
+      }
+    },
+    {
+      "identity" : "chromaswift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/wallisch/ChromaSwift",
+      "state" : {
+        "revision" : "900b29aff4129541c19e5e2b91f9cd4068afd19d"
       }
     },
     {

@@ -1,0 +1,49 @@
+# Copy to ~/.config/sonora-proxy/config.toml, or sonora-proxy.toml beside the binary.
+# Credentials are plaintext. Do not commit your actual configuration.
+user_agent = "SonoraProxy/0.1.0 (https://github.com/tonyredondo/Sonora)"
+
+[server]
+listen = "127.0.0.1:8089"
+# Optional on loopback. Required (24+ characters) when listening on another interface.
+# api_token = "your-own-long-random-token"
+max_jobs = 64
+max_tracks_per_job = 100
+max_job_result_bytes = 4000000
+job_retention_seconds = 3600
+
+[cache]
+# Relative paths are resolved from this TOML file, independently of the working directory.
+# Omit path to use the user's platform cache directory under sonora-proxy/.
+# path = "./cache/cache.sqlite"
+max_bytes = 536870912
+max_entries = 10000
+negative_ttl_seconds = 300
+
+[network]
+queue_capacity = 128
+deadline_seconds = 60
+timeout_seconds = 15
+max_retries = 2
+max_response_bytes = 10000000
+
+[musicbrainz]
+enabled = true
+min_interval_ms = 1100
+ttl_seconds = 604800
+
+[acoustid]
+enabled = true
+# Register an application at https://acoustid.org/new-application before fingerprint lookups.
+# client_key = "your-acoustid-application-key"
+min_interval_ms = 350
+ttl_seconds = 2592000
+
+[lrclib]
+enabled = true
+min_interval_ms = 500
+ttl_seconds = 2592000
+
+[cover_art]
+enabled = true
+min_interval_ms = 1000
+ttl_seconds = 7776000

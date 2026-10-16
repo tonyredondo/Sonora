@@ -18,6 +18,7 @@ struct MetadataEditorView: View {
     @State private var importing = false
     @State private var importLyrics = false
     @State private var confirm = false
+    @State private var showAssistant = false
     @State private var issue: String?
 
     private var patch: MetadataPatch {
@@ -40,6 +41,10 @@ struct MetadataEditorView: View {
                         if track.cue != nil { Label("Esta pista comparte el audio con otros temas. La información se lee del CUE; la edición del archivo compartido está desactivada.", systemImage: "lock") }
                         else if !snapshot.canWrite { Label("Este archivo es de solo lectura o su formato no admite edición.", systemImage: "lock") }
                     }
+                    Section {
+                        Button { showAssistant = true } label: { Label("Completar información", systemImage: "magnifyingglass") }
+                            .accessibilityIdentifier("completeMetadata")
+                    }.disabled(!snapshot.canWrite || saving || importing)
                     Section("Información") {
                         ForEach(MetadataField.allCases.filter { ![.lyrics, .comment].contains($0) }) { field in
                             VStack(alignment: .leading, spacing: 6) {
@@ -124,6 +129,13 @@ struct MetadataEditorView: View {
                 catch { issue = error.localizedDescription }
             }
             .interactiveDismissDisabled(saving)
+            .sheet(isPresented: $showAssistant) {
+                MetadataLookupView(player: player, track: track, current: values, hasArtwork: cover != nil,
+                    duration: snapshot?.duration ?? 0) { changes, image in
+                    values.merge(changes) { _, proposed in proposed }
+                    if let image { artwork = .replace(image); coverPreview = UIImage(data: image) }
+                }
+            }
         }
     }
     private func save() {
