@@ -5,3 +5,7 @@ DerivedData/
 xcuserdata/
 .superpowers/
 .xcodebuildmcp/
+proxy/target/
+proxy/sonora-proxy.toml
+proxy/*.sqlite*
+proxy/*.lockfile

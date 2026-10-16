@@ -6,6 +6,8 @@ The first local implementation targets **iOS 17+** with SwiftUI. **Noche** is th
 
 See the [library, metadata and listening guide](docs/library-and-metadata.md), the [new native screens](docs/screenshots/library/README.md), the [EQ and Crossfade screenshots](docs/screenshots/listening-tools/README.md), and the [first folder-player gallery](docs/screenshots/README.md).
 
+The [Rust metadata proxy](proxy/README.md) provides cached MusicBrainz/AcoustID lookups, LRCLIB lyrics and Cover Art Archive downloads, with per-provider queues and plaintext TOML configuration. It is a separate backend component; the iOS metadata assistant is not connected to it yet.
+
 ## Current implementation
 
 - Recursive folder scanning in natural relative-path order, an editable queue, and automatic advancement.
