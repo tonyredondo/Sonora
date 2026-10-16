@@ -1,0 +1,10 @@
+{
+  "source": "https://github.com/sbooth/SFBAudioEngine",
+  "revision": "7dea577e74723a182189687ab84d962c4607c3d5",
+  "files": {
+    "ebur128_analyzer.h": "24bf77dab45355263b08d3dceb7796af14d1eb9a9389782304651f866d4e2d3b",
+    "ebur128_constants.h": "efb6c1ff067f5bb84286ddac00d5b1f0a795f80e5c5720aab3fc9d609589c5f1",
+    "LICENSE.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  },
+  "purpose": "Unmodified declarations for the EbuR128Analyzer implementation already linked from pinned SFBAudioEngine. No duplicate analyzer implementation is compiled."
+}

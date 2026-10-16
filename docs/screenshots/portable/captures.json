@@ -1,0 +1,80 @@
+{
+  "capturedOn": "2026-10-16",
+  "device": "iPhone 17 Simulator",
+  "iOS": "27.0 (24A434)",
+  "syntheticMusicOnly": true,
+  "nativeResult": "portable-final.xcresult",
+  "passedNativeTests": 97,
+  "coreTests": 23,
+  "baseCommit": "bb115b04e3db90d8c2e965db35aa9f4b09cf7894",
+  "includedUncommittedChanges": true,
+  "sourceManifestSHA256": "d1a24d2d3d444b1a4776a73c1adde1dca12eaa38a8ec11db3a48f41d6d8af8c1",
+  "installedProduct": {
+    "Sonora": {
+      "tested": "ea1476e392531ef81ef0734cec56d89379f719ba0642985b5a3b81fc21908a4e",
+      "installed": "ea1476e392531ef81ef0734cec56d89379f719ba0642985b5a3b81fc21908a4e"
+    },
+    "Sonora.debug.dylib": {
+      "tested": "03583f22cd0c795cc4703038ad709f6ad85734dda1a7be7094ae49d98fd28285",
+      "installed": "03583f22cd0c795cc4703038ad709f6ad85734dda1a7be7094ae49d98fd28285"
+    },
+    "Info.plist": {
+      "tested": "57eb78eb46ada8a3993b326eed513eeb42a1492aa918f9b68c85916aea19d038",
+      "installed": "57eb78eb46ada8a3993b326eed513eeb42a1492aa918f9b68c85916aea19d038"
+    }
+  },
+  "captures": [
+    {
+      "file": "cue-restored-noche.png",
+      "sha256": "f3ce346259d2e42db36dd7ca8c46110467ca1aa74ca83344a056133a433b2335",
+      "testIdentifier": "ZZPortableLibraryUITests/testLocalCopyCuePlaybackAndPausedRestorationAtLargestTextSize()",
+      "sourceAttachment": "74244609-65C5-4FDD-8688-A63D442443D2.png",
+      "timestamp": 1792153581.78
+    },
+    {
+      "file": "cue-player-papel-largest.png",
+      "sha256": "08a96bd428358c3d30ef5c70c0ace4e06dbd577bdf51fcaf593f283705428381",
+      "testIdentifier": "ZZPortableLibraryUITests/testLocalCopyCuePlaybackAndPausedRestorationAtLargestTextSize()",
+      "sourceAttachment": "D827CE87-50EB-4177-B221-445CFD8B993C.png",
+      "timestamp": 1792153567.154
+    },
+    {
+      "file": "playlist-import-noche.png",
+      "sha256": "3884bd74fa47e9a3fafaa7ae7abc48c37778bbe7b8ff8a15c8f44294f43314c5",
+      "testIdentifier": "ZZPortableLibraryUITests/testM3UImportAndExportIncludesIndividualCueTracks()",
+      "sourceAttachment": "5FDAA9A8-8D2B-4DF8-A599-52150BEB6EBA.png",
+      "timestamp": 1792153649.501
+    },
+    {
+      "file": "playlist-cue-order-noche.png",
+      "sha256": "492a433295ad28ecf572de6c5bea1487cdf0beff648e22628009c1ca1f50e1d6",
+      "testIdentifier": "ZZPortableLibraryUITests/testM3UImportAndExportIncludesIndividualCueTracks()",
+      "sourceAttachment": "7CF6FED3-EFD4-4D91-8B88-2EA6299207A8.png",
+      "timestamp": 1792153653.937
+    },
+    {
+      "file": "playlist-export-noche.png",
+      "sha256": "281ea4a8e83aab0b19f855ea26e48bd4cba8354dce72ff738c11716c3192500b",
+      "testIdentifier": "ZZPortableLibraryUITests/testM3UImportAndExportIncludesIndividualCueTracks()",
+      "sourceAttachment": "75ABF62E-629D-437A-95E9-821C94C6A8D6.png",
+      "timestamp": 1792153672.582
+    },
+    {
+      "file": "local-copy-papel-largest.png",
+      "sha256": "e2592d2c015f6cd1ec9655756e3fd11242b69f7ceb5ca8501b532b898bacdfc4",
+      "testIdentifier": "ZZPortableLibraryUITests/testLocalCopyCuePlaybackAndPausedRestorationAtLargestTextSize()",
+      "sourceAttachment": "50B80B38-6D4A-4114-B921-9664B561BEF7.png",
+      "timestamp": 1792153549.065
+    },
+    {
+      "file": "local-queue-papel.png",
+      "sha256": "88a1dd1dc90f9103ee0f58f7799545d0e233ac6f572959a1396af632bfafcacc",
+      "source": "simctl screenshot after verified installed-product hash comparison and normal launch without test arguments"
+    }
+  ],
+  "limits": [
+    "No real iCloud provider validation",
+    "No visual CarPlay head-unit proof: external simulator display remained black",
+    "Physical CarPlay requires Apple audio-entitlement approval"
+  ]
+}
