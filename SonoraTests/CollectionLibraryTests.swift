@@ -1,3 +1,4 @@
+import AVFAudio
 import SonoraCore
 import XCTest
 import SFBAudioEngine
@@ -5,6 +6,41 @@ import SFBAudioEngine
 
 @MainActor
 final class CollectionLibraryTests: XCTestCase {
+    func testNewSourceCanDecodeAfterScanningAndIndexingWithoutRelaunch() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let album = root.appendingPathComponent("Album")
+        try FileManager.default.createDirectory(at: album, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.copyItem(at: XCTUnwrap(Bundle(for: Self.self).url(forResource: "fixture", withExtension: "flac")),
+                                        to: album.appendingPathComponent("song.flac"))
+        let suite = "SonoraTests.FreshSource.\(UUID().uuidString)", defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let library = MusicLibrary(defaults: defaults, artworkDirectory: root.appendingPathComponent("cache"))
+        defer { library.cancelIndexing() }
+        let source: String
+        do {
+            let selected = try ScopedFolder(root)
+            source = try library.register(selected, tracks: await FolderScanService.scan(selected))
+        }
+        let deadline = Date().addingTimeInterval(6)
+        while library.isIndexing && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertFalse(library.isIndexing)
+        XCTAssertNil(library.issue)
+        let song = try XCTUnwrap(library.state.songs.values.first)
+        XCTAssertEqual(song.relativePath, "Album/song.flac")
+        let prepared = try await MediaReader.prepare(XCTUnwrap(song.audioTrack), folder: library.access(source))
+        defer { try? prepared.decoder.close() }
+        XCTAssertEqual(prepared.details.title, "Señal de prueba")
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: prepared.decoder.processingFormat, frameCapacity: 1024))
+        try prepared.decoder.decode(into: buffer, length: buffer.frameCapacity)
+        XCTAssertGreaterThan(buffer.frameLength, 0)
+        library.toggleFavorite(song.id)
+        XCTAssertEqual(try library.register(ScopedFolder(root), tracks: [XCTUnwrap(song.audioTrack)]), source)
+        XCTAssertEqual(library.state.sources.count, 1)
+        XCTAssertEqual(library.state.songs.count, 1)
+        XCTAssertTrue(library.state.favorites.contains(song.id))
+    }
+
     func testLocalFolderArtworkIsIndexedWithoutWritingEmbeddedTags() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

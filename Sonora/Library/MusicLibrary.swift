@@ -67,10 +67,13 @@ final class MusicLibrary {
     func sourceURL(_ id: String) throws -> URL {
         if let cached = sourceURLs[id] { return cached }
         guard let source = state.sources.first(where: { $0.id == id }) else { throw CocoaError(.fileReadNoPermission) }
-        var stale = false
-        let url = try URL(resolvingBookmarkData: source.bookmark, options: .withoutUI, relativeTo: nil, bookmarkDataIsStale: &stale)
+        let url = try resolveBookmark(source.bookmark)
         sourceURLs[id] = url
         return url
+    }
+    private func resolveBookmark(_ bookmark: Data) throws -> URL {
+        var stale = false
+        return try URL(resolvingBookmarkData: bookmark, options: .withoutUI, relativeTo: nil, bookmarkDataIsStale: &stale)
     }
     func access(_ id: String) throws -> ScopedFolder { try ScopedFolder(sourceURL(id)) }
     func sourceID(matching url: URL) -> String? {
@@ -83,9 +86,12 @@ final class MusicLibrary {
         let matchingID = sourceID(matching: url)
         let previous = state.sources.first { $0.id == matchingID }
         let source = CollectionSource(id: previous?.id ?? UUID().uuidString, name: name ?? previous?.name ?? url.lastPathComponent, bookmark: try folder.bookmark())
+        // Use the saved grant immediately, just as after relaunch. Normalized
+        // paths are for matching; file access uses the bookmark's scoped URL.
+        let access = try ScopedFolder(resolveBookmark(source.bookmark))
         if let index = state.sources.firstIndex(where: { $0.id == source.id }) { state.sources[index] = source }
         else { state.sources.append(source) }
-        sourceURLs[source.id] = url
+        sourceURLs[source.id] = access.url
         let segments = Dictionary(grouping: tracks.filter { $0.cue != nil }, by: \.relativePath)
         var replacements: [String: [String]] = [:]
         for song in state.songs.values where song.sourceID == source.id && song.cue == nil {
@@ -95,7 +101,7 @@ final class MusicLibrary {
         state.songs = state.songs.filter { $0.value.sourceID != source.id || paths.contains($0.value.audioTrack?.localID ?? "") }
         let missing = tracks.map { CollectionSong(sourceID: source.id, relativePath: $0.relativePath, tags: $0.cue?.tags ?? [:], cue: $0.cue) }.filter { state.songs[$0.id] == nil }
         state.upsert(missing); state.replaceSongReferences(replacements); persist(); rebuild()
-        startIndex(source: source.id, folder: folder, tracks: tracks)
+        startIndex(source: source.id, folder: access, tracks: tracks)
         return source.id
     }
 

@@ -1,123 +1,145 @@
+import SonoraCore
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct LibraryView: View {
-    @Bindable var player: PlaybackController
+    let player: PlaybackController
     @Environment(\.colorScheme) private var scheme
-    @State private var chooseFolder = false
+    @State private var query = ""
+    @State private var sheet: LibrarySheet?
     @State private var showPlayer = false
-    @State private var showSettings = false
-    @State private var showQueue = false
-    @State private var showLibrary = false
-    @State private var search = ""
+    @State private var reset = false
+    private var library: MusicLibrary { player.library }
     private var theme: PlayerTheme { PlayerTheme(scheme) }
+    private enum LibrarySheet: String, Identifiable {
+        case sources, settings, queue
+        var id: Self { self }
+    }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                header
-                if player.isLoading {
-                    HStack {
-                        ProgressView().tint(theme.accent)
-                        Text("Preparando la carpeta…").font(.subheadline)
-                        Spacer()
-                        Button("Cancelar") { player.cancelLoading() }
-                    }.padding().background(theme.surface)
-                }
-                if let issue = player.issue {
-                    HStack(alignment: .top) {
-                        Image(systemName: "exclamationmark.circle")
-                        Text(issue).font(.footnote)
-                        Spacer()
-                        Button { player.issue = nil } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
-                            .accessibilityLabel("Cerrar aviso")
-                    }.padding(.leading).background(theme.surface)
-                }
-                if player.queue.tracks.isEmpty { emptyState }
-                else { tracks }
-            }
-            .background(theme.background)
-            .toolbar(.hidden, for: .navigationBar)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if player.current != nil { MiniPlayer(player: player, openPlayer: { showPlayer = true }, openQueue: { showQueue = true }) }
-            }
-            .fileImporter(isPresented: $chooseFolder, allowedContentTypes: [.folder]) { result in
-                switch result {
-                case .success(let url): player.chooseFolder(url)
-                case .failure(let error): if (error as NSError).code != NSUserCancelledError { player.issue = error.localizedDescription }
-                }
-            }
-            .fullScreenCover(isPresented: $showPlayer) { NowPlayingView(player: player) }
-            .sheet(isPresented: $showSettings) { SettingsView(player: player) }
-            .sheet(isPresented: $showQueue) { QueueView(player: player) }
-            .sheet(isPresented: $showLibrary) { MusicCollectionView(player: player) }
-        }
-        .tint(theme.accent)
-    }
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("SONORA").font(.caption.weight(.medium)).tracking(3).foregroundStyle(.secondary)
-                Spacer()
-                Button { showLibrary = true } label: { Image(systemName: "music.note.house").frame(width: 44, height: 44) }.accessibilityLabel("Biblioteca")
-                Button { showSettings = true } label: { Image(systemName: "gearshape").frame(width: 44, height: 44) }.accessibilityLabel("Ajustes")
-                Button { chooseFolder = true } label: { Image(systemName: "plus").frame(width: 44, height: 44).background(theme.surface, in: .circle) }
-                    .accessibilityLabel("Reproducir carpeta")
-            }
-            Text(player.folderName).font(.system(.largeTitle, design: theme.heading, weight: .bold)).lineLimit(2)
-            if !player.queue.tracks.isEmpty {
-                Text("\(player.queue.tracks.count) canciones · Incluye subcarpetas").font(.subheadline).foregroundStyle(.secondary)
-            }
-        }.padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 18)
-    }
-    private var emptyState: some View {
-        VStack(spacing: 22) {
-            Spacer()
-            Image(systemName: "folder").font(.system(size: 72, weight: .ultraLight)).foregroundStyle(theme.accent)
-            Text("Una carpeta.\nToda tu música.").font(.system(.title, design: theme.heading, weight: .semibold)).multilineTextAlignment(.center)
-            Text("Elige una carpeta de Archivos o iCloud Drive. Sus canciones y subcarpetas se reproducirán en una sola cola.")
-                .foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 310)
-            Button { chooseFolder = true } label: {
-                Label("Reproducir carpeta", systemImage: "folder.badge.plus").font(.headline).padding(.horizontal, 24).frame(minHeight: 52)
-                    .background(theme.accent, in: .capsule).foregroundStyle(scheme == .dark ? Color.black : .white)
-            }.accessibilityIdentifier("playFolder")
-            Spacer(); Spacer()
-        }.padding(24).frame(maxWidth: .infinity)
-    }
-    private var tracks: some View {
         VStack(spacing: 0) {
-            HStack {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Buscar en esta cola", text: $search).autocorrectionDisabled()
-            }.padding(12).background(theme.surface, in: .rect(cornerRadius: 12)).padding(.horizontal, 24).padding(.bottom, 12)
-            List {
-                ForEach(player.queue.tracks.filter { track in
-                    search.isEmpty || track.relativePath.localizedCaseInsensitiveContains(search) ||
-                    (player.details[track.id]?.title.localizedCaseInsensitiveContains(search) ?? false) ||
-                    (player.details[track.id]?.artist.localizedCaseInsensitiveContains(search) ?? false)
-                }) { track in
-                    Button {
-                        if let index = player.queue.tracks.firstIndex(of: track) { player.play(index: index) }
-                    } label: {
-                        TrackRow(title: player.details[track.id]?.title ?? track.displayName,
-                                 subtitle: player.details[track.id]?.artist ?? (track.folder.isEmpty ? player.folderName : track.folder),
-                                 image: player.details[track.id]?.artwork, selected: track.id == player.current?.id)
-                    }.buttonStyle(.plain).listRowBackground(theme.background).accessibilityIdentifier("track:" + track.id)
+            NavigationStack {
+                List {
+                    if !query.isEmpty {
+                        let songs = library.allSongs.filter { $0.matches(query) }
+                        if songs.isEmpty {
+                            ContentUnavailableView.search(text: query)
+                        } else {
+                            CollectionRows(player: player, songs: songs)
+                        }
+                    } else {
+                        Section {
+                            if library.state.sources.isEmpty {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Label("Tu biblioteca", systemImage: "music.note.house").font(.headline)
+                                    Text("Añade carpetas de Archivos o iCloud Drive para reunir tus canciones, álbumes y artistas.")
+                                        .font(.subheadline).foregroundStyle(.secondary)
+                                    Button("Añadir fuente", systemImage: "folder.badge.plus") { sheet = .sources }
+                                        .buttonStyle(.bordered).frame(minHeight: 44)
+                                }.padding(.vertical, 8)
+                            } else {
+                                Text("\(library.state.songs.count) \(library.state.songs.count == 1 ? "canción" : "canciones") · \(library.state.sources.count) \(library.state.sources.count == 1 ? "fuente" : "fuentes")")
+                                    .font(.subheadline).foregroundStyle(.secondary)
+                                    .accessibilityIdentifier("librarySummary")
+                            }
+                        }.listRowBackground(theme.surface)
+                        Section {
+                            NavigationLink { CollectionGroupsView(player: player, albums: false) } label: { Label("Artistas", systemImage: "music.mic") }
+                            NavigationLink { CollectionGroupsView(player: player, albums: true) } label: { Label("Álbumes", systemImage: "square.stack") }
+                            NavigationLink { CollectionSongList(player: player, title: "Canciones", ids: library.allSongs.map(\.id)) } label: { Label("Canciones", systemImage: "music.note") }
+                        }.listRowBackground(theme.surface)
+                        Section {
+                            NavigationLink { CollectionFavoritesView(player: player) } label: { Label("Favoritos", systemImage: "heart") }
+                            NavigationLink { PlaylistsView(player: player) } label: { Label("Playlists", systemImage: "music.note.list") }
+                            NavigationLink { ListeningHistoryView(player: player) } label: { Label("Historial", systemImage: "clock") }
+                            NavigationLink { LocalMusicView(player: player) } label: { Label("Copias locales", systemImage: "arrow.down.circle") }
+                        }.listRowBackground(theme.surface)
+                    }
+                    if player.isLoading {
+                        Section {
+                            HStack {
+                                ProgressView("Preparando fuente…")
+                                Spacer()
+                                Button("Cancelar") { player.cancelLoading() }
+                            }
+                        }
+                    }
+                    if library.isIndexing { Section { ProgressView("Leyendo información · \(library.progress)") } }
+                    else if !library.progress.isEmpty { Text(library.progress).font(.footnote).foregroundStyle(.secondary) }
+                    if let issue = library.issue {
+                        Section {
+                            Text(issue).foregroundStyle(.secondary)
+                            if library.needsReset { Button("Restablecer biblioteca", role: .destructive) { reset = true } }
+                            else { Button("Cerrar aviso") { library.issue = nil } }
+                        }
+                    }
+                    if let issue = player.issue {
+                        Section { Text(issue); Button("Cerrar aviso de reproducción") { player.issue = nil } }
+                    }
                 }
-            }.listStyle(.plain).scrollContentBackground(.hidden)
+                .accessibilityIdentifier("libraryHome")
+                .scrollContentBackground(.hidden).background(theme.background)
+                .navigationTitle("Biblioteca")
+                .searchable(text: $query, prompt: "Canciones, artistas, álbumes o etiquetas")
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Fuentes", systemImage: "folder.badge.gearshape") { sheet = .sources }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { sheet = .settings } label: { Image(systemName: "gearshape").frame(minWidth: 44, minHeight: 44) }
+                            .accessibilityLabel("Ajustes")
+                    }
+                }
+                .confirmationDialog("¿Restablecer la biblioteca?", isPresented: $reset, titleVisibility: .visible) {
+                    Button("Restablecer biblioteca", role: .destructive) { library.reset() }
+                } message: { Text("Se eliminarán las referencias, las playlists, los favoritos y el historial guardados. Tus archivos de música se conservarán.") }
+            }
+            if player.current != nil {
+                MiniPlayer(player: player, openPlayer: { showPlayer = true }, openQueue: { sheet = .queue })
+            }
         }
+        .sheet(item: $sheet) { destination in
+            switch destination {
+            case .sources: LibrarySourcesView(player: player)
+            case .settings: SettingsView(player: player)
+            case .queue: QueueView(player: player)
+            }
+        }
+        .fullScreenCover(isPresented: $showPlayer) { NowPlayingView(player: player) }
+        .tint(theme.accent)
     }
 }
 
 struct TrackRow: View {
-    let title: String
-    let subtitle: String
-    let image: UIImage?
-    let selected: Bool
+    let player: PlaybackController
+    let track: AudioTrack
+    var showsLocation = false
     @Environment(\.colorScheme) private var scheme
+
+    private var song: CollectionSong? {
+        guard let song = player.libraryID(for: track).flatMap({ player.library.state.songs[$0] }) else { return nil }
+        // Before indexing completes, keep prepared metadata instead of replacing
+        // it with the library's filename/unknown-artist placeholder.
+        guard song.modified != nil || player.details[track.id] == nil else { return nil }
+        return song
+    }
+    // Playback details are bounded and invalidated after edits. The library owns
+    // the list metadata, including songs that have not been played yet.
+    var title: String { song?.title ?? player.details[track.id]?.title ?? track.displayName }
+    var subtitle: String {
+        if showsLocation { return player.location(for: track) }
+        return song?.artist ?? player.details[track.id]?.artist ?? "Artista desconocido"
+    }
+    private var selected: Bool { track.id == player.current?.id }
+
     var body: some View {
         HStack(spacing: 14) {
-            ArtworkView(image: image, cornerRadius: 7).frame(width: 52, height: 52)
+            Group {
+                if let song, song.modified != nil || song.artworkKey != nil {
+                    CachedCollectionArtwork(library: player.library, song: song, cornerRadius: 7)
+                } else {
+                    ArtworkView(image: player.details[track.id]?.artwork, cornerRadius: 7)
+                }
+            }.frame(width: 52, height: 52)
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.body.weight(.medium)).foregroundStyle(selected ? PlayerTheme(scheme).accent : .primary).lineLimit(2)
                 Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)

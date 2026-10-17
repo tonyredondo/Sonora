@@ -30,36 +30,53 @@ final class FolderPlayerUITests: XCTestCase {
         XCTAssertEqual(close.frame.minY, originalY, accuracy: 1, "Player must stay fixed after a vertical drag")
     }
     @MainActor
+    func testMiniPlayerStaysAvailableWhileBrowsingLibraryAndPlayerFitsBothThemes() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication(); app.launchArguments = ["-appearance", "noche"]; app.launch()
+        app.assertLibraryHome()
+        XCTAssertTrue(app.buttons["openNowPlaying"].waitForExistence(timeout: 10), "Use the synthetic queue prepared by the library tests")
+        capture("library-home-noche", app: app)
+        app.buttons["Canciones"].tap()
+        XCTAssertTrue(app.navigationBars["Canciones"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["openNowPlaying"].isHittable, "Browsing the library must keep the mini-player available")
+        app.buttons["openNowPlaying"].tap()
+        XCTAssertTrue(app.buttons["Cerrar reproductor"].waitForExistence(timeout: 5))
+        assertPlayerFitsWithoutScrolling(app)
+        capture("library-player-noche", app: app)
+        app.terminate()
+        app.launchArguments = ["-appearance", "papel", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch(); app.assertLibraryHome()
+        app.buttons["openNowPlaying"].tap()
+        XCTAssertTrue(app.buttons["Cerrar reproductor"].waitForExistence(timeout: 5))
+        assertPlayerFitsWithoutScrolling(app)
+        capture("library-player-papel-largest", app: app)
+        app.terminate()
+    }
+
+    @MainActor
     func testFolderPlaybackBothThemesBackgroundAndRestore() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["-folderSnapshot", ""]
         app.launch()
-        XCTAssertTrue(app.buttons["playFolder"].waitForExistence(timeout: 10))
+        app.assertLibraryHome()
         app.buttons["Ajustes"].tap()
         app.buttons["Noche"].tap()
         app.buttons["Listo"].tap()
-        capture("01-empty", app: app)
-        app.buttons["playFolder"].tap()
-        XCTAssertTrue(app.buttons["DOCPicker.actionButton"].waitForExistence(timeout: 30))
-        // Files remembers its last location independently of Sonora's saved queue.
-        if !app.staticTexts["Sonora QA"].exists && !app.staticTexts["En directo"].exists {
-            app.buttons["Browse"].tap()
-            let local = app.staticTexts["On My iPhone"]
-            XCTAssertTrue(local.waitForExistence(timeout: 10), app.debugDescription)
-            local.tap()
-            app.staticTexts["Sonora"].tap()
-        }
-        if !app.staticTexts["En directo"].exists {
-            let folder = app.cells.containing(.staticText, identifier: "Sonora QA").firstMatch
-            XCTAssertTrue(folder.waitForExistence(timeout: 10), app.debugDescription)
-            folder.images.firstMatch.tap()
-        }
-        XCTAssertTrue(app.staticTexts["En directo"].waitForExistence(timeout: 10), app.debugDescription)
-        capture("02-files-folder", app: app)
-        app.buttons["DOCPicker.actionButton"].tap()
-        XCTAssertTrue(app.staticTexts["3 canciones · Incluye subcarpetas"].waitForExistence(timeout: 15), app.debugDescription)
-        XCTAssertTrue(app.buttons["track:01 - Luz de madrugada.flac"].exists, "The selected folder must be Sonora QA, not its parent")
+        capture("01-library-before-import", app: app)
+        let previousSong = app.buttons["openNowPlaying"].exists ? app.buttons["openNowPlaying"].label : nil
+        let previousTransport = app.buttons["miniTransport"].exists ? app.buttons["miniTransport"].label : nil
+        app.addDemoSourceFromFiles()
+        XCTAssertEqual(app.buttons["openNowPlaying"].exists ? app.buttons["openNowPlaying"].label : nil, previousSong,
+                       "Adding a source must preserve the current song")
+        XCTAssertEqual(app.buttons["miniTransport"].exists ? app.buttons["miniTransport"].label : nil, previousTransport,
+                       "Adding a source must not start or pause playback")
+        app.startDemoPlayback()
+        app.buttons["miniQueue"].tap()
+        XCTAssertTrue(app.navigationBars["Cola · 3"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.queueRow("01 - Luz de madrugada.flac").exists)
+        capture("02-files-folder-imported", app: app)
+        app.buttons["Listo"].tap()
         XCTAssertTrue(app.buttons["Pausar"].exists)
         capture("03-library-noche", app: app)
         app.buttons["openNowPlaying"].tap()
@@ -89,7 +106,9 @@ final class FolderPlayerUITests: XCTestCase {
         capture("07-player-papel", app: app)
         assertPlayerFitsWithoutScrolling(app)
         app.buttons["Cerrar reproductor"].tap()
-        app.buttons["track:01 - Luz de madrugada.flac"].tap()
+        app.buttons["miniQueue"].tap()
+        app.queueRow("01 - Luz de madrugada.flac").tap()
+        app.buttons["Listo"].tap()
         XCTAssertTrue(app.buttons["Pausar"].waitForExistence(timeout: 5))
         XCUIDevice.shared.press(.home)
         // A bounded actual background interval, not an app-state mock.
@@ -100,7 +119,10 @@ final class FolderPlayerUITests: XCTestCase {
         app.terminate()
         app.launchArguments = []
         app.launch()
-        XCTAssertTrue(app.staticTexts["3 canciones · Incluye subcarpetas"].waitForExistence(timeout: 15))
+        app.assertLibraryHome()
+        app.buttons["miniQueue"].tap()
+        XCTAssertTrue(app.navigationBars["Cola · 3"].waitForExistence(timeout: 10))
+        app.buttons["Listo"].tap()
         XCTAssertTrue(app.buttons["Reproducir"].exists)
         capture("08-restored-paused", app: app)
         app.buttons["Ajustes"].tap()

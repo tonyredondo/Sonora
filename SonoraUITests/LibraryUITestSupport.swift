@@ -1,0 +1,64 @@
+import XCTest
+
+extension XCUIApplication {
+    @MainActor func assertLibraryHome(file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(navigationBars["Biblioteca"].waitForExistence(timeout: 15), file: file, line: line)
+    }
+
+    @MainActor func openMusicSource(_ name: String = "Sonora QA", refresh: Bool = false) {
+        assertLibraryHome()
+        buttons["Fuentes"].tap()
+        let source = buttons["source:" + name]
+        for _ in 0..<8 where !source.isHittable { swipeUp() }
+        XCTAssertTrue(source.waitForExistence(timeout: 10), debugDescription)
+        if refresh {
+            buttons["source-options:" + name].tap(); buttons["Actualizar fuente"].tap()
+        }
+        source.tap()
+    }
+
+    @MainActor func closeMusicSource(_ name: String = "Sonora QA") {
+        navigationBars[name].buttons.element(boundBy: 0).tap()
+        navigationBars["Fuentes"].buttons["Listo"].tap()
+        assertLibraryHome()
+    }
+
+    @MainActor func startDemoPlayback() {
+        openMusicSource()
+        // The paused mini-player has the same play label. Select the known FLAC fixture explicitly.
+        buttons["library-song:01 - Luz de madrugada.flac"].tap()
+        closeMusicSource()
+        let playing = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Pausar"), object: buttons["miniTransport"])
+        XCTAssertEqual(XCTWaiter.wait(for: [playing], timeout: 10), .completed)
+    }
+
+    @MainActor func queueRow(_ relativePath: String) -> XCUIElement {
+        buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND identifier ENDSWITH %@", "queue-track:", relativePath)).firstMatch
+    }
+
+    /// Uses Files' actual folder picker; callers provide marked synthetic folders only.
+    @MainActor func selectSyntheticFolder(_ path: [String]) {
+        let picker = otherElements["Browse View (Picker)"].firstMatch
+        XCTAssertTrue(picker.waitForExistence(timeout: 20), debugDescription)
+        XCTAssertTrue(buttons["DOCPicker.actionButton"].waitForExistence(timeout: 10))
+        // Files' tab bar sits beside its browsing view, including on a fresh launch at Recents.
+        if buttons["Browse"].exists { buttons["Browse"].tap() }
+        let local = picker.staticTexts["On My iPhone"]
+        XCTAssertTrue(local.waitForExistence(timeout: 10), debugDescription)
+        local.tap(); picker.staticTexts["Sonora"].tap()
+        for name in path {
+            let folder = picker.cells.containing(.staticText, identifier: name).firstMatch
+            for _ in 0..<8 where !folder.isHittable { picker.swipeUp() }
+            XCTAssertTrue(folder.waitForExistence(timeout: 10), debugDescription)
+            folder.images.firstMatch.tap()
+        }
+        buttons["DOCPicker.actionButton"].tap()
+    }
+
+    @MainActor func addDemoSourceFromFiles() {
+        assertLibraryHome(); buttons["Fuentes"].tap(); buttons["Añadir carpeta"].tap()
+        selectSyntheticFolder(["Sonora QA"])
+        XCTAssertTrue(buttons["source:Sonora QA"].waitForExistence(timeout: 15))
+        navigationBars["Fuentes"].buttons["Listo"].tap()
+    }
+}

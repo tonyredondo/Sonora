@@ -10,6 +10,7 @@ final class PlaybackController: NSObject {
     let library: MusicLibrary
     let volumeAnalysis: VolumeAnalysisStore
     let localImports: LocalImportController
+    @ObservationIgnored lazy var linkImports = LinkImportController(library: library, copies: localImports)
     private(set) var transitionSettings: TransitionSettings
     private(set) var lastTransition: TransitionOutcome?
     private(set) var sleepTimer: SleepTimer?

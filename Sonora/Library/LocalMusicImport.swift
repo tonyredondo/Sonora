@@ -7,6 +7,7 @@ struct ImportedMusicRecord: Codable, Identifiable, Equatable, Sendable {
     let bytes: Int64
     let files: Int
     let importedAt: Date
+    var linkID: String? = nil
 }
 struct LocalMusicImportProgress: Sendable {
     let filename: String
@@ -16,6 +17,68 @@ struct LocalMusicImportProgress: Sendable {
 }
 
 enum LocalMusicImport {
+    static func downloaded(_ payload: URL, filename: String, name: String, linkID: String,
+                           importID: UUID = UUID(), storage: URL = defaultStorage,
+                           progress: @escaping @Sendable (LocalMusicImportProgress) -> Void = { _ in }) async throws -> ImportedMusicRecord {
+        try Task.checkCancellation()
+        let worker = Task.detached(priority: .utility) {
+            try Task.checkCancellation()
+            if let existing = try records(in: storage).first(where: { $0.linkID == linkID }) { return existing }
+            guard !linkID.isEmpty, linkID.utf8.count <= 256, !name.isEmpty, name.utf8.count <= 4096,
+                  AudioTrack(relativePath: filename) != nil, !filename.contains("/"), !filename.contains("\\") else { throw MusicArchiveError.unsafePath }
+            let files = FileManager.default, id = importID.uuidString
+            let staging = linkStaging(importID)
+            // This exact UUID belongs to the pending link import. A killed
+            // extraction restarts from its retained payload, never partial files.
+            if files.fileExists(atPath: staging.path) { try files.removeItem(at: staging) }
+            try files.createDirectory(at: staging, withIntermediateDirectories: true)
+            defer { try? files.removeItem(at: staging) }
+            let music = staging.appendingPathComponent("Music", isDirectory: true)
+            let input = try FileHandle(forReadingFrom: payload)
+            let signature = try input.read(upToCount: 4); try input.close()
+            let isZIP = filename.lowercased().hasSuffix(".zip") || signature?.prefix(2) == Data([0x50, 0x4b])
+            let count: Int, bytes: Int64
+            if isZIP {
+                let budget = availableBytes(at: storage).map { max(0, $0 - 64 * 1024 * 1024) } ?? 32 * 1024 * 1024 * 1024
+                let extracted = try MusicArchive.extract(payload, to: music, maxBytes: budget, isCancelled: { Task.isCancelled }) { value in
+                    progress(.init(filename: "Descomprimiendo…", completed: 0, total: 0, bytes: value.bytes))
+                }
+                count = extracted.files; bytes = extracted.bytes
+            } else {
+                guard FolderScanner.defaultExtensions.contains((filename as NSString).pathExtension.lowercased()) else { throw MusicTextError.invalid("La descarga no contiene audio ni un archivo ZIP compatible.") }
+                try files.createDirectory(at: music, withIntermediateDirectories: true)
+                try files.copyItem(at: payload, to: music.appendingPathComponent(filename))
+                count = 1; bytes = Int64(try payload.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
+            }
+            try Task.checkCancellation()
+            guard !(try FolderScanner.scan(music, isCancelled: { Task.isCancelled })).isEmpty else { throw MusicTextError.invalid("La descarga no contiene audio compatible.") }
+            progress(.init(filename: name, completed: count, total: count, bytes: bytes))
+            let record = ImportedMusicRecord(id: id, name: name, bytes: bytes, files: count, importedAt: Date(), linkID: linkID)
+            return try publish(record, staging: staging, storage: storage)
+        }
+        return try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+    }
+    static func linkStaging(_ id: UUID) -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("SonoraLinkImport-" + id.uuidString, isDirectory: true) }
+    static func availableBytes(at storage: URL = defaultStorage) -> Int64? {
+        var existing = storage
+        while !FileManager.default.fileExists(atPath: existing.path), existing.path != "/" { existing.deleteLastPathComponent() }
+        if let value = try? existing.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage { return value }
+        return (try? FileManager.default.attributesOfFileSystem(forPath: existing.path)[.systemFreeSize] as? NSNumber)?.int64Value
+    }
+    static func checkDownloadSpace(_ bytes: Int64) throws {
+        let (twice, overflow) = bytes.multipliedReportingOverflow(by: 2)
+        guard bytes >= 0, !overflow, twice <= Int64.max - 64 * 1024 * 1024 else { throw MusicArchiveError.expandedLimit }
+        if let available = availableBytes(), available < twice + 64 * 1024 * 1024 {
+            throw MusicTextError.invalid("No hay espacio suficiente para descargar y descomprimir esta transferencia. Necesitas aproximadamente \(ByteCountFormatter.string(fromByteCount: twice + 64 * 1024 * 1024, countStyle: .file)) libres.")
+        }
+    }
+    fileprivate static func publish(_ record: ImportedMusicRecord, staging: URL, storage: URL) throws -> ImportedMusicRecord {
+        try JSONEncoder().encode(record).write(to: staging.appendingPathComponent(".sonora-import.json"), options: .atomic)
+        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+        try Task.checkCancellation()
+        try FileManager.default.moveItem(at: staging, to: storage.appendingPathComponent(record.id, isDirectory: true))
+        return record
+    }
     static var defaultStorage: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("SonoraMusic", isDirectory: true) }
     static func musicURL(_ record: ImportedMusicRecord, storage: URL = defaultStorage) -> URL {
         storage.appendingPathComponent(record.id, isDirectory: true).appendingPathComponent("Music", isDirectory: true)
@@ -118,10 +181,6 @@ private final class CopyJob: @unchecked Sendable {
         try Task.checkCancellation()
         guard !(try FolderScanner.scan(music, isCancelled: { Task.isCancelled })).isEmpty else { throw MusicTextError.invalid("No se ha encontrado audio en la copia.") }
         let record = ImportedMusicRecord(id: id, name: root.lastPathComponent, bytes: totalBytes, files: files.count, importedAt: Date())
-        try JSONEncoder().encode(record).write(to: staging.appendingPathComponent(".sonora-import.json"), options: .atomic)
-        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
-        try Task.checkCancellation()
-        try FileManager.default.moveItem(at: staging, to: storage.appendingPathComponent(id, isDirectory: true))
-        return record
+        return try LocalMusicImport.publish(record, staging: staging, storage: storage)
     }
 }

@@ -10,9 +10,10 @@ final class CollectionUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication(); app.launchArguments = ["-appearance", "noche"]; app.launch()
         let playlistName = "Sesión QA " + String(UUID().uuidString.prefix(4))
-        XCTAssertTrue(app.staticTexts["Sonora QA"].waitForExistence(timeout: 15))
-        XCTAssertTrue(app.buttons["track:01 - Luz de madrugada.flac"].exists)
-        app.buttons["Biblioteca"].tap()
+        app.addDemoSourceFromFiles()
+        app.openMusicSource(refresh: true)
+        XCTAssertTrue(app.buttons["options-song:01 - Luz de madrugada.flac"].waitForExistence(timeout: 10))
+        app.closeMusicSource()
         app.buttons["Canciones"].tap()
         let options = app.buttons["Opciones de Luz de madrugada"]
         XCTAssertTrue(options.waitForExistence(timeout: 10)); options.tap()
@@ -37,14 +38,13 @@ final class CollectionUITests: XCTestCase {
         app.buttons["Favoritos"].tap()
         XCTAssertTrue(app.staticTexts["Luz de madrugada"].exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.buttons["Canciones"].tap()
+        app.openMusicSource()
         app.buttons["Seleccionar"].tap(); app.buttons["Seleccionar todo"].tap()
         app.buttons["3 seleccionadas"].tap(); app.buttons["Editar información"].tap()
         let albumToggle = app.switches["bulk-apply-album"]
         for _ in 0..<5 where !albumToggle.isHittable { app.swipeUp() }
         XCTAssertTrue(albumToggle.waitForExistence(timeout: 10))
-        let nativeToggle = albumToggle.switches.firstMatch
-        (nativeToggle.exists ? nativeToggle : albumToggle).tap()
+        albumToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
         XCTAssertEqual(albumToggle.value as? String, "1")
         let album = app.textFields["bulk-field-album"]
         XCTAssertTrue(album.waitForExistence(timeout: 5)); album.tap()
@@ -57,7 +57,7 @@ final class CollectionUITests: XCTestCase {
         capture("collection-batch-saved", app)
         app.navigationBars["Información"].buttons["Listo"].tap()
         app.terminate(); app.launchArguments = []; app.launch()
-        XCTAssertTrue(app.buttons["Biblioteca"].waitForExistence(timeout: 15)); app.buttons["Biblioteca"].tap()
+        app.assertLibraryHome()
         app.buttons["Álbumes"].tap()
         XCTAssertTrue(app.staticTexts["Álbum editado QA"].waitForExistence(timeout: 10))
         capture("collection-albums-noche", app)

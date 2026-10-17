@@ -9,7 +9,10 @@ import Foundation
     func restore() async {
         MetadataAssistantSettings.shared.start()
         if let restoration { await restoration.value; return }
-        let task = Task { await player.restoreFolder() }
+        let task = Task {
+            await player.restoreFolder()
+            await player.linkImports.restore()
+        }
         restoration = task
         await task.value
     }

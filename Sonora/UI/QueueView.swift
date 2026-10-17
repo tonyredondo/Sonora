@@ -16,10 +16,8 @@ struct QueueView: View {
                     Button {
                         if let index = player.queue.tracks.firstIndex(of: track) { player.play(index: index) }
                     } label: {
-                        TrackRow(title: player.details[track.id]?.title ?? track.displayName,
-                                 subtitle: player.location(for: track), image: player.details[track.id]?.artwork,
-                                 selected: track.id == player.current?.id)
-                    }.buttonStyle(.plain).contextMenu {
+                        TrackRow(player: player, track: track, showsLocation: true)
+                    }.buttonStyle(.plain).accessibilityIdentifier("queue-track:" + track.id).contextMenu {
                         Button("Reproducir a continuación") { player.enqueue(track, playNext: true) }
                         Button(player.isFavorite(track) ? "Quitar de favoritos" : "Marcar como favorita", systemImage: "heart") { player.toggleFavorite(track) }
                         if let id = player.libraryID(for: track) {

@@ -14,8 +14,8 @@ final class VolumeAnalysisUITests: XCTestCase {
     @MainActor func testAnalyzeSongSaveTagsAndRestoreLocalResult() throws {
         continueAfterFailure = false
         let app = XCUIApplication(); app.launchArguments = ["-appearance", "noche"]; app.launch()
-        XCTAssertTrue(app.buttons["Biblioteca"].waitForExistence(timeout: 15))
-        app.buttons["Biblioteca"].tap(); app.buttons["Canciones"].tap()
+        app.assertLibraryHome()
+        app.buttons["Canciones"].tap()
         let options = app.buttons["options-song:01 - Luz de madrugada.flac"]
         XCTAssertTrue(options.waitForExistence(timeout: 10)); options.tap()
         let analyze = app.buttons["analyze-song:01 - Luz de madrugada.flac"]
@@ -35,8 +35,8 @@ final class VolumeAnalysisUITests: XCTestCase {
         capture("volume-tags-saved", app)
         app.navigationBars["Analizar volumen"].buttons["Listo"].tap()
         app.terminate(); app.launchArguments = ["-appearance", "papel"]; app.launch()
-        XCTAssertTrue(app.buttons["Biblioteca"].waitForExistence(timeout: 15))
-        app.buttons["Biblioteca"].tap(); app.buttons["Canciones"].tap()
+        app.assertLibraryHome()
+        app.buttons["Canciones"].tap()
         XCTAssertTrue(options.waitForExistence(timeout: 10)); options.tap(); app.buttons["analyze-song:01 - Luz de madrugada.flac"].tap()
         XCTAssertTrue(app.buttons["volumeAnalyze"].waitForExistence(timeout: 10))
         reveal(result, in: app); XCTAssertTrue(result.label.contains("dB"))
@@ -48,8 +48,8 @@ final class VolumeAnalysisUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-appearance", "papel", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
         app.launch()
-        XCTAssertTrue(app.buttons["Biblioteca"].waitForExistence(timeout: 15))
-        app.buttons["Biblioteca"].tap(); app.buttons["Álbumes"].tap()
+        app.assertLibraryHome()
+        app.buttons["Álbumes"].tap()
         let album = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "library-album:")).firstMatch
         XCTAssertTrue(album.waitForExistence(timeout: 10)); album.tap()
         let action = app.buttons["Analizar álbum completo"]
@@ -64,9 +64,13 @@ final class VolumeAnalysisUITests: XCTestCase {
     @MainActor func testSelectionAndRecursiveSourceFolderActions() throws {
         continueAfterFailure = false
         let app = XCUIApplication(); app.launchArguments = ["-appearance", "noche"]; app.launch()
-        XCTAssertTrue(app.buttons["Biblioteca"].waitForExistence(timeout: 15))
-        app.buttons["Biblioteca"].tap(); app.buttons["Canciones"].tap()
-        app.buttons["Seleccionar"].tap(); app.buttons["Seleccionar todo"].tap()
+        app.assertLibraryHome(); app.buttons["Canciones"].tap()
+        app.buttons["Seleccionar"].tap()
+        let selectAll = app.buttons["Seleccionar todo"]
+        XCTAssertTrue(selectAll.isHittable)
+        XCTAssertFalse(selectAll.frame.intersects(app.buttons["openNowPlaying"].frame), "Selection actions must stay above the mini-player")
+        capture("library-selection-no-overlap", app)
+        selectAll.tap()
         app.buttons["3 seleccionadas"].tap(); app.buttons["Analizar volumen"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["3 canciones seleccionadas"].waitForExistence(timeout: 5))
         reveal(app.buttons["volumeAnalyze"], in: app); app.buttons["volumeAnalyze"].tap()
@@ -76,7 +80,7 @@ final class VolumeAnalysisUITests: XCTestCase {
         capture("volume-selection-noche", app)
         app.navigationBars["Analizar volumen"].buttons["Listo"].tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.buttons["Sonora QA"].tap()
+        app.openMusicSource()
         app.buttons["Analizar volumen"].tap()
         XCTAssertTrue(app.staticTexts["3 canciones seleccionadas"].waitForExistence(timeout: 5))
         app.buttons["volumeAnalyze"].tap()

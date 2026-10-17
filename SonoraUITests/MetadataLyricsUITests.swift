@@ -14,9 +14,7 @@ final class MetadataLyricsUITests: XCTestCase {
     @MainActor func testWriteTitleAndEmbeddedLyricsThenRelaunch() throws {
         continueAfterFailure = false
         let app = XCUIApplication(); app.launchArguments = ["-appearance", "noche"]; app.launch()
-        XCTAssertTrue(app.staticTexts["Sonora QA"].waitForExistence(timeout: 15), "Select the synthetic demo folder first")
-        let track = app.buttons["track:01 - Luz de madrugada.flac"]
-        XCTAssertTrue(track.exists); track.tap()
+        app.startDemoPlayback()
         app.buttons["miniTransport"].tap()
         app.buttons["openNowPlaying"].tap()
         XCTAssertTrue(app.buttons["Letra"].waitForExistence(timeout: 5)); app.buttons["Letra"].tap()

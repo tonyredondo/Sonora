@@ -71,26 +71,15 @@ final class MetadataAssistantUITests: XCTestCase {
     }
 
     @MainActor private func openDemoFolder(_ app: XCUIApplication) {
-        app.buttons["playFolder"].tap()
-        XCTAssertTrue(app.buttons["DOCPicker.actionButton"].waitForExistence(timeout: 30))
-        if !app.staticTexts["Sonora QA"].exists && !app.staticTexts["En directo"].exists {
-            app.buttons["Browse"].tap()
-            let local = app.staticTexts["On My iPhone"]
-            XCTAssertTrue(local.waitForExistence(timeout: 10)); local.tap(); app.staticTexts["Sonora"].tap()
-        }
-        if !app.staticTexts["En directo"].exists {
-            let folder = app.cells.containing(.staticText, identifier: "Sonora QA").firstMatch
-            XCTAssertTrue(folder.waitForExistence(timeout: 10)); folder.images.firstMatch.tap()
-        }
-        app.buttons["DOCPicker.actionButton"].tap()
-        XCTAssertTrue(app.buttons["track:01 - Luz de madrugada.flac"].waitForExistence(timeout: 15))
-        if app.buttons["Pausar"].exists { app.buttons["miniTransport"].tap() }
+        app.addDemoSourceFromFiles()
+        app.startDemoPlayback()
+        app.buttons["miniTransport"].tap()
     }
 
     @MainActor func testReviewBeforeSaveAndOfflineReuseAfterRelaunch() throws {
         continueAfterFailure = false
         let app = XCUIApplication(); app.launchArguments = ["-appearance", "noche", "-folderSnapshot", ""]; app.launch()
-        XCTAssertTrue(app.buttons["playFolder"].waitForExistence(timeout: 15)); openDemoFolder(app)
+        app.assertLibraryHome(); openDemoFolder(app)
         showConnection(app)
         let offline = app.switches["metadataOffline"]
         setSwitch(offline, to: false)

@@ -28,7 +28,7 @@ final class ZZPortableLibraryUITests: XCTestCase {
     @MainActor func testM3UImportAndExportIncludesIndividualCueTracks() throws {
         continueAfterFailure = false
         let app = XCUIApplication(); app.launchArguments = ["-appearance", "noche"]; app.launch()
-        XCTAssertTrue(app.buttons["Biblioteca"].waitForExistence(timeout: 15)); app.buttons["Biblioteca"].tap()
+        app.assertLibraryHome()
         app.buttons["Playlists"].tap(); app.buttons["Importar playlist"].tap()
         app.buttons["chooseM3U"].tap()
         portableFolder(app, filePicker: true)
@@ -58,7 +58,7 @@ final class ZZPortableLibraryUITests: XCTestCase {
     @MainActor func testLocalCopyCuePlaybackAndPausedRestorationAtLargestTextSize() throws {
         continueAfterFailure = false
         let app = XCUIApplication(); app.launchArguments = ["-appearance", "papel", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]; app.launch()
-        XCTAssertTrue(app.buttons["Biblioteca"].waitForExistence(timeout: 15)); app.buttons["Biblioteca"].tap()
+        app.assertLibraryHome()
         reveal(app.buttons["Copias locales"], in: app); app.buttons["Copias locales"].tap()
         reveal(app.buttons["importLocalFolder"], in: app); app.buttons["importLocalFolder"].tap()
         portableFolder(app); app.buttons["DOCPicker.actionButton"].tap()
@@ -68,9 +68,10 @@ final class ZZPortableLibraryUITests: XCTestCase {
         let play = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "playLocalCopy:")).firstMatch
         reveal(play, in: app); play.tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.navigationBars["Biblioteca"].buttons["Listo"].tap()
-        let cue = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Primer acto")).firstMatch
+        app.buttons["miniQueue"].tap()
+        let cue = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "queue-track:", "Primer acto")).firstMatch
         XCTAssertTrue(cue.waitForExistence(timeout: 15)); reveal(cue, in: app); cue.tap()
+        app.buttons["Listo"].tap()
         app.buttons["openNowPlaying"].tap()
         XCTAssertTrue(app.staticTexts["playerTitle"].waitForExistence(timeout: 10))
         XCTAssertEqual(app.staticTexts["playerTitle"].label, "Primer acto")

@@ -1,70 +1,5 @@
 import SonoraCore
 import SwiftUI
-import UniformTypeIdentifiers
-
-struct MusicCollectionView: View {
-    let player: PlaybackController
-    @Environment(\.dismiss) private var dismiss
-    @State private var query = ""
-    @State private var chooseFolder = false
-    @State private var showPlayer = false
-    @State private var showQueue = false
-    @State private var reset = false
-    private var library: MusicLibrary { player.library }
-    var body: some View {
-        NavigationStack {
-            List {
-                if !query.isEmpty {
-                    CollectionRows(player: player, songs: library.allSongs.filter { $0.matches(query) })
-                } else {
-                    Section {
-                        NavigationLink { CollectionSongList(player: player, title: "Canciones", ids: library.allSongs.map(\.id)) } label: { Label("Canciones", systemImage: "music.note") }
-                        NavigationLink { CollectionGroupsView(player: player, albums: true) } label: { Label("Álbumes", systemImage: "square.stack") }
-                        NavigationLink { CollectionGroupsView(player: player, albums: false) } label: { Label("Artistas", systemImage: "music.mic") }
-                        NavigationLink { CollectionFavoritesView(player: player) } label: { Label("Favoritos", systemImage: "heart") }
-                        NavigationLink { PlaylistsView(player: player) } label: { Label("Playlists", systemImage: "music.note.list") }
-                        NavigationLink { ListeningHistoryView(player: player) } label: { Label("Historial", systemImage: "clock") }
-                        NavigationLink { LocalMusicView(player: player) } label: { Label("Copias locales", systemImage: "arrow.down.circle") }
-                    }
-                    Section("Carpetas") {
-                        ForEach(library.state.sources) { source in
-                            NavigationLink {
-                                CollectionSongList(player: player, title: source.name, ids: library.allSongs.filter { $0.sourceID == source.id }.map(\.id), sourceID: source.id)
-                            } label: { Label(source.name, systemImage: "folder") }
-                        }
-                        Button { chooseFolder = true } label: { Label("Añadir carpeta a la biblioteca", systemImage: "folder.badge.plus") }
-                        Text("La biblioteca guarda referencias e información. La música permanece en tus carpetas.").font(.footnote).foregroundStyle(.secondary)
-                    }
-                    if library.state.songs.isEmpty { ContentUnavailableView("Tu biblioteca", systemImage: "music.note.house", description: Text("Añade una carpeta de Archivos para ver sus canciones, álbumes y artistas.")) }
-                }
-                if library.isIndexing { Section { ProgressView("Leyendo información · \(library.progress)") } }
-                else if !library.progress.isEmpty { Text(library.progress).font(.footnote).foregroundStyle(.secondary) }
-                if let issue = library.issue {
-                    Section {
-                        Text(issue).foregroundStyle(.secondary)
-                        if library.needsReset { Button("Restablecer biblioteca", role: .destructive) { reset = true } }
-                        else { Button("Cerrar aviso") { library.issue = nil } }
-                    }
-                }
-                if let issue = player.issue { Section { Text(issue); Button("Cerrar aviso de reproducción") { player.issue = nil } } }
-            }
-            .navigationTitle("Biblioteca")
-            .searchable(text: $query, prompt: "Canciones, artistas, álbumes o etiquetas")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { dismiss() } } }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if player.current != nil { MiniPlayer(player: player, openPlayer: { showPlayer = true }, openQueue: { showQueue = true }) }
-            }
-            .fileImporter(isPresented: $chooseFolder, allowedContentTypes: [.folder]) { result in
-                switch result { case .success(let url): player.addFolderToLibrary(url); case .failure(let error): if (error as NSError).code != NSUserCancelledError { player.issue = error.localizedDescription } }
-            }
-            .fullScreenCover(isPresented: $showPlayer) { NowPlayingView(player: player) }
-            .sheet(isPresented: $showQueue) { QueueView(player: player) }
-            .confirmationDialog("¿Restablecer la biblioteca?", isPresented: $reset, titleVisibility: .visible) {
-                Button("Restablecer biblioteca", role: .destructive) { library.reset() }
-            } message: { Text("Se eliminarán las referencias, las playlists, los favoritos y el historial guardados. Tus archivos de música se conservarán.") }
-        }
-    }
-}
 
 struct CollectionGroupsView: View {
     let player: PlaybackController
@@ -222,9 +157,10 @@ struct ListeningHistoryView: View {
 struct CachedCollectionArtwork: View {
     let library: MusicLibrary
     let song: CollectionSong?
+    var cornerRadius: CGFloat = 12
     @State private var image: UIImage?
     var body: some View {
-        ArtworkView(image: image)
+        ArtworkView(image: image, cornerRadius: cornerRadius)
             .task(id: song?.artworkKey) {
                 guard let key = song?.artworkKey, key == (key as NSString).lastPathComponent else { image = nil; return }
                 let url = library.artworkDirectory.appendingPathComponent(key)
