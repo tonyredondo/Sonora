@@ -26,6 +26,14 @@ public struct LyricsDocument: Equatable, Sendable {
     private static let information = try! NSRegularExpression(pattern: #"^\[(ar|al|ti|au|by|re|ve|length|offset):.*\]$"#, options: .caseInsensitive)
     private static let fileOffset = try! NSRegularExpression(pattern: #"\[offset:([+-]?\d+)\]"#, options: .caseInsensitive)
 
+    /// Retain the recognized tag so line-level readers can apply the same global
+    /// adjustment, including Unicode case folding and ignored malformed tags.
+    static func timingOffset(in text: String) -> (tag: String, seconds: Double)? {
+        guard let match = fileOffset.firstMatch(in:text,range:NSRange(text.startIndex...,in:text)),
+              let tag = Range(match.range,in:text), let value = Range(match.range(at:1),in:text) else { return nil }
+        return (String(text[tag]),(Double(text[value]) ?? 0) / 1000)
+    }
+
     /// Remove LRC metadata before deciding whether text exists or aligning words.
     /// Preserve lyric spelling and blank lines between verses.
     public static func removingInformation(from text: String) -> String {
@@ -38,10 +46,7 @@ public struct LyricsDocument: Equatable, Sendable {
     public init(text: String) {
         isAITranscribed = text.components(separatedBy: .newlines).contains { $0.trimmingCharacters(in: .whitespaces) == Self.aiTranscriptionMarker }
         isAIRepaired = text.components(separatedBy: .newlines).contains { $0.trimmingCharacters(in: .whitespaces) == Self.aiRepairMarker }
-        let range = NSRange(text.startIndex..., in: text)
-        let offset = Self.fileOffset.firstMatch(in: text, range: range)
-            .flatMap { Range($0.range(at: 1), in: text) }
-            .flatMap { Double(text[$0]) }.map { $0 / 1000 } ?? 0
+        let offset = Self.timingOffset(in:text)?.seconds ?? 0
         var timed: [(Double, String)] = []
         var plain: [String] = []
         for raw in text.components(separatedBy: .newlines) {

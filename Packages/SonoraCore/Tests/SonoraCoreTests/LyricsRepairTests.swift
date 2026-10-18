@@ -191,6 +191,20 @@ final class LyricsRepairTests: XCTestCase {
         let output = try review.applying([change.id:.init(text:change.suggested)])
         XCTAssertEqual(LyricsDocument(text:output).lines.map(\.time),[0.5,2.5])
     }
+    func testRepairUsesTheSameOffsetTagAsTheReader() throws {
+        for header in ["[offset:invalid]\n[offset:500]","[offſet:500]","[oﬀset:500]","[OFFSET:+500]"] {
+            let original = "[ar:Example]\n" + header + "\n[00:01.00]Bright roan\n[00:03.00]We return"
+            XCTAssertNoThrow(try LyricsRepair.validateOriginal(original,duration:2.8),header)
+            let review = try LyricsRepair(original:original,transcript:transcript("[00:00.50]Bright road\n[00:02.50]We return"))
+            let edits = Dictionary(uniqueKeysWithValues:review.proposals.filter { $0.kind != .unrecognized }.map { ($0.id,LyricsRepair.Edit(text:$0.suggested)) })
+            do {
+                let text = try review.applying(edits), written = LyricsDocument(text:text)
+                XCTAssertEqual(written.lines.map(\.text),["Bright road","We return"],header)
+                XCTAssertEqual(written.lines.map(\.time),[0.5,2.5],header)
+                XCTAssertTrue(text.contains("[ar:Example]"))
+            } catch { XCTFail("Unexpected draft failure for \(header): \(error)") }
+        }
+    }
     func testTimedRepeatedChorusesAreMatchedToTheirOwnOccurrence() throws {
         let original = "[00:01.00]Bright road\n[00:05.00]We return"
         let source = LyricsTranscript(plainText:"Bright road\nWe return\nWe return",syncedText:"[00:01.00]Bright road\n[00:03.00]We return\n[00:05.00]We return",duration:8,
@@ -200,6 +214,33 @@ final class LyricsRepairTests: XCTestCase {
         XCTAssertEqual(addition.start,3)
         let output = try review.applying([addition.id:.init(text:addition.suggested)])
         XCTAssertEqual(LyricsDocument(text:output).lines.map(\.time),[1,3,5])
+    }
+    func testLegacyPhraseTimesKeepRepeatedChorusesInTheirOwnIntervals() throws {
+        let original = "[00:10.00]We sing softly\n[00:20.00]Come home\n[00:30.00]Come home"
+        let source = "[00:10.00]We sing brightly\n[00:15.00]home come home\n[00:20.00]Come back\n[00:30.00]Come back"
+        let review = try LyricsRepair(original:original,transcript:transcript(source,duration:40))
+        XCTAssertTrue(review.usesPhraseTiming)
+        let edits = Dictionary(uniqueKeysWithValues:review.proposals.filter { $0.kind != .unrecognized }.map { ($0.id,LyricsRepair.Edit(text:$0.suggested)) })
+        let written = LyricsDocument(text:try review.applying(edits))
+        XCTAssertEqual(written.lines.map(\.text),["We sing brightly","home come home","Come back","Come back"])
+        XCTAssertEqual(written.lines.map(\.time),[10,15,20,30])
+        let completed = LyricsDocument(text:try review.applying(edits,onlyCompletions:true))
+        XCTAssertEqual(completed.lines.map(\.text),["We sing softly","home come home","Come home","Come home"])
+        XCTAssertEqual(completed.lines.map(\.time),[10,15,20,30])
+    }
+    func testLegacyPhraseGroupingPreservesTheOriginalLineTimes() throws {
+        let original = "[00:01.00]Bright road\n[00:02.00]Walk with me\n[00:03.00]We return"
+        let merged = try LyricsRepair(original:original,transcript:transcript("[00:01.00]Bright road Walk with you We return"))
+        let edits = Dictionary(uniqueKeysWithValues:merged.proposals.map { ($0.id,LyricsRepair.Edit(text:$0.suggested)) })
+        let written = LyricsDocument(text:try merged.applying(edits))
+        XCTAssertEqual(written.lines.map(\.text),["Bright road","Walk with you","We return"])
+        XCTAssertEqual(written.lines.map(\.time),[1,2,3])
+
+        let split = try LyricsRepair(original:"[00:01.00]Bright road Walk with me We return",transcript:transcript("[00:01.00]Bright road\n[00:02.00]Walk with you\n[00:03.00]We return"))
+        let splitEdits = Dictionary(uniqueKeysWithValues:split.proposals.map { ($0.id,LyricsRepair.Edit(text:$0.suggested)) })
+        let splitResult = LyricsDocument(text:try split.applying(splitEdits))
+        XCTAssertEqual(splitResult.lines.map(\.text),["Bright road Walk with you We return"])
+        XCTAssertEqual(splitResult.lines.map(\.time),[1])
     }
     func testMixedTimingIsRejectedInsteadOfDroppingUntimedWords() {
         XCTAssertThrowsError(try LyricsRepair(original:"[00:01.00]Bright road\nKeep these words",transcript:transcript("[00:01.00]Bright road")))

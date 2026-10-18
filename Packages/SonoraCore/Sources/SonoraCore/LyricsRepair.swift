@@ -43,6 +43,7 @@ public struct LyricsRepair: Sendable {
     private struct Token { let text: String, key: String; let line: Int, start: Int, end: Int; var time: Double?; var finish: Double? }
     private static let wordPattern = try! NSRegularExpression(pattern: #"[\p{L}\p{M}\p{N}]+(?:['’][\p{L}\p{M}\p{N}]+)*"#)
     private static let controls = try! NSRegularExpression(pattern: #"\[(?:\d{1,3}:\d{2}|(?:ar|al|ti|au|by|re|ve|length|offset)\s*:)"#, options: .caseInsensitive)
+    private static let offsetInformation = try! NSRegularExpression(pattern: #"^\[offset:"#, options: .caseInsensitive)
     public let original: String
     public let proposals: [Proposal]
     public let usesPhraseTiming: Bool
@@ -79,8 +80,14 @@ public struct LyricsRepair: Sendable {
         let useClock = timed && transcript.words != nil
         let timedLines = parsed.enumerated().compactMap { index,line in line.time.map { (index,$0) } }
         func sourceOwner(_ token: Token) -> Int { timedLines.last { $0.1 <= (token.time ?? 0) + 0.03 }?.0 ?? -1 }
-        let baseKeys = base.map { $0.key + (useClock ? "\0\($0.line)" : "") }
-        let sourceKeys = source.map { $0.key + (useClock ? "\0\(sourceOwner($0))" : "") }
+        // Older caches still have phrase starts. Shared starts keep repeated
+        // words in their own interval without assuming word timing or requiring
+        // both texts to split the intervening phrases into the same lines.
+        let sharedPhraseTimes = timed && transcript.words == nil
+            ? Set(timedLines.map(\.1)).intersection(sourceLines.compactMap(\.time)).sorted() : []
+        func phraseWindow(_ token: Token) -> Int { sharedPhraseTimes.lastIndex { $0 <= (token.time ?? 0) } ?? -1 }
+        let baseKeys = base.map { $0.key + (timed ? "\0\(useClock ? $0.line : phraseWindow($0))" : "") }
+        let sourceKeys = source.map { $0.key + (timed ? "\0\(useClock ? sourceOwner($0) : phraseWindow($0))" : "") }
         // The standard library diff avoids retaining a quadratic alignment matrix.
         let difference = sourceKeys.difference(from:baseKeys)
         let removed = Set(difference.removals.map { change -> Int in if case .remove(let offset,_,_) = change { return offset }; return -1 })
@@ -320,7 +327,7 @@ public struct LyricsRepair: Sendable {
         let raw = text.components(separatedBy:.newlines)
         let metadata = raw.filter { !$0.trimmingCharacters(in:.whitespaces).isEmpty && LyricsDocument.removingInformation(from:$0).isEmpty }
         let metadataLines = Set(metadata)
-        let offset = metadata.first { $0.trimmingCharacters(in:.whitespaces).lowercased().hasPrefix("[offset:") } ?? ""
+        let offset = LyricsDocument.timingOffset(in:text)?.tag ?? ""
         var parsed: [Line] = [], expanded = false
         for rawLine in raw {
             if metadataLines.contains(rawLine) { continue }
@@ -340,7 +347,12 @@ public struct LyricsRepair: Sendable {
                 parsed = parsed.enumerated().sorted { ($0.element.time ?? .infinity,$0.offset) < ($1.element.time ?? .infinity,$1.offset) }.map(\.element)
             }
         }
-        let headers = metadata.filter { !$0.trimmingCharacters(in:.whitespaces).lowercased().hasPrefix("[offset:") && $0.trimmingCharacters(in:.whitespaces) != LyricsDocument.aiRepairMarker }
+        let headers = metadata.filter {
+            let line = $0.trimmingCharacters(in:.whitespaces)
+            // String.range case folding differs from the reader's regex matching.
+            return Self.offsetInformation.firstMatch(in:line,range:NSRange(line.startIndex...,in:line)) == nil
+                && line != LyricsDocument.aiRepairMarker
+        }
         return Original(lines:parsed,headers:headers,isTimed:timed)
     }
 
