@@ -14,6 +14,12 @@ struct LyricsView: View {
         var id: String { track.id }
     }
     @State private var editor: EditorRequest?
+    private struct RepairRequest: Hashable {
+        let track: AudioTrack
+        static func == (lhs:Self,rhs:Self) -> Bool { lhs.track.id == rhs.track.id }
+        func hash(into hasher:inout Hasher) { hasher.combine(track.id) }
+    }
+    @State private var repair: RepairRequest?
     private var lyrics: LyricsDocument { player.currentDetails?.lyrics ?? LyricsDocument(text: "") }
     private var active: Int? { lyrics.activeLine(at: player.currentTime, offset: offset) }
 
@@ -31,6 +37,10 @@ struct LyricsView: View {
                         Button("Añadir letra") { edit() }
                     }
                 } else {
+                    Button {
+                        if let track = player.current { repair = RepairRequest(track:track) }
+                    } label: { Label("Reparar letra con IA",systemImage:"text.badge.checkmark").frame(minHeight:44) }
+                        .accessibilityIdentifier("repairLyrics")
                     if !lyrics.isTimed {
                         Button { edit(synchronize: true) } label: {
                             Label("Sincronizar letra", systemImage: "waveform").frame(minHeight: 44)
@@ -79,6 +89,7 @@ struct LyricsView: View {
             .task(id: player.current?.id) { offset = UserDefaults.standard.double(forKey: "lyricsOffset.\(player.current?.id ?? "")") }
             .onChange(of: offset) { if let id = player.current?.id { UserDefaults.standard.set(offset, forKey: "lyricsOffset.\(id)") } }
             .sheet(item: $editor) { MetadataEditorView(player: player, track: $0.track, synchronizeLyricsOnOpen: $0.synchronize) }
+            .navigationDestination(item:$repair) { request in LyricsRepairView(player:player,track:request.track) }
         }
     }
     private func edit(synchronize: Bool = false) {

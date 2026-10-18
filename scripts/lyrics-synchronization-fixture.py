@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlparse
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--port', type=int, default=18092)
+parser.add_argument('--scenario', choices=['synchronization', 'repair'], default='synchronization')
 args = parser.parse_args()
 counts = {'catalog': 0, 'alignment': 0, 'transcription': 0}
 text = 'Primera línea de Sonora\nSegunda línea de Sonora'
@@ -49,6 +50,13 @@ class Handler(BaseHTTPRequestHandler):
             if set(fields) != {'file', *expected} or not fields['file'].startswith(b'RIFF') or any(fields[key] != value for key, value in expected.items()):
                 return self.reply(400, {})
             counts['transcription'] += 1
+            if args.scenario == 'repair':
+                transcript = 'Camino de cristal.\nVuelve la luz.\nVolvemos al hogar.'
+                words = []
+                for start, line in [(1, 'Camino de cristal.'), (8, 'Vuelve la luz.'), (16, 'Volvemos al hogar.')]:
+                    for index, word in enumerate(line.split()):
+                        words.append({'text': word, 'start': start + index * 0.4, 'end': start + index * 0.4 + 0.3, 'type': 'word'})
+                return self.reply(200, {'text': transcript, 'language_code': 'spa', 'words': words})
             transcript = 'Primera\u2028frase inventada. Segunda frase inventada.'
             return self.reply(200, {'text': transcript, 'language_code': 'spa',
                 'words': [{'text': word, 'start': 1 + (index // 3) * 7 + (index % 3) * 0.3, 'end': 1.2 + (index // 3) * 7 + (index % 3) * 0.3, 'type': 'word'}

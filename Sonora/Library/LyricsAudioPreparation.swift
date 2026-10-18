@@ -5,6 +5,15 @@ import SonoraCore
 /// A bounded in-memory upload, decoded through the same format support as playback.
 /// No temporary audio file or original-file mutation is needed.
 enum LyricsAudioPreparation {
+    /// Container metadata can estimate VBR duration. Use the playback decoder's
+    /// frame count to preflight repair without decoding or uploading PCM yet.
+    static func duration(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint) async throws -> Double {
+        try await CoordinatedAudioRead.read(track:track,folder:folder,expected:expected) { url, _ in
+            let source = try AudioDecoders.open(url,cue:track.cue)
+            defer { try? source.close() }
+            return Double(source.length) / source.processingFormat.sampleRate
+        }
+    }
     static func prepare(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint) async throws -> Data {
         try await CoordinatedAudioRead.read(track: track, folder: folder, expected: expected) { url, _ in
             let source = try AudioDecoders.open(url, cue: track.cue)
