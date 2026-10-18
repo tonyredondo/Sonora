@@ -50,6 +50,7 @@ impl TranscriptionInput {
         let out: Output = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
         if out.text.len() > MAX_TEXT_BYTES
             || out.text.contains('\0')
+            || contains_lrc_control(&out.text)
             || out.language_code.as_ref().is_some_and(|s| {
                 s.len() > 32 || !s.chars().all(|c| c.is_ascii_alphabetic() || c == '-')
             })
@@ -59,7 +60,7 @@ impl TranscriptionInput {
         let mut transcript = String::new();
         let mut words = Vec::new();
         let mut previous = 0.0;
-        for word in out.words {
+        for word in &out.words {
             if !word.start.is_finite()
                 || !word.end.is_finite()
                 || word.start < previous
@@ -79,7 +80,13 @@ impl TranscriptionInput {
                 if word.end <= word.start {
                     return Err(invalid());
                 }
-                words.push((transcript.len(), word.start, word.end));
+                let prefix_end = word.text.find(char::is_alphanumeric).ok_or_else(invalid)?;
+                words.push((
+                    transcript.len(),
+                    word.start,
+                    word.end,
+                    &word.text[..prefix_end],
+                ));
                 transcript.push_str(&token);
             }
         }
@@ -102,13 +109,34 @@ impl TranscriptionInput {
         for pair in words.windows(2) {
             let (prior, next) = (pair[0], pair[1]);
             let prior_byte = *positions.get(&prior.0).ok_or_else(invalid)?;
-            let next_byte = *positions.get(&next.0).ok_or_else(invalid)?;
+            let next_content_byte = *positions.get(&next.0).ok_or_else(invalid)?;
+            // Leading quotes belong to their provider word, rather than the
+            // previous phrase. Only move a prefix that matches the original text.
+            let next_byte = out.text[..next_content_byte]
+                .strip_suffix(next.3)
+                .map_or(next_content_byte, str::len);
             let between = &out.text[prior_byte..next_byte];
             let (line_byte, line_time) = *starts.last().ok_or_else(invalid)?;
             if between
-                .trim_end()
+                .trim_end_matches(|c: char| {
+                    c.is_whitespace()
+                        || matches!(
+                            c,
+                            '"' | '\''
+                                | '”'
+                                | '’'
+                                | '»'
+                                | '›'
+                                | '」'
+                                | '』'
+                                | ')'
+                                | '）'
+                                | ']'
+                                | '}'
+                        )
+                })
                 .ends_with(['.', '?', '!', '。', '？', '！'])
-                || between.contains('\n')
+                || out.text[prior_byte..next_content_byte].contains(is_line_break)
                 || next.1 - prior.2 >= 0.8
                 || out.text[line_byte..next_byte].chars().count() >= 56
                 || next.1 - line_time >= 6.0
@@ -120,9 +148,14 @@ impl TranscriptionInput {
         let mut synced = Vec::new();
         for (index, &(byte, time)) in starts.iter().enumerate() {
             let end = starts.get(index + 1).map_or(out.text.len(), |s| s.0);
-            let text = out.text[byte..end].trim();
+            // A provider word can itself contain a paragraph break. Keep its known
+            // time and flatten that internal break rather than emitting an untimed line.
+            let text: String = out.text[byte..end]
+                .trim()
+                .chars()
+                .map(|c| if is_line_break(c) { ' ' } else { c })
+                .collect();
             let ticks = (time * 100.0).floor() as u64;
-            plain.push(text);
             synced.push(format!(
                 "[{:02}:{:02}.{:02}]{}",
                 ticks / 6000,
@@ -130,6 +163,7 @@ impl TranscriptionInput {
                 ticks % 100,
                 text
             ));
+            plain.push(text);
         }
         Ok(Transcription {
             plain_lyrics: plain.join("\n"),
@@ -140,6 +174,49 @@ impl TranscriptionInput {
             language_code: out.language_code,
         })
     }
+}
+
+// Match Foundation's newline characters: these delimit lyric lines on the iPhone.
+fn is_line_break(c: char) -> bool {
+    matches!(
+        c,
+        '\n' | '\r' | '\u{b}' | '\u{c}' | '\u{85}' | '\u{2028}' | '\u{2029}'
+    )
+}
+
+// Literal LRC timing/offset tags in a transcript would be interpreted as controls
+// by the reader. Reject them before the derived result becomes an immutable cache hit.
+fn contains_lrc_control(text: &str) -> bool {
+    let digits = |s: &str| !s.is_empty() && s.chars().all(char::is_numeric);
+    let mut start = None;
+    for (byte, c) in text.char_indices() {
+        if c == '[' {
+            start = Some(byte + 1);
+        } else if c == ']' {
+            let Some(begin) = start.take() else { continue };
+            let Some((prefix, value)) = text[begin..byte].split_once(':') else {
+                continue;
+            };
+            if prefix.eq_ignore_ascii_case("offset") {
+                if digits(value.strip_prefix(['+', '-']).unwrap_or(value)) {
+                    return true;
+                }
+                continue;
+            }
+            let (seconds, fraction) = value
+                .split_once(['.', ':'])
+                .map_or((value, None), |(s, f)| (s, Some(f)));
+            if prefix.chars().count() <= 3
+                && digits(prefix)
+                && seconds.chars().count() == 2
+                && digits(seconds)
+                && fraction.is_none_or(|f| f.chars().count() <= 3 && digits(f))
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 impl Client {
@@ -170,5 +247,79 @@ impl Client {
             fetched_at: result.entry.stored_at,
             data,
         })
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    fn input() -> TranscriptionInput {
+        TranscriptionInput {
+            audio: Bytes::new(),
+            duration: 2.0,
+        }
+    }
+    #[test]
+    fn all_line_separators_produce_complete_lrc_lines() {
+        for separator in [
+            "\n", "\r", "\r\n", "\u{b}", "\u{c}", "\u{85}", "\u{2028}", "\u{2029}",
+        ] {
+            let value = serde_json::json!({"text":format!("Hello{separator}Again"), "words":[
+                {"text":"Hello","type":"word","start":0.1,"end":0.5},
+                {"text":"Again","type":"word","start":1.1,"end":1.5}]});
+            let result = input().transcribed(&value).unwrap();
+            assert_eq!(
+                result.synced_lyrics, "[00:00.10]Hello\n[00:01.10]Again",
+                "{separator:?}"
+            );
+        }
+        let result = input()
+            .transcribed(&serde_json::json!({"text":"Hello\nAgain", "words":[
+                {"text":"Hello","type":"word","start":0.1,"end":0.5},
+                {"text":"\nAgain","type":"word","start":0.6,"end":1.0}]}))
+            .unwrap();
+        assert_eq!(result.synced_lyrics, "[00:00.10]Hello\n[00:00.60]Again");
+    }
+    #[test]
+    fn line_breaks_inside_a_provider_word_cannot_create_untimed_lines() {
+        let result = input()
+            .transcribed(&serde_json::json!({"text":"Hello\nAgain", "words":[
+            {"text":"Hello\nAgain","type":"word","start":0.1,"end":1.5}]}))
+            .unwrap();
+        assert_eq!(result.synced_lyrics, "[00:00.10]Hello Again");
+    }
+    #[test]
+    fn quotation_marks_stay_with_their_phrase_and_do_not_hide_sentence_endings() {
+        for (text, first, second) in [
+            ("Hello. “Again!”", "Hello.", "“Again!”"),
+            ("“Hello!” Again.", "“Hello!”", "Again."),
+            ("你好。「世界！」", "你好。", "「世界！」"),
+        ] {
+            let result = input()
+                .transcribed(&serde_json::json!({"text":text,"words":[
+                {"text":first,"type":"word","start":0.1,"end":0.5},
+                {"text":second,"type":"word","start":0.6,"end":1.0}]}))
+                .unwrap();
+            assert_eq!(
+                result.synced_lyrics,
+                format!("[00:00.10]{first}\n[00:00.60]{second}")
+            );
+        }
+    }
+    #[test]
+    fn provider_text_cannot_inject_lrc_timestamps_or_global_offsets() {
+        for text in [
+            "Hello [00:01] Again",
+            "Hello [99:90] Again",
+            "Hello [٠٠:٠١] Again",
+            "Hello [offset:-3000] Again",
+        ] {
+            assert!(
+                input()
+                    .transcribed(&serde_json::json!({"text":text,"words":[
+                {"text":text,"type":"word","start":0.1,"end":1.5}]}))
+                    .is_err()
+            );
+        }
     }
 }

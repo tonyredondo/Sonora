@@ -23,7 +23,7 @@ impl AudioJob {
                 hash.update(digest(input.text.as_bytes()));
             }
             Self::Transcription(input) => {
-                hash.update(b"\0transcription-lines-v1\0");
+                hash.update(b"\0transcription-lines-v2\0");
                 hash.update(MODEL_ID);
                 hash.update(b"\0word\0no-events\0no-diarization\0");
                 hash.update(digest(&input.audio));

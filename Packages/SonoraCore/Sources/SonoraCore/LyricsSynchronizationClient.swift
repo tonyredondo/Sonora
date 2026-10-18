@@ -10,7 +10,8 @@ public struct LyricsSynchronizationResult: Codable, Sendable, Equatable {
     public static func catalog(text: String, existing: String, duration: Double) -> Self? {
         let document = LyricsDocument(text: text)
         let content = text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty && $0.range(of: #"^\[(ar|al|ti|au|by|re|ve|length|offset):"#, options: [.regularExpression, .caseInsensitive]) == nil }
-        guard !document.lines.isEmpty, document.lines.count == content.count else { return nil }
+        guard !document.lines.isEmpty, document.lines.count == content.count,
+              document.lines.allSatisfy({ $0.time.map { $0.isFinite && $0 >= 0 && $0 <= duration } ?? false }) else { return nil }
         var previous = 0.0
         for raw in content {
             let parsed = LyricsDocument(text: raw).lines
@@ -73,6 +74,7 @@ public actor LyricsSynchronizationClient {
             guard wasAITranscribed else { return result }
             return MetadataLookupResult(value: LyricsSynchronizationResult(text: LyricsDocument.aiTranscriptionMarker + "\n" + result.value.text, source: result.value.source), savedAt: result.savedAt, warning: result.warning)
         }
+        var catalogFailure: MetadataLookupError?
         try Task.checkCancellation()
         if !query.title.isEmpty && !query.artist.isEmpty && !query.album.isEmpty {
             do {
@@ -83,7 +85,7 @@ public actor LyricsSynchronizationClient {
                     return attributed(MetadataLookupResult(value: result, savedAt: found.savedAt, warning: found.warning))
                 }
                 // A stale catalog result after a network error is not proof of a fresh miss.
-                if !offline && found.warning != nil { throw MetadataLookupError.unavailable }
+                if !offline && found.warning != nil { catalogFailure = .unavailable }
                 if knownText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                    !found.value.instrumental, abs(found.value.duration - duration) <= 2,
                    let plain = found.value.plainLyrics, !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -92,16 +94,35 @@ public actor LyricsSynchronizationClient {
                 }
             } catch MetadataLookupError.notFound { }
               catch MetadataLookupError.notCached where offline { }
+              catch MetadataLookupError.unavailable { catalogFailure = .unavailable }
         }
-        guard (1...600).contains(duration) else { throw LyricsSynchronizationError.unsupportedDuration }
+        // A failed catalog lookup allows local cache reads, never another paid operation.
+        // An empty cache cannot contain an analysis, so avoid decoding audio in that case.
+        if let catalogFailure, (try? await cache.size()) == 0 { throw catalogFailure }
+        guard (1...600).contains(duration) else {
+            if let catalogFailure { throw catalogFailure }
+            throw LyricsSynchronizationError.unsupportedDuration
+        }
         try Task.checkCancellation()
         let pcm = try await audio()
         try Task.checkCancellation()
         let pcmDuration = try Self.pcmDuration(pcm)
-        if knownText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return try await transcribe(audio: pcm, duration: pcmDuration, offline: offline)
+        do {
+            let result: MetadataLookupResult<LyricsSynchronizationResult>
+            let cacheOnly = offline || catalogFailure != nil
+            if knownText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                result = try await transcribe(audio: pcm, duration: pcmDuration, offline: cacheOnly)
+            } else {
+                result = attributed(try await align(audio: pcm, lyrics: knownText, duration: pcmDuration, offline: cacheOnly))
+            }
+            if catalogFailure != nil {
+                return MetadataLookupResult(value: result.value, savedAt: result.savedAt, warning: "No se pudo consultar LRCLIB. Se muestra el análisis guardado.")
+            }
+            return result
+        } catch MetadataLookupError.notCached {
+            if let catalogFailure { throw catalogFailure }
+            throw MetadataLookupError.notCached
         }
-        return attributed(try await align(audio: pcm, lyrics: knownText, duration: pcmDuration, offline: offline))
     }
     private struct Alignment: Codable {
         let plain_lyrics: String
@@ -119,7 +140,7 @@ public actor LyricsSynchronizationClient {
             let value = try JSONDecoder().decode(MetadataProxyEnvelope<Alignment>.self, from: data).data
             guard value.audio_sha256 == audioHash, value.text_sha256 == textHash, value.plain_lyrics == lyrics,
                   value.duration.isFinite, abs(value.duration - duration) <= 0.1,
-                  let valid = LyricsSynchronizationResult.catalog(text: value.synced_lyrics, existing: lyrics, duration: value.duration) else { throw LyricsSynchronizationError.invalidAlignment }
+                  let valid = LyricsSynchronizationResult.catalog(text: value.synced_lyrics, existing: lyrics, duration: duration) else { throw LyricsSynchronizationError.invalidAlignment }
             return LyricsSynchronizationResult(text: valid.text, source: .elevenlabs)
         }
         // Immutable analysis is reused until explicitly cleared/evicted, including after relaunch.
@@ -156,8 +177,9 @@ public actor LyricsSynchronizationClient {
             guard value.audio_sha256 == audioHash, value.model_id == "scribe_v2",
                   value.duration.isFinite, abs(value.duration - duration) <= 0.1 else { throw LyricsSynchronizationError.invalidAlignment }
             if value.plain_lyrics.isEmpty && value.synced_lyrics.isEmpty { return nil }
-            guard value.plain_lyrics.utf8.count <= 65_536, !value.plain_lyrics.contains("\0"),
-                  let valid = LyricsSynchronizationResult.catalog(text: value.synced_lyrics, existing: value.plain_lyrics, duration: value.duration) else { throw LyricsSynchronizationError.invalidAlignment }
+            guard !value.plain_lyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  value.plain_lyrics.utf8.count <= 65_536, !value.plain_lyrics.contains("\0"),
+                  let valid = LyricsSynchronizationResult.catalog(text: value.synced_lyrics, existing: value.plain_lyrics, duration: duration) else { throw LyricsSynchronizationError.invalidAlignment }
             return LyricsSynchronizationResult(text: LyricsDocument.aiTranscriptionMarker + "\n" + valid.text, source: .elevenlabsTranscription)
         }
         if let old = try await cache.read(key: key) {

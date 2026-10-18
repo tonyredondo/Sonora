@@ -49,9 +49,10 @@ class Handler(BaseHTTPRequestHandler):
             if set(fields) != {'file', *expected} or not fields['file'].startswith(b'RIFF') or any(fields[key] != value for key, value in expected.items()):
                 return self.reply(400, {})
             counts['transcription'] += 1
-            return self.reply(200, {'text': 'Primera frase inventada. Segunda frase inventada.', 'language_code': 'spa',
+            transcript = 'Primera\u2028frase inventada. Segunda frase inventada.'
+            return self.reply(200, {'text': transcript, 'language_code': 'spa',
                 'words': [{'text': word, 'start': 1 + (index // 3) * 7 + (index % 3) * 0.3, 'end': 1.2 + (index // 3) * 7 + (index % 3) * 0.3, 'type': 'word'}
-                          for index, word in enumerate('Primera frase inventada. Segunda frase inventada.'.split())]})
+                          for index, word in enumerate(transcript.split())]})
         if set(fields) != {'file', 'text'} or not fields['file'].startswith(b'RIFF'):
             return self.reply(400, {})
         counts['alignment'] += 1
