@@ -8,7 +8,8 @@ import XCTest
 private actor RepairAudioFixture: MetadataLookupTransport {
     private(set) var calls = 0
     let missingVerse: Bool
-    init(missingVerse: Bool = true) { self.missingVerse = missingVerse }
+    let boundaryAddition: Bool
+    init(missingVerse: Bool = true, boundaryAddition: Bool = false) { self.missingVerse = missingVerse; self.boundaryAddition = boundaryAddition }
     func send(_ request: URLRequest) async throws -> MetadataHTTPResponse {
         calls += 1
         XCTAssertEqual(request.url?.path,"/v1/lyrics/transcribe")
@@ -16,8 +17,9 @@ private actor RepairAudioFixture: MetadataLookupTransport {
         let count = body[(start + 40)..<(start + 44)].enumerated().reduce(0) { $0 | Int($1.element) << ($1.offset * 8) }
         let audio = Data(body[start..<(start + 44 + count)])
         let hash = SHA256.hash(data:audio).map { String(format:"%02x",$0) }.joined()
-        let plain = missingVerse ? "Bright road\nWalk beside me\nWe return" : "Bright road\nWe return"
-        let synced = missingVerse ? "[00:00.10]Bright road\n[00:01.40]Walk beside me\n[00:03.10]We return" : "[00:00.10]Bright road\n[00:03.10]We return"
+        let first = boundaryAddition ? "Bright road again" : "Bright road", last = boundaryAddition ? "Now return" : "We return"
+        let plain = missingVerse ? first + "\nWalk beside me\n" + last : first + "\n" + last
+        let synced = "[00:00.10]" + first + (missingVerse ? "\n[00:01.40]Walk beside me" : "") + "\n[00:03.10]" + last
         let value: [String:Any] = ["plain_lyrics":plain,"synced_lyrics":synced,"audio_sha256":hash,"duration":Double(count) / 32000,"model_id":"scribe_v2"]
         return MetadataHTTPResponse(data:try JSONSerialization.data(withJSONObject:["sources":[],"data":value]),status:200,contentType:"application/json")
     }
@@ -34,6 +36,47 @@ private actor CancelledRepairFixture: MetadataLookupTransport {
 }
 
 final class LyricsRepairSessionTests: XCTestCase {
+    @MainActor func testBoundaryCompletionAndCorrectionKeepTheirTimesThroughSaveAndOfflineReuse() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+        defer { try? FileManager.default.removeItem(at:root) }
+        let url = root.appendingPathComponent("repair.mp3")
+        try FileManager.default.copyItem(at:XCTUnwrap(Bundle(for:Self.self).url(forResource:"lyrics-repair-vbr",withExtension:"mp3")),to:url)
+        let suite = "SonoraTests.RepairBoundary.\(UUID().uuidString)", defaults = try XCTUnwrap(UserDefaults(suiteName:suite))
+        defer { defaults.removePersistentDomain(forName:suite) }
+        let tokens = MetadataTokenStore(service:suite); defer { try? tokens.remove() }
+        let settings = MetadataAssistantSettings(defaults:defaults,tokens:tokens,cache:MetadataLookupCache(directory:root.appendingPathComponent("cache")))
+        try settings.save(endpoint:"http://127.0.0.1:18444",token:"synthetic-repair-token")
+        let player = PlaybackController(defaults:defaults), transport = RepairAudioFixture(boundaryAddition:true)
+        defer { player.stop() }
+        await player.loadFolder(root,autoPlay:false)
+        let track = try XCTUnwrap(AudioTrack(relativePath:"repair.mp3"))
+        let initial = try await player.readMetadata(for:track)
+        try await player.saveMetadata(for:track,expected:initial.fingerprint,patch:MetadataPatch(values:[.lyrics:"[00:00.10]Bright road\n[00:03.10]We return"]))
+        let before = try await player.readMetadata(for:track)
+        let identity = try await AudioContentIdentity.read(track:track,folder:player.folderAccess(for:track),expected:before.fingerprint)
+        let session = LyricsRepairSession(player:player,track:track,settings:settings,transport:transport)
+        await session.load(); await session.analyze()
+        XCTAssertNil(session.issue)
+        for change in try XCTUnwrap(session.review).proposals { session.accept(change) }
+        session.onlyCompletions = true
+        XCTAssertEqual(LyricsDocument(text:try session.draft()).lines.map(\.text),["Bright road again","Walk beside me","We return"])
+        session.onlyCompletions = false
+        let draft = try session.draft()
+        XCTAssertEqual(LyricsDocument(text:draft).lines.map(\.time),[0.1,1.4,3.1])
+        await session.save(draft)
+        XCTAssertTrue(session.saved); XCTAssertNil(session.issue)
+        let written = try await player.readMetadata(for:track)
+        XCTAssertEqual(LyricsDocument(text:written.values[.lyrics] ?? "").lines.map(\.text),["Bright road again","Walk beside me","Now return"])
+        XCTAssertEqual(LyricsDocument(text:written.values[.lyrics] ?? "").lines.map(\.time),[0.1,1.4,3.1])
+        let after = try await AudioContentIdentity.read(track:track,folder:player.folderAccess(for:track),expected:written.fingerprint)
+        XCTAssertEqual(identity,after)
+        settings.offline = true
+        let reopened = LyricsRepairSession(player:player,track:track,settings:settings,transport:transport)
+        await reopened.load(); await reopened.analyze()
+        XCTAssertNil(reopened.issue); XCTAssertTrue(reopened.isCached); XCTAssertTrue(reopened.review?.proposals.isEmpty == true)
+        let calls = await transport.calls; XCTAssertEqual(calls,1)
+    }
     @MainActor func testVariableBitrateMP3UsesDecodedDurationForRepair() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)

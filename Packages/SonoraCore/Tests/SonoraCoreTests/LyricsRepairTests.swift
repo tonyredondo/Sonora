@@ -90,6 +90,31 @@ final class LyricsRepairTests: XCTestCase {
             XCTAssertLessThanOrEqual(text.components(separatedBy:"Walk beside me").count,2)
         }
     }
+    func testBoundaryAdditionsStayIndependentFromTheNeighboringWordCorrection() throws {
+        for trailing in [false,true] {
+          for middle in [false,true] {
+            for detailed in [false,true] {
+              for timed in [false,true] {
+                let original = timed ? "[00:01.00]Bright road\n[00:05.00]We return" : "Bright road\nWe return"
+                let first = trailing ? "Bright road again" : "Bright path"
+                let last = trailing ? "Now return" : "Now We return"
+                let lines: [(Double,String)] = [(1,first)] + (middle ? [(3,"Walk beside me")] : []) + [(5,last)]
+                let source = lines.map { String(format:"[00:%02d.00]",Int($0.0)) + $0.1 }.joined(separator:"\n")
+                let words = lines.flatMap { start,text in text.split(separator:" ").enumerated().map { LyricsTranscript.Word(text:String($0.element),start:start + Double($0.offset) * 0.3,end:start + Double($0.offset) * 0.3 + 0.2) } }
+                let review = try LyricsRepair(original:original,transcript:.init(plainText:lines.map(\.1).joined(separator:"\n"),syncedText:source,duration:8,words:detailed ? words : nil))
+                XCTAssertEqual(review.proposals.filter { $0.kind == .correction }.count,1)
+                XCTAssertEqual(review.proposals.filter { $0.kind == .completion }.count,middle ? 2 : 1)
+                let edits = Dictionary(uniqueKeysWithValues:review.proposals.map { ($0.id,LyricsRepair.Edit(text:$0.suggested)) })
+                let written = LyricsDocument(text:try review.applying(edits))
+                XCTAssertEqual(written.lines.map(\.text),lines.map(\.1))
+                XCTAssertEqual(written.lines.map(\.time),timed ? lines.map { Optional($0.0) } : Array(repeating:nil,count:lines.count))
+                let completed = LyricsDocument(text:try review.applying(edits,onlyCompletions:true))
+                XCTAssertEqual(completed.lines.map(\.text),[trailing ? first : "Bright road"] + (middle ? ["Walk beside me"] : []) + [trailing ? "We return" : last])
+              }
+            }
+          }
+        }
+    }
     func testWordRepairsPreserveInstrumentalPauseCues() throws {
         let review = try LyricsRepair(original:"[00:01.00]Bright roan\n[00:02.00]\n[00:05.00]We return",transcript:transcript("[00:01.00]Bright road\n[00:05.00]We return"))
         let proposal = try XCTUnwrap(review.proposals.first)

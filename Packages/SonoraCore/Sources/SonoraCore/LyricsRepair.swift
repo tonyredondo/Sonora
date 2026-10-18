@@ -134,13 +134,26 @@ public struct LyricsRepair: Sendable {
                 }
                 continue
             }
-            // Detach additions only while the transcript's matched context stays
-            // inside this original phrase. Otherwise an inserted line could fall
-            // inside a replacement and be included twice or moved out of order.
-            let staysInsidePhrase = b.allSatisfy { sourceOwners[source[$0].line,default:[]].isSubset(of:affected) }
-            if !neighborsShareLine && affected.count == 1 && affected.allSatisfy({ matchedLines.contains($0) }) && staysInsidePhrase {
-                for lineIndex in Set(b.map { source[$0].line }).sorted() where sourceOwners[lineIndex,default:[]].isEmpty {
-                    let group = b.filter { source[$0].line == lineIndex }
+            let canSeparateAdditions = !neighborsShareLine && affected.count == 1 && affected.isSubset(of:matchedLines)
+            if canSeparateAdditions {
+                // An unchanged neighbor can own a suffix/prefix in the same diff
+                // gap as this correction. Keep it on that neighbor, at its time.
+                for lineIndex in Set(rest.map { source[$0].line }).sorted() {
+                    let owners = sourceOwners[lineIndex,default:[]]
+                    guard owners.count == 1, let owner = owners.first, !affected.contains(owner),
+                          owner == previousLine || owner == nextLine else { continue }
+                    let group = rest.filter { source[$0].line == lineIndex }
+                    let offset = owner == nextLine ? base[next.0].start : parsed[owner].text.utf16.count
+                    add(.completion,Anchor(first:owner,start:offset,last:owner,end:offset,insert:true,separate:false),"",Self.fragment(source,indices:group,lines:sourceLines),group)
+                    rest.removeAll { source[$0].line == lineIndex }
+                }
+            }
+            // Detach whole additions only while the remaining matched context
+            // stays inside this phrase; ambiguous replacements stay together.
+            let staysInsidePhrase = rest.allSatisfy { sourceOwners[source[$0].line,default:[]].isSubset(of:affected) }
+            if canSeparateAdditions && staysInsidePhrase {
+                for lineIndex in Set(rest.map { source[$0].line }).sorted() where sourceOwners[lineIndex,default:[]].isEmpty {
+                    let group = rest.filter { source[$0].line == lineIndex }
                     guard group.count == sourceCounts[lineIndex] else { continue }
                     let following = matches.first { $0.1 > (group.last ?? -1) }
                     let before = following.map { base[$0.0].line } ?? parsed.count
