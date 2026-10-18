@@ -35,6 +35,7 @@ async fn approved_synthetic_elevenlabs_alignment() {
     let root = TempDir::new().unwrap();
     let mut config = Config::default();
     config.cache.path = root.path().join("cache.sqlite");
+    config.metadata.path = root.path().join("metadata.sqlite");
     config.elevenlabs.api_key = Some(key);
     // The paid scheduler also enforces zero retries regardless of this setting.
     config.network.max_retries = 0;

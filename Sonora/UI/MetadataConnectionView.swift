@@ -3,6 +3,7 @@ import SwiftUI
 
 struct MetadataConnectionView: View {
     @State private var settings = MetadataAssistantSettings.shared
+    @State private var archive = MetadataArchiveController.shared
     @State private var endpoint = ""
     @State private var token = ""
     @State private var savedToken = ""
@@ -40,10 +41,26 @@ struct MetadataConnectionView: View {
                 if let message { Text(message).font(.footnote).accessibilityIdentifier("metadataConnectionMessage") }
                 if let issue = settings.configurationIssue { Text(issue).foregroundStyle(.red) }
             }
-            Section("Guardado en este iPhone") {
+            Section("Copias de tus ediciones") {
+                LabeledContent("Pendientes de enviar",value:String(archive.pending))
+                    .accessibilityIdentifier("metadataArchivePending")
+                if archive.otherServersPending > 0 {
+                    Text("\(archive.otherServersPending) copias pendientes pertenecen a otra dirección. Vuelve a guardar esa conexión para enviarlas.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                if archive.synchronizing { ProgressView("Guardando copias en el servidor…") }
+                if let issue = archive.issue { Text(issue).foregroundStyle(.secondary) }
+                Button("Enviar copias pendientes") { archive.retry() }
+                    .disabled(archive.synchronizing || settings.effectiveOffline || archive.destination == nil)
+                    .accessibilityIdentifier("retryMetadataArchive")
+                Text("Al guardar etiquetas se conserva una copia de la información, carátula y letra. El audio se queda en tu iPhone. Sin conexión, las copias esperan a que vuelvas a conectarte o abras Sonora. Puedes recuperarlas desde Información → Recuperar información guardada.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if archive.destination == nil { Text("Configura la conexión para guardar nuevas ediciones en el servidor. Las copias actuales siguen en este iPhone.").font(.footnote).foregroundStyle(.secondary) }
+            }
+            Section("Caché de consultas en este iPhone") {
                 LabeledContent("Información, letras y carátulas", value: ByteCountFormatter.string(fromByteCount: Int64(cacheBytes), countStyle: .file))
                 Button("Borrar información guardada", role: .destructive) { confirmClear = true }
-                Text("Hasta 100 MB. Borrarla no cambia tu música ni sus etiquetas. Las consultas nuevas necesitan conexión.")
+                Text("Hasta 100 MB. Borrarla no cambia tu música, sus etiquetas ni las copias de tus ediciones. Las consultas nuevas necesitan conexión.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }

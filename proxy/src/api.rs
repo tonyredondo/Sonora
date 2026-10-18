@@ -3,6 +3,7 @@
 use crate::{
     config::{Config, Provider},
     jobs::{BatchInput, Jobs},
+    metadata_archive::{ArchiveError, MetadataArchive, MetadataRecord},
     providers::{Client, Error, Priority, TrackInput},
 };
 use axum::{
@@ -25,6 +26,7 @@ struct App {
     jobs: Jobs,
     token: Option<Arc<[u8]>>,
     uploads: Arc<tokio::sync::Semaphore>,
+    metadata: MetadataArchive,
 }
 
 /// Must be constructed inside a Tokio runtime. Dropping the last router cancels its jobs.
@@ -35,7 +37,10 @@ pub fn router(config: Config) -> Result<Router, Error> {
         .as_ref()
         .map(|token| Arc::from(format!("Bearer {token}").into_bytes()));
     let client = Client::new(config)?;
+    let metadata =
+        MetadataArchive::open(&client.config().metadata).map_err(|_| Error::Configuration)?;
     let state = App {
+        metadata,
         jobs: Jobs::new(client.clone()),
         uploads: Arc::new(tokio::sync::Semaphore::new(4)),
         client,
@@ -48,6 +53,15 @@ pub fn router(config: Config) -> Result<Router, Error> {
         )
         .route("/v1/recordings", get(search))
         .route("/v1/status", get(status))
+        .route("/v1/audio/{audio_id}/metadata", get(metadata_copies))
+        .route(
+            "/v1/metadata-records/{id}",
+            get(metadata_copy)
+                .put(save_metadata_copy)
+                .layer(DefaultBodyLimit::max(
+                    crate::metadata_archive::MAX_RECORD_BYTES,
+                )),
+        )
         .route("/v1/recordings/{id}", get(recording))
         .route("/v1/releases/{id}", get(release))
         .route("/v1/lyrics", get(lyrics))
@@ -88,7 +102,69 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
             )
         })
         .collect();
-    Json(json!({"providers":providers}))
+    Json(json!({"providers":providers,"metadata_archive_version":1}))
+}
+
+impl IntoResponse for ArchiveError {
+    fn into_response(self) -> Response {
+        let (status, code) = match self {
+            Self::Invalid => (StatusCode::BAD_REQUEST, "invalid_metadata"),
+            Self::Conflict => (StatusCode::CONFLICT, "metadata_conflict"),
+            Self::Full => (StatusCode::INSUFFICIENT_STORAGE, "metadata_storage_full"),
+            Self::Storage => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "metadata_storage_unavailable",
+            ),
+        };
+        (
+            status,
+            Json(json!({"error":code,"message":self.to_string()})),
+        )
+            .into_response()
+    }
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MetadataPageInput {
+    before: Option<i64>,
+}
+async fn metadata_copies(
+    State(app): State<App>,
+    Path(audio_id): Path<String>,
+    Query(query): Query<MetadataPageInput>,
+) -> Result<impl IntoResponse, ArchiveError> {
+    Ok(Json(app.metadata.list(audio_id, query.before).await?))
+}
+async fn metadata_copy(
+    State(app): State<App>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ArchiveError> {
+    Ok(match app.metadata.get(id).await? {
+        Some(record) => Json(record).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"metadata_not_found"})),
+        )
+            .into_response(),
+    })
+}
+async fn save_metadata_copy(
+    State(app): State<App>,
+    Path(id): Path<Uuid>,
+    Json(record): Json<MetadataRecord>,
+) -> Result<impl IntoResponse, ArchiveError> {
+    if id != record.id {
+        return Err(ArchiveError::Invalid);
+    }
+    let created = app.metadata.put(record).await?;
+    Ok((
+        if created {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(json!({"id":id})),
+    ))
 }
 async fn authorize(State(app): State<App>, request: Request<Body>, next: Next) -> Response {
     if request.uri().path() != "/health" {

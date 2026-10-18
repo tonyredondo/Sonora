@@ -12,8 +12,8 @@ struct SonoraApp: App {
                 .preferredColorScheme(appearance.colorScheme)
                 .task { await AppServices.shared.restore() }
                 .onChange(of: phase) {
-                    if phase == .active { Task { await player.linkImports.restore() } }
-                    else { player.save() }
+                    if phase == .active { player.metadataArchive?.start(); Task { await player.linkImports.restore() } }
+                    else { player.save(); player.metadataArchive?.pause() }
                 }
         }
     }

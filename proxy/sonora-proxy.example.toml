@@ -19,6 +19,14 @@ max_bytes = 536870912
 max_entries = 10000
 negative_ttl_seconds = 300
 
+[metadata]
+# Permanent confirmed edits, separate from the provider cache. No TTL or LRU eviction.
+# Defaults to the user's platform application-data directory under sonora-proxy/.
+# macOS: ~/Library/Application Support/sonora-proxy/metadata.sqlite
+# path = "./data/metadata.sqlite"
+# When full, new copies remain pending on the phone; existing records are kept.
+max_bytes = 5368709120
+
 [network]
 queue_capacity = 128
 deadline_seconds = 60

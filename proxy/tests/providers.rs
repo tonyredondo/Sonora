@@ -133,6 +133,7 @@ impl Fixture {
         });
         let mut config = Config::default();
         config.cache.path = directory.path().join("cache.sqlite");
+        config.metadata.path = directory.path().join("metadata.sqlite");
         config.musicbrainz.base_url = Some(base.clone());
         config.lrclib.base_url = Some(base.clone());
         config.cover_art.base_url = Some(base.clone());
@@ -547,6 +548,7 @@ async fn an_interrupted_download_is_retried_without_caching_partial_bytes() {
     });
     let mut config = Config::default();
     config.cache.path = directory.path().join("cache.sqlite");
+    config.metadata.path = directory.path().join("metadata.sqlite");
     config.lrclib.base_url = Some(base);
     config.network.max_retries = 1;
     let client = Client::new(config).unwrap();

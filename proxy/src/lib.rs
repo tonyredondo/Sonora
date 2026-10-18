@@ -6,6 +6,7 @@ mod audio_job;
 pub mod cache;
 pub mod config;
 pub mod jobs;
+pub mod metadata_archive;
 pub mod providers;
 mod scheduler;
 pub mod transcription;

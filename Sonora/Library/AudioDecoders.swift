@@ -3,16 +3,22 @@ import SFBAudioEngine
 import SonoraCore
 
 enum AudioDecoders {
+    /// Preserve all lossless source precision when deriving a content identity.
+    static func openForIdentity(_ url: URL, cue: CueSegment? = nil) throws -> any PCMDecoding {
+        let decoder = try openFile(url, nativeFormat: .pcmFormatFloat64)
+        if let cue { return try CuePCMDecoder(decoder, segment: cue) }
+        return decoder
+    }
     static func open(_ url: URL, cue: CueSegment? = nil) throws -> any PCMDecoding {
         let decoder = try openFile(url)
         if let cue { return try CuePCMDecoder(decoder, segment: cue) }
         return decoder
     }
-    private static func openFile(_ url: URL) throws -> any PCMDecoding {
+    private static func openFile(_ url: URL, nativeFormat: AVAudioCommonFormat = .pcmFormatFloat32) throws -> any PCMDecoding {
         // SFB 0.14's Core Audio callback reports EOF while probing valid short M4A
         // files. Read Apple containers directly, preserving the same PCM player.
         if ["m4a", "mp4", "aac", "caf"].contains(url.pathExtension.lowercased()) {
-            return try NativeFileDecoder(url: url)
+            return try NativeFileDecoder(url: url, commonFormat: nativeFormat)
         }
         let decoder = try AudioDecoder(url: url)
         try decoder.open()
@@ -34,8 +40,12 @@ private final class NativeFileDecoder: NSObject, PCMDecoding {
     var position: AVAudioFramePosition { file?.framePosition ?? 0 }
     var isOpen: Bool { file != nil }
 
-    init(url: URL) throws {
-        let file = try AVAudioFile(forReading: url)
+    init(url: URL, commonFormat: AVAudioCommonFormat = .pcmFormatFloat32) throws {
+        var file = try AVAudioFile(forReading: url, commonFormat: commonFormat, interleaved: false)
+        if commonFormat == .pcmFormatFloat64, file.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatAppleLossless {
+            // Content identity preserves ALAC's integer source precision.
+            file = try AVAudioFile(forReading:url,commonFormat:.pcmFormatInt32,interleaved:false)
+        }
         self.url = url
         self.file = file
         inputSource = try InputSource(for: url)
@@ -45,7 +55,7 @@ private final class NativeFileDecoder: NSObject, PCMDecoding {
         decodingIsLossless = [kAudioFormatLinearPCM, kAudioFormatAppleLossless].contains(file.fileFormat.streamDescription.pointee.mFormatID)
         super.init()
     }
-    func open() throws { if file == nil { file = try AVAudioFile(forReading: url) } }
+    func open() throws { if file == nil { file = try AVAudioFile(forReading: url, commonFormat: processingFormat.commonFormat, interleaved: processingFormat.isInterleaved) } }
     func close() throws { file = nil }
     func decode(into buffer: AVAudioBuffer) throws {
         guard let buffer = buffer as? AVAudioPCMBuffer else { throw CocoaError(.fileReadCorruptFile) }
