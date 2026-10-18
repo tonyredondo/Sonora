@@ -242,6 +242,25 @@ final class LyricsRepairTests: XCTestCase {
         XCTAssertEqual(splitResult.lines.map(\.text),["Bright road Walk with you We return"])
         XCTAssertEqual(splitResult.lines.map(\.time),[1])
     }
+    func testOffsetsCannotChangeLegacyPhraseMatching() throws {
+        let source = "[00:01.10]We sing brightly\n[00:01.60]home come home\n[00:02.10]Come back\n[00:03.10]Come back"
+        let originals = [
+            "[00:01.10]We sing softly\n[00:02.10]Come home\n[00:03.10]Come home",
+            "[offset:200]\n[00:01.30]We sing softly\n[00:02.30]Come home\n[00:03.30]Come home",
+            "[offset:-200]\n[00:00.90]We sing softly\n[00:01.90]Come home\n[00:02.90]Come home"
+        ]
+        for original in originals {
+            let review = try LyricsRepair(original:original,transcript:transcript(source,duration:4))
+            for only in [false,true] {
+                let edits = Dictionary(uniqueKeysWithValues:review.proposals.filter { $0.kind != .unrecognized }.map { ($0.id,LyricsRepair.Edit(text:$0.suggested)) })
+                do {
+                    let written = LyricsDocument(text:try review.applying(edits,onlyCompletions:only))
+                    XCTAssertEqual(written.lines.map(\.text),only ? ["We sing softly","home come home","Come home","Come home"] : ["We sing brightly","home come home","Come back","Come back"])
+                    XCTAssertEqual(written.lines.map(\.time),[1.1,1.6,2.1,3.1])
+                } catch { XCTFail("Equivalent offset timeline failed: \(original), complete only: \(only): \(error)") }
+            }
+        }
+    }
     func testMixedTimingIsRejectedInsteadOfDroppingUntimedWords() {
         XCTAssertThrowsError(try LyricsRepair(original:"[00:01.00]Bright road\nKeep these words",transcript:transcript("[00:01.00]Bright road")))
     }

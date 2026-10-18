@@ -83,9 +83,12 @@ public struct LyricsRepair: Sendable {
         // Older caches still have phrase starts. Shared starts keep repeated
         // words in their own interval without assuming word timing or requiring
         // both texts to split the intervening phrases into the same lines.
+        // LRC supports milliseconds. Offset subtraction can give equivalent
+        // starts slightly different floating-point values, so compare ticks.
+        func phraseTick(_ time: Double) -> Int { Int((time * 1000).rounded()) }
         let sharedPhraseTimes = timed && transcript.words == nil
-            ? Set(timedLines.map(\.1)).intersection(sourceLines.compactMap(\.time)).sorted() : []
-        func phraseWindow(_ token: Token) -> Int { sharedPhraseTimes.lastIndex { $0 <= (token.time ?? 0) } ?? -1 }
+            ? Set(timedLines.map { phraseTick($0.1) }).intersection(sourceLines.compactMap(\.time).map(phraseTick)).sorted() : []
+        func phraseWindow(_ token: Token) -> Int { sharedPhraseTimes.lastIndex { $0 <= phraseTick(token.time ?? 0) } ?? -1 }
         let baseKeys = base.map { $0.key + (timed ? "\0\(useClock ? $0.line : phraseWindow($0))" : "") }
         let sourceKeys = source.map { $0.key + (timed ? "\0\(useClock ? sourceOwner($0) : phraseWindow($0))" : "") }
         // The standard library diff avoids retaining a quadratic alignment matrix.

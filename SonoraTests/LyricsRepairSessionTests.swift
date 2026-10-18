@@ -48,13 +48,13 @@ final class LyricsRepairSessionTests: XCTestCase {
         let tokens = MetadataTokenStore(service:suite); defer { try? tokens.remove() }
         let settings = MetadataAssistantSettings(defaults:defaults,tokens:tokens,cache:MetadataLookupCache(directory:root.appendingPathComponent("cache")))
         try settings.save(endpoint:"http://127.0.0.1:18444",token:"synthetic-repair-token")
-        let source = "[00:00.10]We sing brightly\n[00:01.40]home come home\n[00:02.00]Come back\n[00:03.10]Come back"
+        let source = "[00:01.10]We sing brightly\n[00:01.60]home come home\n[00:02.10]Come back\n[00:03.10]Come back"
         let player = PlaybackController(defaults:defaults), transport = RepairAudioFixture(synced:source)
         defer { player.stop() }
         await player.loadFolder(root,autoPlay:false)
         let track = try XCTUnwrap(AudioTrack(relativePath:"repair.mp3"))
         let initial = try await player.readMetadata(for:track)
-        let original = "[offset:invalid]\n[offſet:500]\n[00:00.60]We sing softly\n[00:02.50]Come home\n[00:03.60]Come home"
+        let original = "[offset:invalid]\n[offſet:200]\n[00:01.30]We sing softly\n[00:02.30]Come home\n[00:03.30]Come home"
         try await player.saveMetadata(for:track,expected:initial.fingerprint,patch:MetadataPatch(values:[.lyrics:original]))
         let before = try await player.readMetadata(for:track), folder = try player.folderAccess(for:track)
         let identity = try await AudioContentIdentity.read(track:track,folder:folder,expected:before.fingerprint)
@@ -72,12 +72,12 @@ final class LyricsRepairSessionTests: XCTestCase {
         XCTAssertEqual(LyricsDocument(text:try session.draft()).lines.map(\.text),["We sing softly","home come home","Come home","Come home"])
         session.onlyCompletions = false
         let draft = try session.draft()
-        XCTAssertEqual(LyricsDocument(text:draft).lines.map(\.time),[0.1,1.4,2,3.1])
+        XCTAssertEqual(LyricsDocument(text:draft).lines.map(\.time),[1.1,1.6,2.1,3.1])
         await session.save(draft)
         XCTAssertTrue(session.saved); XCTAssertNil(session.issue)
         let written = try await player.readMetadata(for:track)
         XCTAssertEqual(LyricsDocument(text:written.values[.lyrics] ?? "").lines.map(\.text),["We sing brightly","home come home","Come back","Come back"])
-        XCTAssertEqual(LyricsDocument(text:written.values[.lyrics] ?? "").lines.map(\.time),[0.1,1.4,2,3.1])
+        XCTAssertEqual(LyricsDocument(text:written.values[.lyrics] ?? "").lines.map(\.time),[1.1,1.6,2.1,3.1])
         let after = try await AudioContentIdentity.read(track:track,folder:folder,expected:written.fingerprint)
         XCTAssertEqual(identity,after)
         let reopened = LyricsRepairSession(player:player,track:track,settings:settings,transport:transport)
