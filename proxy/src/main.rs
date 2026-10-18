@@ -38,6 +38,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter("sonora_proxy=info")
         .with_target(false)
+        .with_ansi(false)
         .init();
     let address = config.server.listen;
     let app = api::router(config)?;

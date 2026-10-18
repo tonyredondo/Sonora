@@ -35,23 +35,46 @@ public struct MetadataHTTPResponse: Sendable {
     public let data: Data
     public let status: Int
     public let contentType: String?
-    public init(data: Data, status: Int, contentType: String?) { self.data = data; self.status = status; self.contentType = contentType }
+    public let requestID: String?
+    public init(data: Data, status: Int, contentType: String?, requestID: String? = nil) {
+        self.data = data; self.status = status; self.contentType = contentType; self.requestID = requestID
+    }
 }
 public protocol MetadataLookupTransport: Sendable {
     func send(_ request: URLRequest) async throws -> MetadataHTTPResponse
 }
 public struct MetadataURLSessionTransport: MetadataLookupTransport {
     private let session: URLSession
-    public init(requestTimeout: TimeInterval = 75, resourceTimeout: TimeInterval = 90) {
+    private let diagnostics: MetadataDiagnostics
+    public init(requestTimeout: TimeInterval = 75, resourceTimeout: TimeInterval = 90, diagnostics: MetadataDiagnostics = .shared) {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = requestTimeout; config.timeoutIntervalForResource = resourceTimeout
         config.waitsForConnectivity = true; config.urlCache = nil
         session = URLSession(configuration: config)
+        self.diagnostics = diagnostics
+    }
+    public init(session: URLSession, diagnostics: MetadataDiagnostics = .shared) {
+        self.session = session; self.diagnostics = diagnostics
     }
     public func send(_ request: URLRequest) async throws -> MetadataHTTPResponse {
-        let (data, response) = try await session.data(for: request, delegate: MetadataRedirectBlocker())
-        guard let response = response as? HTTPURLResponse else { throw MetadataLookupError.invalidResponse }
-        return MetadataHTTPResponse(data: data, status: response.statusCode, contentType: response.value(forHTTPHeaderField: "Content-Type"))
+        var request = request
+        let reference = MetadataServiceFailure.reference(request.value(forHTTPHeaderField: "X-Sonora-Request-ID")) ?? UUID().uuidString.lowercased()
+        request.setValue(reference, forHTTPHeaderField: "X-Sonora-Request-ID")
+        let started = ProcessInfo.processInfo.systemUptime
+        do {
+            let (data, response) = try await session.data(for: request, delegate: MetadataRedirectBlocker())
+            guard let response = response as? HTTPURLResponse else { throw MetadataLookupError.invalidResponse }
+            let value = MetadataHTTPResponse(data: data, status: response.statusCode, contentType: response.value(forHTTPHeaderField: "Content-Type"), requestID: MetadataServiceFailure.reference(response.value(forHTTPHeaderField: "X-Sonora-Request-ID")) ?? reference)
+            if !(200...299).contains(value.status) {
+                await diagnostics.recordHTTP(request: request, response: value, elapsed: ProcessInfo.processInfo.systemUptime - started)
+            }
+            return value
+        } catch {
+            if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
+            await diagnostics.recordHTTP(request: request, error: error, elapsed: ProcessInfo.processInfo.systemUptime - started)
+            if let error = error as? URLError { throw MetadataTransportFailure(code: error.code.rawValue, requestID: reference) }
+            throw error
+        }
     }
 }
 

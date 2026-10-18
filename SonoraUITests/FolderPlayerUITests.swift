@@ -29,6 +29,46 @@ final class FolderPlayerUITests: XCTestCase {
         start.press(forDuration: 0.05, thenDragTo: end)
         XCTAssertEqual(close.frame.minY, originalY, accuracy: 1, "Player must stay fixed after a vertical drag")
     }
+
+    @MainActor
+    func testMiniPlayerOpensFromItsEntireSurfaceAndKeepsSeparateControls() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-appearance", "noche", "-metadata.offline", "YES"]
+        app.launch(); app.assertLibraryHome()
+        let bar = app.buttons["openNowPlaying"], transport = app.buttons["miniTransport"], queue = app.buttons["miniQueue"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 10), "Use the existing synthetic playback queue")
+        let playFrame = transport.frame, queueFrame = queue.frame
+        let points = [
+            CGPoint(x: playFrame.minX - 5, y: playFrame.midY),
+            CGPoint(x: bar.frame.minX + 23, y: playFrame.midY),
+            CGPoint(x: playFrame.midX, y: playFrame.minY - 6),
+            CGPoint(x: (playFrame.maxX + queueFrame.minX) / 2, y: playFrame.midY),
+            CGPoint(x: queueFrame.maxX + 6, y: queueFrame.midY),
+            CGPoint(x: queueFrame.midX, y: queueFrame.maxY + 6),
+            CGPoint(x: bar.frame.minX + 3, y: playFrame.midY)
+        ]
+        for point in points {
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: point.x, dy: point.y)).tap()
+            let close = app.buttons["Cerrar reproductor"]
+            XCTAssertTrue(close.waitForExistence(timeout: 5), "The mini-player must open from \(point)")
+            close.tap()
+            XCTAssertTrue(bar.waitForExistence(timeout: 5))
+        }
+        let initial = transport.label
+        transport.tap()
+        let toggled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", initial == "Pausar" ? "Reproducir" : "Pausar"), object: transport)
+        XCTAssertEqual(XCTWaiter.wait(for: [toggled], timeout: 5), .completed)
+        XCTAssertFalse(app.buttons["Cerrar reproductor"].exists)
+        if transport.label == "Pausar" { transport.tap() }
+        queue.tap()
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "queue-track:")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Cerrar reproductor"].exists)
+        app.buttons["Listo"].tap()
+        capture("mini-player-entire-touch-surface", app: app)
+    }
+
     @MainActor
     func testMiniPlayerStaysAvailableWhileBrowsingLibraryAndPlayerFitsBothThemes() throws {
         continueAfterFailure = false

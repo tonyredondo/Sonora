@@ -35,7 +35,7 @@ final class LyricsReviewTests: XCTestCase {
     private let complete = MetadataSearch(title: "Song", artist: "Artist", album: "Album")
     private let incomplete = MetadataSearch(title: "Song")
     private func client(_ root: URL, _ http: ReviewLyricsTransport) throws -> LyricsSynchronizationClient {
-        LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http)
+        LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http, diagnostics: MetadataDiagnostics(directory: root.appendingPathComponent("Diagnostics")))
     }
     func testInformationOnlyLyricsUseTranscriptionInsteadOfAlignment() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

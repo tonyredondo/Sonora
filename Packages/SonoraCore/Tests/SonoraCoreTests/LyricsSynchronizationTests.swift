@@ -42,7 +42,7 @@ final class LyricsSynchronizationTests: XCTestCase {
     func testCatalogHitDoesNotPrepareOrUploadAudio() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }
         let http = LyricsHTTPFixture(catalog: 200, catalogText: "[00:00.10]Hello\n[00:01.10]Again")
-        let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http)
+        let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http, diagnostics: MetadataDiagnostics(directory: root.appendingPathComponent("Diagnostics")))
         let result = try await client.synchronize(query: query, duration: 2, lyrics: "Hello\nAgain", offline: false) {
             XCTFail("Catalog hits must not prepare audio"); throw CancellationError()
         }
@@ -53,10 +53,10 @@ final class LyricsSynchronizationTests: XCTestCase {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }
         let http = LyricsHTTPFixture(); let cache = MetadataLookupCache(directory: root)
         let connection = try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture")
-        let client = LyricsSynchronizationClient(connection: connection, cache: cache, transport: http)
+        let client = LyricsSynchronizationClient(connection: connection, cache: cache, transport: http, diagnostics: MetadataDiagnostics(directory: root.appendingPathComponent("Diagnostics")))
         let first = try await client.synchronize(query: query, duration: 2, lyrics: "Hello\nAgain", offline: false) { pcmFixture() }
         XCTAssertEqual(first.value.source, .elevenlabs)
-        let reopened = LyricsSynchronizationClient(connection: connection, cache: MetadataLookupCache(directory: root), transport: http)
+        let reopened = LyricsSynchronizationClient(connection: connection, cache: MetadataLookupCache(directory: root), transport: http, diagnostics: MetadataDiagnostics(directory: root.appendingPathComponent("Diagnostics")))
         let next = try await reopened.synchronize(query: query, duration: 2, lyrics: "Hello\nAgain", offline: true) { pcmFixture() }
         XCTAssertTrue(next.isCached); XCTAssertEqual(next.value.text, first.value.text)
         let paths = await http.requests(); XCTAssertEqual(paths, ["/v1/lyrics", "/v1/lyrics/align"])
@@ -64,7 +64,7 @@ final class LyricsSynchronizationTests: XCTestCase {
     func testCatalogOutageDoesNotTriggerPaidFallback() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }
         let http = LyricsHTTPFixture(catalog: 503)
-        let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http)
+        let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http, diagnostics: MetadataDiagnostics(directory: root.appendingPathComponent("Diagnostics")))
         do { _ = try await client.synchronize(query: query, duration: 2, lyrics: "Hello\nAgain", offline: false) { XCTFail("No paid fallback on outage"); throw CancellationError() }; XCTFail("Must report outage") }
         catch { XCTAssertEqual(error as? MetadataLookupError, .unavailable) }
     }
@@ -76,7 +76,7 @@ final class LyricsSynchronizationTests: XCTestCase {
     func testDifferentAudioOrTextCannotReusePriorAlignmentOffline() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }
         let http = LyricsHTTPFixture()
-        let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http)
+        let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http, diagnostics: MetadataDiagnostics(directory: root.appendingPathComponent("Diagnostics")))
         _ = try await client.synchronize(query: query, duration: 2, lyrics: "Hello\nAgain", offline: false) { pcmFixture() }
         for (text, audio) in [("Hello\nAgain!", pcmFixture()), ("Hello\nAgain", pcmFixture(marker: 1))] {
             do { _ = try await client.synchronize(query: query, duration: 2, lyrics: text, offline: true) { audio }; XCTFail("Different inputs must not reuse timings") }
@@ -87,7 +87,7 @@ final class LyricsSynchronizationTests: XCTestCase {
     func testMismatchedAudioResponseIsRejectedBeforeCaching() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }
         let http = LyricsHTTPFixture(mismatchedAudio: true)
-        let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http)
+        let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http, diagnostics: MetadataDiagnostics(directory: root.appendingPathComponent("Diagnostics")))
         do { _ = try await client.synchronize(query: query, duration: 2, lyrics: "Hello\nAgain", offline: false) { pcmFixture() }; XCTFail("Wrong audio must fail") }
         catch { XCTAssertTrue(error is LyricsSynchronizationError) }
     }
@@ -95,7 +95,7 @@ final class LyricsSynchronizationTests: XCTestCase {
     func testAlreadyTimedLyricsCannotAccidentallyBeSentAsATranscript() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }
         let http = LyricsHTTPFixture()
-        let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http)
+        let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http, diagnostics: MetadataDiagnostics(directory: root.appendingPathComponent("Diagnostics")))
         do { _ = try await client.synchronize(query: query, duration: 2, lyrics: "[00:01]Hello", offline: false) { XCTFail("Do not upload timestamped text"); return pcmFixture() }; XCTFail("Must reject") }
         catch { XCTAssertTrue(error is LyricsSynchronizationError) }
         let paths = await http.requests(); XCTAssertTrue(paths.isEmpty)
@@ -104,7 +104,7 @@ final class LyricsSynchronizationTests: XCTestCase {
     func testCancellationWhilePreparingAudioDoesNotStartPaidRequest() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }
         let http = LyricsHTTPFixture()
-        let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http)
+        let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http, diagnostics: MetadataDiagnostics(directory: root.appendingPathComponent("Diagnostics")))
         let started = expectation(description: "Audio preparation started after catalog miss")
         let pending = Task { try await client.synchronize(query: query, duration: 2, lyrics: "Hello\nAgain", offline: false) {
             started.fulfill(); try await Task.sleep(nanoseconds: 10_000_000_000); return pcmFixture()

@@ -30,7 +30,9 @@ import SonoraCore
     var title: String { snapshot?.values[.title].flatMap { $0.isEmpty ? nil : $0 } ?? track.displayName }
     var canAnalyze: Bool { snapshot?.canWrite == true && track.cue == nil && !settings.endpoint.isEmpty && !loading && !saving }
     var canListen: Bool { player.current?.id == track.id }
-    var visibleProposals: [LyricsRepair.Proposal] { review?.proposals.filter { !onlyCompletions || $0.kind == .completion } ?? [] }
+    var visibleProposals: [LyricsRepair.Proposal] {
+        review?.proposals.filter { $0.kind != .unrecognized && (!onlyCompletions || $0.kind == .completion) } ?? []
+    }
     var selectedCount: Int { visibleProposals.filter { edits[$0.id] != nil }.count }
 
     init(player: PlaybackController, track: AudioTrack, settings: MetadataAssistantSettings = .shared,
@@ -49,7 +51,10 @@ import SonoraCore
             try LyricsRepair.validateOriginal(text,duration:duration)
             originalLyrics = text; audioDuration = duration; snapshot = value; phase = "Preparada para analizar"
         } catch is CancellationError { }
-        catch { issue = error.localizedDescription }
+        catch {
+            issue = error.localizedDescription
+            await MetadataDiagnostics.shared.recordFailure(error, stage: .lyricsLoad)
+        }
     }
     func analyze() async {
         guard review == nil, canAnalyze, let snapshot, let audioDuration else { return }
@@ -63,6 +68,7 @@ import SonoraCore
         if generation == token { operation = nil; loading = false }
     }
     private func performAnalysis(_ snapshot: MetadataSnapshot, duration: Double, token: UUID) async {
+        var stage = MetadataDiagnosticStage.lyricsAnalysis
         do {
             phase = settings.effectiveOffline ? "Buscando análisis guardado…" : "Preparando audio y transcribiendo…"
             let folder = try player.folderAccess(for:track), track = track
@@ -74,6 +80,7 @@ import SonoraCore
             try Task.checkCancellation()
             guard generation == token else { return }
             phase = "Comparando palabras y fragmentos…"
+            stage = .lyricsComparison
             let original = originalLyrics
             let worker = Task.detached(priority:.userInitiated) {
                 try Task.checkCancellation()
@@ -85,7 +92,12 @@ import SonoraCore
             guard generation == token else { return }
             review = result; isCached = analysis.isCached; warning = analysis.warning; phase = "Revisión preparada"
         } catch is CancellationError { }
-        catch { if generation == token { issue = error.localizedDescription } }
+        catch {
+            if generation == token {
+                issue = error.localizedDescription
+                await MetadataDiagnostics.shared.recordFailure(error, stage: stage)
+            }
+        }
     }
     func cancel() {
         generation = UUID(); operation?.cancel(); operation = nil; loading = false; stopPreview()
@@ -114,7 +126,10 @@ import SonoraCore
             guard current == originalLyrics else { throw MetadataIOError.changed }
             try await player.saveMetadata(for:track,expected:snapshot.fingerprint,patch:MetadataPatch(values:[.lyrics:text]))
             saved = true
-        } catch { issue = error.localizedDescription }
+        } catch {
+            issue = error.localizedDescription
+            await MetadataDiagnostics.shared.recordFailure(error, stage: .lyricsSave)
+        }
     }
     func listen(_ proposal: LyricsRepair.Proposal) {
         guard canListen, let start = proposal.start else { return }

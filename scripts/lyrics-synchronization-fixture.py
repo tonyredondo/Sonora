@@ -10,8 +10,10 @@ from urllib.parse import parse_qs, urlparse
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--port', type=int, default=18092)
 parser.add_argument('--scenario', choices=['synchronization', 'repair'], default='synchronization')
+parser.add_argument('--failure', choices=['quota'], default=None)
 args = parser.parse_args()
 counts = {'catalog': 0, 'alignment': 0, 'transcription': 0}
+state = {'failure': args.failure}
 text = 'Primera línea de Sonora\nSegunda línea de Sonora'
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
@@ -37,6 +39,15 @@ class Handler(BaseHTTPRequestHandler):
                         'albumName': 'Sincronización QA', 'duration': 30, 'instrumental': False,
                         'plainLyrics': text, 'syncedLyrics': '[00:01.00]Primera línea de Sonora\n[00:08.00]Segunda línea de Sonora'})
     def do_POST(self):
+        if self.path == '/__failure':
+            size = int(self.headers.get('Content-Length', '0'))
+            if not 0 < size <= 128:
+                return self.reply(400, {})
+            mode = self.rfile.read(size).decode()
+            if mode not in ('quota', 'none'):
+                return self.reply(400, {})
+            state['failure'] = None if mode == 'none' else mode
+            return self.reply(200, {})
         if self.path not in ('/v1/forced-alignment', '/v1/speech-to-text') or self.headers.get('xi-api-key') != 'synthetic-eleven-key':
             return self.reply(401, {})
         size = int(self.headers.get('Content-Length', '0'))
@@ -50,6 +61,8 @@ class Handler(BaseHTTPRequestHandler):
             if set(fields) != {'file', *expected} or not fields['file'].startswith(b'RIFF') or any(fields[key] != value for key, value in expected.items()):
                 return self.reply(400, {})
             counts['transcription'] += 1
+            if state['failure'] == 'quota':
+                return self.reply(429, {'detail': {'status': 'quota_exceeded', 'message': 'private-lyrics synthetic-eleven-key'}})
             if args.scenario == 'repair':
                 transcript = 'Camino de cristal.\nVuelve la luz.\nVolvemos al hogar.'
                 words = []

@@ -83,6 +83,7 @@ pub fn router(config: Config) -> Result<Router, Error> {
         .route("/v1/jobs/{id}", get(job).delete(cancel_job))
         .layer(DefaultBodyLimit::max(256 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), authorize))
+        .layer(middleware::from_fn(crate::diagnostics::request))
         .with_state(state))
 }
 
@@ -116,6 +117,11 @@ impl IntoResponse for ArchiveError {
                 "metadata_storage_unavailable",
             ),
         };
+        tracing::warn!(
+            error_code = code,
+            http_status = status.as_u16(),
+            "metadata archive request failed"
+        );
         (
             status,
             Json(json!({"error":code,"message":self.to_string()})),
@@ -213,9 +219,11 @@ impl IntoResponse for ApiError {
             }
             _ => (StatusCode::BAD_GATEWAY, "upstream_error"),
         };
+        let (provider, upstream_status, reason) = self.0.diagnostic();
+        tracing::warn!(error_code = code, provider, upstream_status, reason, error = %self.0, "provider operation failed");
         let mut response = (
             status,
-            Json(json!({"error":code,"message":self.0.to_string()})),
+            Json(json!({"error":code,"message":self.0.to_string(),"provider":provider,"upstream_status":upstream_status,"reason":reason})),
         )
             .into_response();
         if status == StatusCode::TOO_MANY_REQUESTS {

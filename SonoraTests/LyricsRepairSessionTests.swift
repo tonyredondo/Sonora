@@ -208,6 +208,10 @@ final class LyricsRepairSessionTests: XCTestCase {
         XCTAssertEqual(session.review?.proposals.first { $0.original == "cant" }?.suggested,"can’t")
         let calls = await transport.calls; XCTAssertEqual(calls,1)
         let omitted = try XCTUnwrap(session.review?.proposals.first { $0.kind == .unrecognized })
+        XCTAssertEqual(session.visibleProposals.map(\.kind), [.correction])
+        session.onlyCompletions = true
+        XCTAssertTrue(session.visibleProposals.isEmpty)
+        session.onlyCompletions = false
         XCTAssertTrue(session.canListen)
         session.listen(omitted)
         XCTAssertEqual(try XCTUnwrap(session.previewEnd),3.4,accuracy:0.001,"Snippet must use the full original block and decoded song duration")
@@ -224,6 +228,8 @@ final class LyricsRepairSessionTests: XCTestCase {
         let reopened = LyricsRepairSession(player:player,track:track,settings:settings,transport:transport)
         await reopened.load(); await reopened.analyze()
         XCTAssertNil(reopened.issue); XCTAssertTrue(reopened.isCached)
+        XCTAssertTrue(reopened.visibleProposals.isEmpty, "Unrecognized original lyrics are preserved without asking for a decision")
+        XCTAssertEqual(reopened.selectedCount, 0)
         let finalCalls = await transport.calls; XCTAssertEqual(finalCalls,1)
     }
     @MainActor func testReviewCancelOfflineReuseSaveAndConflictUseTheRealFilePath() async throws {

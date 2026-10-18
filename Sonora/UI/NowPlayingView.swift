@@ -143,7 +143,7 @@ struct MiniPlayer: View {
     let openQueue: () -> Void
     @Environment(\.colorScheme) private var scheme
     var body: some View {
-        HStack(spacing: 10) {
+        ZStack(alignment: .trailing) {
             Button(action: openPlayer) {
                 HStack(spacing: 12) {
                     ArtworkView(image: player.currentDetails?.artwork, cornerRadius: 6).frame(width: 46, height: 46)
@@ -153,13 +153,19 @@ struct MiniPlayer: View {
                     }
                     Spacer(minLength: 0)
                 }
+                .padding(.trailing, 108) // Two 44-point controls and their 10-point gaps.
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
             }.buttonStyle(.plain).accessibilityHint("Abrir reproductor").accessibilityIdentifier("openNowPlaying")
-            Button { player.togglePlayback() } label: {
-                if player.isPreparing { ProgressView().frame(width: 44, height: 44) }
-                else { Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.title3).frame(width: 44, height: 44) }
-            }.accessibilityLabel(player.isPlaying ? "Pausar" : "Reproducir").accessibilityIdentifier("miniTransport")
-            Button(action: openQueue) { Image(systemName: "list.bullet").frame(width: 44, height: 44) }.accessibilityLabel("Cola").accessibilityIdentifier("miniQueue")
-        }.padding(12).background(PlayerTheme(scheme).surface).clipShape(.rect(cornerRadius: 14)).padding(.horizontal, 12).padding(.bottom, 6)
+            HStack(spacing: 10) {
+                Button { player.togglePlayback() } label: {
+                    if player.isPreparing { ProgressView().frame(width: 44, height: 44) }
+                    else { Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.title3).frame(width: 44, height: 44) }
+                }.accessibilityLabel(player.isPlaying ? "Pausar" : "Reproducir").accessibilityIdentifier("miniTransport")
+                Button(action: openQueue) { Image(systemName: "list.bullet").frame(width: 44, height: 44) }.accessibilityLabel("Cola").accessibilityIdentifier("miniQueue")
+            }.padding(.trailing, 12)
+        }.background(PlayerTheme(scheme).surface).clipShape(.rect(cornerRadius: 14)).padding(.horizontal, 12).padding(.bottom, 6)
     }
 }
 

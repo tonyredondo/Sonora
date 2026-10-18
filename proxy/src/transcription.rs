@@ -58,7 +58,10 @@ impl TranscriptionInput {
             language_code: Option<String>,
         }
         let invalid = || Error::InvalidResponse(Provider::Elevenlabs);
-        let out: Output = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
+        let out: Output = serde_json::from_value(value.clone()).map_err(|error| {
+            tracing::warn!(validation_reason = "transcription_schema", category = ?error.classify(), has_text = value.get("text").is_some(), has_words = value.get("words").is_some(), "audio analysis rejected");
+            invalid()
+        })?;
         if out.text.len() > MAX_TEXT_BYTES
             || out.text.contains('\0')
             || contains_lrc_control(&out.text)
@@ -66,12 +69,19 @@ impl TranscriptionInput {
                 s.len() > 32 || !s.chars().all(|c| c.is_ascii_alphabetic() || c == '-')
             })
         {
+            tracing::warn!(
+                validation_reason = "transcription_metadata",
+                text_bytes = out.text.len(),
+                has_nul = out.text.contains('\0'),
+                has_lrc_control = contains_lrc_control(&out.text),
+                "audio analysis rejected"
+            );
             return Err(invalid());
         }
         let mut transcript = String::new();
         let mut words = Vec::new();
         let mut previous = 0.0;
-        for word in &out.words {
+        for (index, word) in out.words.iter().enumerate() {
             if !word.start.is_finite()
                 || !word.end.is_finite()
                 || word.start < previous
@@ -80,6 +90,16 @@ impl TranscriptionInput {
                 || word.end > self.duration + 0.05
                 || !matches!(word.kind.as_str(), "word" | "spacing" | "audio_event")
             {
+                tracing::warn!(
+                    validation_reason = "transcription_word_timing",
+                    word_index = index,
+                    start = word.start,
+                    end = word.end,
+                    previous_start = previous,
+                    duration = self.duration,
+                    valid_kind = matches!(word.kind.as_str(), "word" | "spacing" | "audio_event"),
+                    "audio analysis rejected"
+                );
                 return Err(invalid());
             }
             previous = word.start;
@@ -89,6 +109,13 @@ impl TranscriptionInput {
             let token = normalized(&word.text);
             if !token.is_empty() {
                 if word.end <= word.start {
+                    tracing::warn!(
+                        validation_reason = "transcription_word_duration",
+                        word_index = index,
+                        start = word.start,
+                        end = word.end,
+                        "audio analysis rejected"
+                    );
                     return Err(invalid());
                 }
                 let prefix_end = word.text.find(char::is_alphanumeric).ok_or_else(invalid)?;
@@ -103,6 +130,13 @@ impl TranscriptionInput {
         }
         if transcript != normalized(&out.text) || (words.is_empty() && !out.text.trim().is_empty())
         {
+            tracing::warn!(
+                validation_reason = "transcription_word_text_mismatch",
+                words = words.len(),
+                normalized_word_bytes = transcript.len(),
+                normalized_text_bytes = normalized(&out.text).len(),
+                "audio analysis rejected"
+            );
             return Err(invalid());
         }
         // Map normalized word offsets back to the original UTF-8, preserving punctuation,
@@ -180,6 +214,11 @@ impl TranscriptionInput {
         // Phrase separators can grow the transcript beyond the raw provider text.
         // Never cache a derived result that the iPhone cannot accept.
         if plain_lyrics.len() > MAX_TEXT_BYTES {
+            tracing::warn!(
+                validation_reason = "transcription_derived_text_limit",
+                text_bytes = plain_lyrics.len(),
+                "audio analysis rejected"
+            );
             return Err(invalid());
         }
         Ok(Transcription {

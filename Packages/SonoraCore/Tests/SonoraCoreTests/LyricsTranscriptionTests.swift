@@ -87,7 +87,7 @@ final class LyricsTranscriptionTests: XCTestCase {
     private let query = MetadataSearch(title: "Song", artist: "Artist", album: "Album")
     private func root() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString) }
     private func client(_ root: URL, _ http: LyricsFallbackFixture, endpoint: String = "http://127.0.0.1:8089") throws -> LyricsSynchronizationClient {
-        LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: endpoint, token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http)
+        LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: endpoint, token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http, diagnostics: MetadataDiagnostics(directory: root.appendingPathComponent("Diagnostics")))
     }
     func testCatalogPlainLyricsAreAlignedAndReusedOfflineWithoutEmbeddedText() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }

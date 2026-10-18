@@ -12,7 +12,7 @@ public struct LyricsDocument: Equatable, Sendable {
     public static let aiRepairMarker = "[by:Sonora AI repair - ElevenLabs]"
     public let isAITranscribed: Bool
     public let isAIRepaired: Bool
-    public var attribution: String? { isAIRepaired ? "Reparada con IA · ElevenLabs" : (isAITranscribed ? "Transcrita por IA · ElevenLabs" : nil) }
+    public var attribution: String? { isAITranscribed && !isAIRepaired ? "Transcrita por IA · ElevenLabs" : nil }
     public var isTimed: Bool { lines.contains { $0.time != nil } }
     private init(lines: [Line], isAITranscribed: Bool, isAIRepaired: Bool) { self.lines = lines; self.isAITranscribed = isAITranscribed; self.isAIRepaired = isAIRepaired }
 

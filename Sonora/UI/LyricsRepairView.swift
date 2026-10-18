@@ -29,7 +29,7 @@ import SwiftUI
                     if settings.endpoint.isEmpty { NavigationLink("Configurar asistente") { MetadataConnectionView() } }
                 }
                 if session.loading { ProgressView(session.phase).accessibilityIdentifier("repairProgress") }
-                if let issue = session.issue { Text(issue).foregroundStyle(.red).accessibilityIdentifier("repairIssue") }
+                if let issue = session.issue { Text(issue).foregroundStyle(.red).textSelection(.enabled).accessibilityIdentifier("repairIssue") }
                 if let warning = session.warning { Text(warning).font(.footnote).foregroundStyle(.secondary) }
             }
             if let review = session.review {
@@ -38,7 +38,7 @@ import SwiftUI
                         .accessibilityIdentifier("repairAnalysisSource")
                     Toggle("Solo completar lo que falta",isOn:$session.onlyCompletions).accessibilityIdentifier("repairOnlyCompletions")
                     Text("\(session.selectedCount) cambios seleccionados").font(.subheadline).accessibilityIdentifier("repairSelectionCount")
-                    Text("La IA puede confundir palabras cantadas. Escucha cada propuesta; conservaremos las frases que no haya reconocido hasta que tú las edites.")
+                    Text("La IA puede confundir palabras cantadas. Escucha cada propuesta antes de aceptarla.")
                         .font(.footnote).foregroundStyle(.secondary)
                     if review.usesPhraseTiming {
                         Text("Este análisis guardado tiene tiempos por frase. Puedes reutilizarlo sin pagar otro análisis; revisa el inicio de los fragmentos nuevos.")
@@ -48,7 +48,9 @@ import SwiftUI
                 }
                 if session.visibleProposals.isEmpty {
                     Section {
-                        Text(review.proposals.isEmpty ? "No se han detectado diferencias de palabras." : "No hay propuestas para completar. Desactiva el filtro para revisar las correcciones.")
+                        Text(session.onlyCompletions && review.proposals.contains { $0.kind == .correction }
+                             ? "No hay propuestas para completar. Desactiva el filtro para revisar las correcciones."
+                             : "No hay correcciones ni fragmentos para completar.")
                     }
                 }
                 ForEach(session.visibleProposals) { proposal in
@@ -94,7 +96,7 @@ import SwiftUI
     @ViewBuilder private func proposalCard(_ proposal: LyricsRepair.Proposal) -> some View {
         let accepted = session.edits[proposal.id], kept = session.kept.contains(proposal.id)
         VStack(alignment:.leading,spacing:12) {
-            Label(title(proposal.kind),systemImage:proposal.kind == .completion ? "text.badge.plus" : (proposal.kind == .unrecognized ? "questionmark.circle" : "text.badge.checkmark"))
+            Label(title(proposal.kind),systemImage:proposal.kind == .completion ? "text.badge.plus" : "text.badge.checkmark")
                 .font(.headline).accessibilityIdentifier("repairProposal-\(proposal.id)")
             if let start = proposal.start {
                 Button { session.listen(proposal) } label: { Label("Escuchar · \(playbackTime(start))",systemImage:"play.circle") }
@@ -106,11 +108,9 @@ import SwiftUI
                 Text("Original").font(.caption).foregroundStyle(.secondary)
                 Text(proposal.original).textSelection(.enabled)
             }
-            if proposal.kind != .unrecognized || accepted != nil {
-                Text(accepted == nil ? "Propuesta" : "Selección").font(.caption).foregroundStyle(.secondary)
-                Text(accepted?.text ?? proposal.suggested).font(.body.weight(.semibold)).textSelection(.enabled)
-                    .accessibilityIdentifier("repairSuggested-\(proposal.id)")
-            }
+            Text(accepted == nil ? "Propuesta" : "Selección").font(.caption).foregroundStyle(.secondary)
+            Text(accepted?.text ?? proposal.suggested).font(.body.weight(.semibold)).textSelection(.enabled)
+                .accessibilityIdentifier("repairSuggested-\(proposal.id)")
             if accepted != nil || kept {
                 Label(kept ? "Original conservado" : "Seleccionada",systemImage:kept ? "checkmark.shield" : "checkmark.circle.fill")
                     .font(.subheadline).foregroundStyle(PlayerTheme(scheme).accent)
@@ -125,17 +125,15 @@ import SwiftUI
         .accessibilityElement(children:.contain)
     }
     @ViewBuilder private func actions(_ proposal:LyricsRepair.Proposal) -> some View {
-        if proposal.kind != .unrecognized {
-            Button(proposal.kind == .completion ? "Añadir" : "Aceptar") { session.accept(proposal) }
-                .buttonStyle(.bordered).frame(minHeight:44).accessibilityIdentifier("repairAccept-\(proposal.id)")
-        }
+        Button(proposal.kind == .completion ? "Añadir" : "Aceptar") { session.accept(proposal) }
+            .buttonStyle(.bordered).frame(minHeight:44).accessibilityIdentifier("repairAccept-\(proposal.id)")
         Button("Conservar") { session.keep(proposal) }.buttonStyle(.bordered).frame(minHeight:44).accessibilityIdentifier("repairKeep-\(proposal.id)")
         Button("Editar") {
             editing = EditRequest(proposal:proposal,edit:session.edits[proposal.id] ?? .init(text:proposal.suggested,startTime:proposal.start))
         }.buttonStyle(.bordered).frame(minHeight:44).accessibilityIdentifier("repairEdit-\(proposal.id)")
     }
     private func title(_ kind:LyricsRepair.Kind) -> String {
-        switch kind { case .correction: "Posible corrección"; case .completion: "Fragmento que podría faltar"; case .unrecognized: "Texto no reconocido por la IA" }
+        kind == .completion ? "Fragmento que podría faltar" : "Posible corrección"
     }
 }
 
@@ -180,7 +178,6 @@ private struct LyricsRepairEditView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment:.leading,spacing:18) {
-                    Text("Reparada con IA · ElevenLabs").font(.subheadline.weight(.semibold)).accessibilityIdentifier("repairPreviewAttribution")
                     Text("Revisa el resultado. Guardar escribirá esta letra en el archivo de audio.").font(.footnote).foregroundStyle(.secondary)
                     if let issue = session.issue { Text(issue).foregroundStyle(.red).accessibilityIdentifier("repairSaveIssue") }
                     ForEach(LyricsDocument(text:text).lines) { line in

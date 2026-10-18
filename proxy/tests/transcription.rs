@@ -79,6 +79,10 @@ async fn upstream(
     match s.mode {
         "not_found_once" if previous_hits == 0 => (StatusCode::NOT_FOUND, "{}"),
         "failure" => (StatusCode::SERVICE_UNAVAILABLE, "{}"),
+        "quota" => (
+            StatusCode::TOO_MANY_REQUESTS,
+            r#"{"detail":{"status":"quota_exceeded","message":"private-lyrics synthetic-eleven-key"}}"#,
+        ),
         "empty" => (
             StatusCode::OK,
             r#"{"text":"","words":[],"language_code":"en"}"#,
@@ -310,6 +314,121 @@ async fn malformed_audio_authentication_and_paid_errors_do_not_start_or_repeat_w
     assert_eq!(failed.status(), StatusCode::BAD_GATEWAY);
     assert_eq!(state.hits.load(Ordering::SeqCst), 1);
     server.abort();
+}
+
+#[derive(Clone)]
+struct DiagnosticCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+impl std::io::Write for DiagnosticCapture {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn failed_transcription_logs_correlated_safe_provider_details_without_a_paid_retry() {
+    let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer = DiagnosticCapture(bytes.clone());
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_env_filter("sonora_proxy=info")
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).unwrap();
+    let root = TempDir::new().unwrap();
+    let (app, _, state, server) = setup(&root, "quota").await;
+    let id = "b0b3276b-6850-49c2-858a-8f1ae4976b25";
+    let mut request = upload(&wav(0));
+    request
+        .headers_mut()
+        .insert("x-sonora-request-id", id.parse().unwrap());
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(response.headers().get("x-sonora-request-id").unwrap(), id);
+    let body = json(response).await;
+    assert_eq!(body["provider"], "elevenlabs");
+    assert_eq!(body["upstream_status"], 429);
+    assert_eq!(body["reason"], "quota_exceeded");
+    assert_eq!(state.hits.load(Ordering::SeqCst), 1);
+    let invalid_root = TempDir::new().unwrap();
+    let (invalid_app, _, _, invalid_server) = setup(&invalid_root, "invalid").await;
+    let invalid_result = invalid_app.oneshot(upload(&wav(0))).await.unwrap();
+    assert_eq!(invalid_result.status(), StatusCode::BAD_GATEWAY);
+    invalid_server.abort();
+    let log = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+    assert!(
+        log.contains("transcription_word_timing") && log.contains("word_index=0"),
+        "{log}"
+    );
+    assert!(
+        log.contains(id) && log.contains("quota_exceeded") && log.contains("429"),
+        "{log}"
+    );
+    for private in [
+        "private-lyrics",
+        "synthetic-eleven-key",
+        "fixture-token",
+        "RIFF",
+        "Hello",
+    ] {
+        assert!(!log.contains(private), "{log}");
+        assert!(!body.to_string().contains(private));
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn rejected_authentication_also_has_a_safe_request_reference() {
+    let root = TempDir::new().unwrap();
+    let (app, _, state, server) = setup(&root, "failure").await;
+    let request = Request::get("/v1/status?token=private-query")
+        .header("x-sonora-request-id", "private-invalid-reference")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let id = response
+        .headers()
+        .get("x-sonora-request-id")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(uuid::Uuid::parse_str(id).is_ok());
+    assert_ne!(id, "private-invalid-reference");
+    assert_eq!(state.hits.load(Ordering::SeqCst), 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn connection_failure_keeps_its_transport_cause_without_disclosing_the_url() {
+    let root = TempDir::new().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let mut config = Config::default();
+    config.cache.path = root.path().join("cache.sqlite");
+    config.metadata.path = root.path().join("metadata.sqlite");
+    config.server.api_token = Some("fixture-token".into());
+    config.elevenlabs.api_key = Some("synthetic-eleven-key".into());
+    config.elevenlabs.base_url = Some(format!("http://{address}"));
+    let app = sonora_proxy::api::router(config).unwrap();
+    let response = app.oneshot(upload(&wav(0))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = json(response).await;
+    assert_eq!(body["reason"], "upstream_connect");
+    assert_eq!(body["provider"], "elevenlabs");
+    assert!(body["upstream_status"].is_null());
+    for private in [
+        address.to_string(),
+        "synthetic-eleven-key".into(),
+        "fixture-token".into(),
+    ] {
+        assert!(!body.to_string().contains(&private));
+    }
 }
 #[tokio::test]
 async fn invalid_word_times_are_rejected_and_unicode_text_is_preserved() {

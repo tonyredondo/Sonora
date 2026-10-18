@@ -36,6 +36,12 @@ final class LyricsRepairUITests: XCTestCase {
         let (data,_) = try await URLSession.shared.data(from:XCTUnwrap(URL(string:"http://127.0.0.1:28192/__stats")))
         return try JSONDecoder().decode([String:Int].self,from:data)
     }
+    @MainActor private func setProviderFailure(_ mode: String) async throws {
+        var request = URLRequest(url:URL(string:"http://127.0.0.1:28192/__failure")!)
+        request.httpMethod = "POST"; request.httpBody = Data(mode.utf8)
+        let (_,response) = try await URLSession.shared.data(for:request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode,200)
+    }
     @MainActor func testFullSongRepairReviewCancelOfflineManualEditAndSave() async throws {
         continueAfterFailure = false
         let app = XCUIApplication(); open(app)
@@ -55,7 +61,8 @@ final class LyricsRepairUITests: XCTestCase {
         app.buttons["repairUndo-1"].tap(); app.buttons["repairKeep-1"].tap()
         capture("repair-correction-kept-noche",app)
         let preview = app.buttons["previewLyricsRepair"]; preview.tap()
-        XCTAssertTrue(app.staticTexts["repairPreviewAttribution"].waitForExistence(timeout:10))
+        XCTAssertTrue(app.buttons["saveLyricsRepair"].waitForExistence(timeout:10))
+        XCTAssertFalse(app.staticTexts["repairPreviewAttribution"].exists)
         XCTAssertTrue(app.staticTexts["Camino de cristel"].exists); XCTAssertTrue(app.staticTexts["Vuelve la luz."].exists)
         capture("repair-preview-cancel-noche",app)
         app.buttons["cancelRepairPreview"].tap()
@@ -80,7 +87,8 @@ final class LyricsRepairUITests: XCTestCase {
         app.buttons["repairUseEdit"].tap()
         for _ in 0..<12 where !app.switches["repairOnlyCompletions"].isHittable { app.swipeDown() }
         app.switches["repairOnlyCompletions"].tap(); preview.tap()
-        XCTAssertTrue(app.staticTexts["repairPreviewAttribution"].waitForExistence(timeout:10))
+        XCTAssertTrue(app.buttons["saveLyricsRepair"].waitForExistence(timeout:10))
+        XCTAssertFalse(app.staticTexts["repairPreviewAttribution"].exists)
         XCTAssertTrue(app.staticTexts["Camino de cristel"].exists,"The additions-only filter must exclude a selected correction")
         capture("repair-only-completions-preview-papel",app)
         app.buttons["cancelRepairPreview"].tap(); app.switches["repairOnlyCompletions"].tap(); preview.tap()
@@ -90,17 +98,55 @@ final class LyricsRepairUITests: XCTestCase {
         XCTAssertTrue(app.buttons["repairLyrics"].waitForExistence(timeout:15))
         XCTAssertEqual(app.buttons["lyricLine0"].label,"Camino de cristal transparente")
         XCTAssertEqual(app.buttons["lyricLine2"].label,"♪","Repairing the text must retain the instrumental pause cue")
-        XCTAssertEqual(app.staticTexts["lyricsSource"].label,"Reparada con IA · ElevenLabs")
+        XCTAssertEqual(app.staticTexts["lyricsSource"].label,"Letra incrustada")
         capture("repair-saved-reader-papel",app)
         app.buttons["Listo"].tap(); app.buttons["Cerrar reproductor"].tap(); app.terminate()
         app.launchArguments = ["-appearance","noche","-metadata.offline","YES","-UIPreferredContentSizeCategoryName","UICTContentSizeCategoryL"]
         app.launch(); XCTAssertTrue(app.buttons["openNowPlaying"].waitForExistence(timeout:15)); openReader(app)
         XCTAssertEqual(app.buttons["lyricLine0"].label,"Camino de cristal transparente")
         XCTAssertEqual(app.buttons["lyricLine2"].label,"♪")
-        XCTAssertEqual(app.staticTexts["lyricsSource"].label,"Reparada con IA · ElevenLabs")
+        XCTAssertEqual(app.staticTexts["lyricsSource"].label,"Letra incrustada")
         let after = try await counts(); XCTAssertEqual(after,online,"Offline review, editing and saving must not repeat an analysis")
         capture("repair-saved-reader-after-relaunch-noche",app)
     }
+    @MainActor func testUnrecognizedLyricsArePreservedWithoutSuggestions() async throws {
+        continueAfterFailure = false
+        let app = XCUIApplication(); open(app,filename:"04 - Letra conservada QA.flac")
+        app.buttons["repairLyrics"].tap()
+        let analyze = app.buttons["analyzeLyricsRepair"]
+        XCTAssertTrue(analyze.waitForExistence(timeout:10)); analyze.tap()
+        let empty = app.staticTexts["No hay correcciones ni fragmentos para completar."]
+        XCTAssertTrue(empty.waitForExistence(timeout:25))
+        XCTAssertFalse(app.staticTexts["Texto no reconocido por la IA"].exists)
+        XCTAssertFalse(app.buttons["previewLyricsRepair"].isEnabled)
+        app.switches["repairOnlyCompletions"].tap()
+        XCTAssertTrue(empty.exists)
+        XCTAssertFalse(app.staticTexts["No hay propuestas para completar. Desactiva el filtro para revisar las correcciones."].exists)
+        capture("repair-no-actionable-proposals-noche",app)
+        app.navigationBars["Reparar letra"].buttons["BackButton"].tap()
+        XCTAssertEqual(app.buttons["lyricLine2"].label,"Conserva esta frase")
+    }
+
+    @MainActor func testAnalysisFailureShowsCauseAndCopyableRequestReference() async throws {
+        continueAfterFailure = false
+        try await setProviderFailure("quota")
+        addTeardownBlock { @MainActor in try await self.setProviderFailure("none") }
+        let before = try await counts()
+        let app = XCUIApplication(); open(app,filename:"03 - Error de análisis QA.flac")
+        app.buttons["repairLyrics"].tap()
+        let analyze = app.buttons["analyzeLyricsRepair"]
+        XCTAssertTrue(analyze.waitForExistence(timeout:10)); analyze.tap()
+        let issue = app.descendants(matching:.any).matching(identifier:"repairIssue").firstMatch
+        XCTAssertTrue(issue.waitForExistence(timeout:25))
+        XCTAssertTrue(issue.label.contains("ElevenLabs") && issue.label.contains("quota_exceeded"), issue.label)
+        XCTAssertTrue(issue.label.contains("502") && issue.label.contains("429"), issue.label)
+        XCTAssertTrue(issue.label.contains("Referencia:"), issue.label)
+        XCTAssertFalse(issue.label.contains("private-lyrics") || issue.label.contains("synthetic-eleven-key"))
+        capture("repair-detailed-provider-error-noche",app)
+        let totals = try await counts()
+        XCTAssertEqual(totals["transcription"], (before["transcription"] ?? 0) + 1)
+    }
+
     @MainActor func testMixedLyricsAreRejectedBeforeAnalysisCanSendAudio() async throws {
         continueAfterFailure = false
         let before = try await counts()

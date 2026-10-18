@@ -176,7 +176,7 @@ final class LyricsRepairTests: XCTestCase {
         }
         let written = try review.applying([proposal.id:.init(text:proposal.suggested,startTime:2.5)])
         XCTAssertEqual(LyricsDocument(text:written).lines.map(\.time),[1,2.5,5])
-        XCTAssertEqual(LyricsDocument(text:written).sliced(from:1,duration:5).attribution,"Reparada con IA · ElevenLabs")
+        XCTAssertNil(LyricsDocument(text:written).sliced(from:1,duration:5).attribution)
     }
     func testPunctuationCaseAndUnicodeAreComparedWithoutDamagingOriginalText() throws {
         let original = "[ar:Álvaro]\n[00:01.00]¡Sí, corazón!"
