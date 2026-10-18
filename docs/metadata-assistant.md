@@ -56,6 +56,8 @@ Open **Letra → Sincronizar letra** for untimed lyrics, **Letra → Buscar o tr
 2. If text is available in the file/sidecar or LRCLIB, align it with ElevenLabs.
 3. If neither source supplies text, transcribe the audio with ElevenLabs Scribe v2 and build line-level LRC from its word timestamps.
 
+LRC information headers such as `[ar:…]` and `[ti:…]` do not count as lyric text. They are omitted from alignment input; files containing only headers follow the missing-lyrics flow. Verse spacing is retained.
+
 The paid steps prepare mono 16 kHz PCM in memory using Sonora's existing playback decoders. Starting the action can consume the configured ElevenLabs account's credits; playback never starts analysis automatically. A catalog network failure can reuse an exact analysis already cached on the iPhone, with a warning; it never authorizes a new paid request. Authentication errors remain visible. Failed alignment does not trigger a second paid transcription.
 
 The proxy administrator supplies `[elevenlabs].api_key` in the existing TOML configuration. The provider key stays on the server. Configuration must be loaded by the new binary before the new transcription route is available; editing repository files alone does not update a running proxy.

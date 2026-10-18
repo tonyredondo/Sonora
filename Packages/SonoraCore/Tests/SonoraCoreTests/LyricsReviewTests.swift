@@ -37,6 +37,37 @@ final class LyricsReviewTests: XCTestCase {
     private func client(_ root: URL, _ http: ReviewLyricsTransport) throws -> LyricsSynchronizationClient {
         LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http)
     }
+    func testInformationOnlyLyricsUseTranscriptionInsteadOfAlignment() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let http = ReviewLyricsTransport(), client = try client(root, http)
+        let headers = "  [ar:Artist]\n[ti:Song]\n[by:Editor]\n[length:00:02]"
+        let result = try await client.synchronize(query: incomplete, duration: 2, lyrics: headers, offline: false) { pcmFixture() }
+        XCTAssertEqual(result.value.source, .elevenlabsTranscription)
+        let requests = await http.requests(); XCTAssertEqual(requests, ["/v1/lyrics/transcribe"])
+    }
+    func testCatalogInformationOnlyLyricsUseTranscriptionInsteadOfAlignment() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let http = ReviewLyricsTransport(catalogStatus: 200, catalogPlain: "[ar:Artist]\n[ti:Song]"), client = try client(root, http)
+        let result = try await client.synchronize(query: complete, duration: 2, lyrics: "", offline: false) { pcmFixture() }
+        XCTAssertEqual(result.value.source, .elevenlabsTranscription)
+        let requests = await http.requests(); XCTAssertEqual(requests, ["/v1/lyrics", "/v1/lyrics/transcribe"])
+    }
+    func testAlignmentOmitsInformationHeadersButKeepsVerseSpacing() async throws {
+        for separator in ["\n", "\r\n", "\r"] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let http = ReviewLyricsTransport(plain: "Hello\n\nAgain"), client = try client(root, http)
+            let lyrics = ["[ar:Artist]", "Hello", "", "Again", "[by:Editor]"].joined(separator: separator)
+            let result = try await client.synchronize(query: incomplete, duration: 2, lyrics: lyrics, offline: false) { pcmFixture() }
+            XCTAssertEqual(result.value.text, "[00:00.10]Hello\n\n[00:01.10]Again")
+            let requests = await http.requests(); XCTAssertEqual(requests, ["/v1/lyrics/align"])
+        }
+    }
     func testCatalogOutageReusesCachedTranscriptionWithoutAnotherPaidRequest() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

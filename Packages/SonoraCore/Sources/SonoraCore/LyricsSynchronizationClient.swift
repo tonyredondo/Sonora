@@ -68,8 +68,7 @@ public actor LyricsSynchronizationClient {
         guard duration.isFinite, duration > 0, duration <= 604800, lyrics.utf8.count <= 65_536, !lyrics.contains("\0") else { throw MetadataLookupError.invalidSearch }
         guard !LyricsDocument(text: lyrics).isTimed else { throw LyricsSynchronizationError.alreadyTimed }
         let wasAITranscribed = LyricsDocument(text: lyrics).isAITranscribed
-        var knownText = lyrics.components(separatedBy: .newlines)
-            .filter { $0.trimmingCharacters(in: .whitespaces) != LyricsDocument.aiTranscriptionMarker }.joined(separator: "\n")
+        var knownText = LyricsDocument.removingInformation(from: lyrics)
         func attributed(_ result: MetadataLookupResult<LyricsSynchronizationResult>) -> MetadataLookupResult<LyricsSynchronizationResult> {
             guard wasAITranscribed else { return result }
             return MetadataLookupResult(value: LyricsSynchronizationResult(text: LyricsDocument.aiTranscriptionMarker + "\n" + result.value.text, source: result.value.source), savedAt: result.savedAt, warning: result.warning)
@@ -90,7 +89,7 @@ public actor LyricsSynchronizationClient {
                    !found.value.instrumental, abs(found.value.duration - duration) <= 2,
                    let plain = found.value.plainLyrics, !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     guard plain.utf8.count <= 65_536, !plain.contains("\0"), !LyricsDocument(text: plain).isTimed else { throw LyricsSynchronizationError.invalidAlignment }
-                    knownText = plain
+                    knownText = LyricsDocument.removingInformation(from: plain)
                 }
             } catch MetadataLookupError.notFound { }
               catch MetadataLookupError.notCached where offline { }

@@ -23,7 +23,8 @@ run_id = uuid.uuid4().hex
 frequency = 300 + (int(run_id, 16) % 1_000_000_000) / 10_000_000
 marker.write_text(f'Synthetic, regenerable synchronization fixtures. Run {run_id}, tone {frequency:.7f} Hz.\n')
 for index, title in [(1, 'Catálogo sincronizado QA'), (2, 'Tiempos Eleven QA'), (3, 'Sin letra IA QA')]:
-    lyrics = {1: 'Primera línea de Sonora\nSegunda línea de Sonora', 2: 'Mi letra de prueba\nMi letra se repite'}.get(index, '')
+    lyrics = {1: 'Primera línea de Sonora\nSegunda línea de Sonora', 2: 'Mi letra de prueba\nMi letra se repite',
+              3: '[ar:Sonora Tests]\n[ti:Sin letra IA QA]'}.get(index, '')
     subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', f'sine=frequency={frequency:.7f}:sample_rate=44100:duration=30', '-ac', '2', '-c:a', 'flac', '-metadata', 'title=' + title, '-metadata', 'artist=Sonora Tests', '-metadata', 'album=Sincronización QA', '-metadata', 'lyrics=' + lyrics, str(root / f'{index:02d} - {title}.flac')], check=True)
 support = container / 'Library/Application Support/Sonora'
 support.mkdir(parents=True, exist_ok=True)

@@ -24,7 +24,7 @@ struct LyricsSynchronizationView: View {
                     Text(current[.title].flatMap { $0.isEmpty ? nil : $0 } ?? track.displayName).font(.headline)
                     Text(current[.artist] ?? "").foregroundStyle(.secondary)
                     if settings.effectiveOffline { Label("Modo desconectado · Solo información guardada", systemImage: "wifi.slash") }
-                    Button(settings.effectiveOffline ? "Buscar en caché" : (lyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Buscar o transcribir" : "Buscar y sincronizar")) { start() }
+                    Button(settings.effectiveOffline ? "Buscar en caché" : (LyricsDocument(text: lyrics).lines.isEmpty ? "Buscar o transcribir" : "Buscar y sincronizar")) { start() }
                         .disabled(loading || settings.endpoint.isEmpty || LyricsDocument(text: lyrics).isTimed).accessibilityIdentifier("synchronizeLyrics")
                     NavigationLink("Configurar asistente") { MetadataConnectionView() }.disabled(loading)
                     Text("Buscamos gratis en LRCLIB. Si hay letra, ElevenLabs sincroniza los tiempos; si no, Scribe v2 la transcribe. La IA envía el audio y consume créditos de tu cuenta. Reutilizamos la caché. Máximo: 10 minutos.")

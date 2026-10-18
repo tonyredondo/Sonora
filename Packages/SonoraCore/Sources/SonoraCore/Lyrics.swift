@@ -24,6 +24,15 @@ public struct LyricsDocument: Equatable, Sendable {
     private static let information = try! NSRegularExpression(pattern: #"^\[(ar|al|ti|au|by|re|ve|length|offset):.*\]$"#, options: .caseInsensitive)
     private static let fileOffset = try! NSRegularExpression(pattern: #"\[offset:([+-]?\d+)\]"#, options: .caseInsensitive)
 
+    /// Remove LRC metadata before deciding whether text exists or aligning words.
+    /// Preserve lyric spelling and blank lines between verses.
+    public static func removingInformation(from text: String) -> String {
+        text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: .newlines).filter { raw in
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            return information.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) == nil
+        }.joined(separator: "\n")
+    }
+
     public init(text: String) {
         isAITranscribed = text.components(separatedBy: .newlines).contains { $0.trimmingCharacters(in: .whitespaces) == Self.aiTranscriptionMarker }
         let range = NSRange(text.startIndex..., in: text)

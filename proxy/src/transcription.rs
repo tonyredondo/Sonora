@@ -165,8 +165,14 @@ impl TranscriptionInput {
             ));
             plain.push(text);
         }
+        let plain_lyrics = plain.join("\n");
+        // Phrase separators can grow the transcript beyond the raw provider text.
+        // Never cache a derived result that the iPhone cannot accept.
+        if plain_lyrics.len() > MAX_TEXT_BYTES {
+            return Err(invalid());
+        }
         Ok(Transcription {
-            plain_lyrics: plain.join("\n"),
+            plain_lyrics,
             synced_lyrics: synced.join("\n"),
             audio_sha256: digest(&self.audio),
             duration: self.duration,
@@ -287,6 +293,30 @@ mod review_tests {
             {"text":"Hello\nAgain","type":"word","start":0.1,"end":1.5}]}))
             .unwrap();
         assert_eq!(result.synced_lyrics, "[00:00.10]Hello Again");
+    }
+    #[test]
+    fn phrase_grouping_cannot_exceed_the_client_text_limit() {
+        // Valid source text below the limit grows when CJK sentences gain newlines.
+        let count = MAX_TEXT_BYTES / "啊。".len();
+        let text = "啊。".repeat(count);
+        assert!(text.len() <= MAX_TEXT_BYTES);
+        let words: Vec<_> = (0..count)
+            .map(|i| {
+                serde_json::json!({
+                    "text":"啊。", "type":"word", "start":i as f64 * 0.05,
+                    "end":i as f64 * 0.05 + 0.025
+                })
+            })
+            .collect();
+        let input = TranscriptionInput {
+            audio: Bytes::new(),
+            duration: 600.0,
+        };
+        assert!(
+            input
+                .transcribed(&serde_json::json!({"text":text,"words":words}))
+                .is_err()
+        );
     }
     #[test]
     fn quotation_marks_stay_with_their_phrase_and_do_not_hide_sentence_endings() {

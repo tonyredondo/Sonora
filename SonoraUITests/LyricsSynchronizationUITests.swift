@@ -106,6 +106,7 @@ final class LyricsSynchronizationUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         open(app, filename: "03 - Sin letra IA QA.flac", theme: "noche", fromLyrics: true, missingLyrics: true)
+        XCTAssertEqual(app.buttons["synchronizeLyrics"].label, "Buscar o transcribir", "LRC information headers are not lyric text")
         let before = try await counts()
         app.buttons["synchronizeLyrics"].tap()
         let source = app.staticTexts["lyricsSynchronizationSource"]

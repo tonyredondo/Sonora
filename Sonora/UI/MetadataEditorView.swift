@@ -72,7 +72,7 @@ struct MetadataEditorView: View {
                         if cover != nil { Button("Quitar carátulas", role: .destructive) { artwork = .remove; coverPreview = nil } }
                     }.disabled(!snapshot.canWrite || saving || importing)
                     Section("Letra") {
-                        Button(existingLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Buscar o transcribir letra" : "Sincronizar letra", systemImage: "waveform") { showLyricsSynchronization = true }
+                        Button(LyricsDocument(text: existingLyrics).lines.isEmpty ? "Buscar o transcribir letra" : "Sincronizar letra", systemImage: "waveform") { showLyricsSynchronization = true }
                             .accessibilityIdentifier("openLyricsSynchronization")
                         NavigationLink("Editar letra") {
                             Form {
