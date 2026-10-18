@@ -43,7 +43,7 @@ public struct LyricsRepair: Sendable {
     private struct Token { let text: String, key: String; let line: Int, start: Int, end: Int; var time: Double?; var finish: Double? }
     private static let wordPattern = try! NSRegularExpression(pattern: #"[\p{L}\p{M}\p{N}]+(?:['’][\p{L}\p{M}\p{N}]+)*"#)
     private static let controls = try! NSRegularExpression(pattern: #"\[(?:\d{1,3}:\d{2}|(?:ar|al|ti|au|by|re|ve|length|offset)\s*:)"#, options: .caseInsensitive)
-    private static let offsetInformation = try! NSRegularExpression(pattern: #"^\[offset:"#, options: .caseInsensitive)
+    private static let offsetInformation = try! NSRegularExpression(pattern: #"\[offset:[^\]]*\]"#, options: .caseInsensitive)
     public let original: String
     public let proposals: [Proposal]
     public let usesPhraseTiming: Bool
@@ -350,11 +350,14 @@ public struct LyricsRepair: Sendable {
                 parsed = parsed.enumerated().sorted { ($0.element.time ?? .infinity,$0.offset) < ($1.element.time ?? .infinity,$1.offset) }.map(\.element)
             }
         }
-        let headers = metadata.filter {
-            let line = $0.trimmingCharacters(in:.whitespaces)
-            // String.range case folding differs from the reader's regex matching.
-            return Self.offsetInformation.firstMatch(in:line,range:NSRange(line.startIndex...,in:line)) == nil
-                && line != LyricsDocument.aiRepairMarker
+        let headers = metadata.compactMap { raw -> String? in
+            let line = raw.trimmingCharacters(in:.whitespaces)
+            // Times are now absolute. Strip offset tags even when other metadata
+            // shares their line, keeping only the remaining metadata headers.
+            let header = Self.offsetInformation.stringByReplacingMatches(in:line,range:NSRange(line.startIndex...,in:line),withTemplate:"").trimmingCharacters(in:.whitespaces)
+            guard !header.isEmpty, header != LyricsDocument.aiRepairMarker,
+                  LyricsDocument.removingInformation(from:header).isEmpty else { return nil }
+            return header
         }
         return Original(lines:parsed,headers:headers,isTimed:timed)
     }

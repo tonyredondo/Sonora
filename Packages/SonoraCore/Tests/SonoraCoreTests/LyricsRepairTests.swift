@@ -205,6 +205,20 @@ final class LyricsRepairTests: XCTestCase {
             } catch { XCTFail("Unexpected draft failure for \(header): \(error)") }
         }
     }
+    func testCompoundHeadersRetainMetadataWithoutApplyingTheOffsetTwice() throws {
+        for header in ["[ar:Example][offset:200]","[offset:200][ar:Example]","[ar:Example] [offſet:200]","[offset:invalid][ar:Example][OFFSET:+200]","[ar:Example][oﬀset:200]","[offset:200][ar:Example][offset:800]"] {
+            let original = header + "\n[00:01.30]Bright roan\n[00:03.30]We return"
+            try LyricsRepair.validateOriginal(original,duration:5)
+            let review = try LyricsRepair(original:original,transcript:transcript("[00:01.10]Bright road\n[00:03.10]We return",duration:5))
+            let change = try XCTUnwrap(review.proposals.first { $0.kind == .correction })
+            do {
+                let text = try review.applying([change.id:.init(text:change.suggested)])
+                XCTAssertTrue(text.contains("[ar:Example]"),header)
+                XCTAssertEqual(LyricsDocument(text:text).lines.map(\.text),["Bright road","We return"],header)
+                XCTAssertEqual(LyricsDocument(text:text).lines.map(\.time),[1.1,3.1],header)
+            } catch { XCTFail("Compound header failed: \(header): \(error)") }
+        }
+    }
     func testTimedRepeatedChorusesAreMatchedToTheirOwnOccurrence() throws {
         let original = "[00:01.00]Bright road\n[00:05.00]We return"
         let source = LyricsTranscript(plainText:"Bright road\nWe return\nWe return",syncedText:"[00:01.00]Bright road\n[00:03.00]We return\n[00:05.00]We return",duration:8,

@@ -54,7 +54,7 @@ final class LyricsRepairSessionTests: XCTestCase {
         await player.loadFolder(root,autoPlay:false)
         let track = try XCTUnwrap(AudioTrack(relativePath:"repair.mp3"))
         let initial = try await player.readMetadata(for:track)
-        let original = "[offset:invalid]\n[offſet:200]\n[00:01.30]We sing softly\n[00:02.30]Come home\n[00:03.30]Come home"
+        let original = "[ar:Example][offset:invalid][offſet:200]\n[00:01.30]We sing softly\n[00:02.30]Come home\n[00:03.30]Come home"
         try await player.saveMetadata(for:track,expected:initial.fingerprint,patch:MetadataPatch(values:[.lyrics:original]))
         let before = try await player.readMetadata(for:track), folder = try player.folderAccess(for:track)
         let identity = try await AudioContentIdentity.read(track:track,folder:folder,expected:before.fingerprint)
@@ -72,10 +72,12 @@ final class LyricsRepairSessionTests: XCTestCase {
         XCTAssertEqual(LyricsDocument(text:try session.draft()).lines.map(\.text),["We sing softly","home come home","Come home","Come home"])
         session.onlyCompletions = false
         let draft = try session.draft()
+        XCTAssertTrue(draft.contains("[ar:Example]"),"Compound LRC metadata must survive offset conversion")
         XCTAssertEqual(LyricsDocument(text:draft).lines.map(\.time),[1.1,1.6,2.1,3.1])
         await session.save(draft)
         XCTAssertTrue(session.saved); XCTAssertNil(session.issue)
         let written = try await player.readMetadata(for:track)
+        XCTAssertTrue(written.values[.lyrics]?.contains("[ar:Example]") == true)
         XCTAssertEqual(LyricsDocument(text:written.values[.lyrics] ?? "").lines.map(\.text),["We sing brightly","home come home","Come back","Come back"])
         XCTAssertEqual(LyricsDocument(text:written.values[.lyrics] ?? "").lines.map(\.time),[1.1,1.6,2.1,3.1])
         let after = try await AudioContentIdentity.read(track:track,folder:folder,expected:written.fingerprint)
