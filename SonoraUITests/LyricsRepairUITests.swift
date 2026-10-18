@@ -162,6 +162,67 @@ final class LyricsRepairUITests: XCTestCase {
         app.navigationBars["Reparar letra"].buttons["BackButton"].tap()
         XCTAssertEqual(app.buttons["lyricLine2"].label,"Conserva esta frase")
     }
+    @MainActor func testPhraseTimingConflictCanBeEditedAndSaved() async throws {
+        continueAfterFailure = false
+        let app = XCUIApplication(); open(app,filename:"05 - Ajuste de tiempos QA.flac")
+        app.buttons["repairLyrics"].tap()
+        let analyze = app.buttons["analyzeLyricsRepair"]
+        XCTAssertTrue(analyze.waitForExistence(timeout:10))
+        let before = try await counts(); analyze.tap()
+        XCTAssertTrue(app.staticTexts["repairAnalysisSource"].waitForExistence(timeout:25))
+        let proposal = app.staticTexts["repairProposal-1"]
+        reveal(proposal,in:app)
+        XCTAssertEqual(proposal.label,"Ajuste de tiempo")
+        XCTAssertTrue(app.descendants(matching:.any).matching(identifier:"repairOriginalTiming-1").firstMatch.label.contains("0:01.20"))
+        XCTAssertTrue(app.descendants(matching:.any).matching(identifier:"repairTiming-1").firstMatch.label.contains("0:01.16"))
+        XCTAssertTrue(app.staticTexts["Adelantar 0.04 s"].exists)
+        capture("repair-timing-current-and-proposed",app)
+        let currentAudio = app.buttons["repairListenCurrent-1"], proposedAudio = app.buttons["repairListenProposed-1"]
+        reveal(currentAudio,in:app); currentAudio.tap()
+        XCTAssertEqual(currentAudio.value as? String,"Reproduciendo")
+        reveal(proposedAudio,in:app); proposedAudio.tap()
+        XCTAssertEqual(currentAudio.value as? String,"Detenido")
+        XCTAssertEqual(proposedAudio.value as? String,"Reproduciendo")
+        proposedAudio.tap(); XCTAssertEqual(proposedAudio.value as? String,"Detenido")
+        XCTAssertEqual(app.buttons["previewLyricsRepair"].label,"Revisar selección (0)","Listening must not select a change")
+        capture("repair-comparable-audio-starts",app)
+        reveal(app.buttons["repairEdit-1"],in:app)
+        app.buttons["repairEdit-1"].tap()
+        let time = app.textFields["repairEditTime"]
+        XCTAssertTrue(time.waitForExistence(timeout:10)); time.tap()
+        time.typeText(String(repeating:XCUIKeyboardKey.delete.rawValue,count:(time.value as? String ?? "").count) + "15")
+        XCTAssertEqual(time.value as? String,"15")
+        let editAudio = app.buttons["repairListenEdited-1"]
+        XCTAssertTrue(editAudio.exists); editAudio.tap()
+        XCTAssertEqual(editAudio.value as? String,"Reproduciendo")
+        let stopped = XCTNSPredicateExpectation(predicate:NSPredicate(format:"value == %@","Detenido"),object:editAudio)
+        XCTAssertEqual(XCTWaiter.wait(for:[stopped],timeout:7),.completed,"A sample must stop on its own")
+        capture("repair-edit-audio-preview",app)
+        app.buttons["repairUseEdit"].tap(); app.buttons["previewLyricsRepair"].tap()
+        let alert = app.alerts["Revisa la selección"]
+        XCTAssertTrue(alert.waitForExistence(timeout:10))
+        let message = alert.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator:" ")
+        XCTAssertTrue(message.contains("Camino de cristal.")); XCTAssertTrue(message.contains("0:15.00")); XCTAssertTrue(message.contains("0:08.00"))
+        capture("repair-timing-identifies-conflicting-fragment",app)
+        alert.buttons["Editar fragmento"].tap()
+        XCTAssertTrue(time.waitForExistence(timeout:10))
+        XCTAssertTrue(app.staticTexts["Inicio permitido: 0:00.00 – 0:08.00"].exists)
+        time.tap(); time.typeText(String(repeating:XCUIKeyboardKey.delete.rawValue,count:(time.value as? String ?? "").count) + "1.1")
+        XCTAssertEqual(time.value as? String,"1.1")
+        app.buttons["repairUseEdit"].tap()
+        XCTAssertTrue(app.descendants(matching:.any).matching(identifier:"repairTiming-1").firstMatch.label.contains("0:01.10"))
+        app.buttons["previewLyricsRepair"].tap()
+        XCTAssertTrue(app.buttons["saveLyricsRepair"].waitForExistence(timeout:10))
+        XCTAssertTrue(app.scrollViews["repairPreviewContent"].staticTexts["0:01.10"].exists)
+        capture("repair-timing-valid-preview",app)
+        app.buttons["saveLyricsRepair"].tap(); app.buttons["Guardar en archivo"].tap()
+        XCTAssertTrue(app.buttons["repairLyrics"].waitForExistence(timeout:15))
+        XCTAssertEqual(app.buttons["lyricLine0"].label,"Camino de cristal.")
+        XCTAssertEqual(app.buttons["lyricLine2"].label,"Conserva esta frase")
+        let after = try await counts()
+        XCTAssertEqual(after["transcription"],(before["transcription"] ?? 0) + 1)
+        capture("repair-timing-saved-with-original-words",app)
+    }
 
     @MainActor func testAnalysisFailureShowsCauseAndCopyableRequestReference() async throws {
         continueAfterFailure = false

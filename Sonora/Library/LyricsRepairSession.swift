@@ -15,10 +15,13 @@ import SonoraCore
     private(set) var saved = false
     private(set) var isCached = false
     private(set) var warning: String?
+    private(set) var timingIssue: LyricsRepair.TimingIssue?
     private(set) var phase = "Leyendo letra…"
     private(set) var edits: [Int:LyricsRepair.Edit] = [:]
     private(set) var kept: Set<Int> = []
-    var onlyCompletions = false
+    var onlyCompletions = false {
+        didSet { if oldValue != onlyCompletions { preparedText = nil; timingIssue = nil; issue = nil } }
+    }
     var issue: String?
     @ObservationIgnored private let transport: any MetadataLookupTransport
     @ObservationIgnored private var operation: Task<Void,Never>?
@@ -27,6 +30,13 @@ import SonoraCore
     @ObservationIgnored private var audioDuration: Double?
     @ObservationIgnored private var preparedText: String?
     private(set) var previewEnd: Double?
+    enum PreviewReference: Equatable { case fragment, current, proposed }
+    private struct PreviewSelection: Equatable {
+        let proposalID: Int
+        let reference: PreviewReference
+        let start: Double
+    }
+    private var previewSelection: PreviewSelection?
     var title: String { snapshot?.values[.title].flatMap { $0.isEmpty ? nil : $0 } ?? track.displayName }
     var canAnalyze: Bool { snapshot?.canWrite == true && track.cue == nil && !settings.endpoint.isEmpty && !loading && !saving }
     var canListen: Bool { player.current?.id == track.id }
@@ -34,6 +44,9 @@ import SonoraCore
         review?.proposals.filter { $0.kind != .unrecognized && (!onlyCompletions || $0.kind == .completion) } ?? []
     }
     var selectedCount: Int { visibleProposals.filter { edits[$0.id] != nil }.count }
+    var timingProblemProposals: [LyricsRepair.Proposal] {
+        timingIssue?.proposalIDs.compactMap { id in review?.proposals.first { $0.id == id } } ?? []
+    }
 
     init(player: PlaybackController, track: AudioTrack, settings: MetadataAssistantSettings = .shared,
          transport: any MetadataLookupTransport = MetadataURLSessionTransport(requestTimeout:180,resourceTimeout:210)) {
@@ -107,15 +120,25 @@ import SonoraCore
         setEdit(proposal,text:proposal.suggested,startTime:proposal.start)
     }
     func setEdit(_ proposal: LyricsRepair.Proposal, text: String, startTime: Double?) {
+        if proposal.kind == .timing, let startTime, startTime.isFinite, let original = proposal.originalStart,
+           (startTime * 100).rounded() == (original * 100).rounded() { keep(proposal); return }
         edits[proposal.id] = .init(text:text,startTime:startTime); kept.remove(proposal.id); preparedText = nil
+        timingIssue = nil; issue = nil
     }
-    func keep(_ proposal: LyricsRepair.Proposal) { edits.removeValue(forKey:proposal.id); kept.insert(proposal.id); preparedText = nil }
-    func undo(_ proposal: LyricsRepair.Proposal) { edits.removeValue(forKey:proposal.id); kept.remove(proposal.id); preparedText = nil }
+    func keep(_ proposal: LyricsRepair.Proposal) { edits.removeValue(forKey:proposal.id); kept.insert(proposal.id); preparedText = nil; timingIssue = nil; issue = nil }
+    func undo(_ proposal: LyricsRepair.Proposal) { edits.removeValue(forKey:proposal.id); kept.remove(proposal.id); preparedText = nil; timingIssue = nil; issue = nil }
     func draft() throws -> String {
-        guard let review, selectedCount > 0 else { throw LyricsRepairError.invalidSelection }
-        let text = try review.applying(edits,onlyCompletions:onlyCompletions)
-        guard text != originalLyrics else { throw LyricsRepairError.invalidSelection }
-        preparedText = text; return text
+        preparedText = nil; timingIssue = nil
+        do {
+            guard let review, selectedCount > 0 else { throw LyricsRepairError.invalidSelection }
+            let text = try review.applying(edits,onlyCompletions:onlyCompletions)
+            guard text != originalLyrics else { throw LyricsRepairError.invalidSelection }
+            issue = nil; preparedText = text; return text
+        } catch {
+            timingIssue = error as? LyricsRepair.TimingIssue
+            issue = error.localizedDescription
+            throw error
+        }
     }
     func save(_ text: String) async {
         guard !saving, text == preparedText, let snapshot else { issue = LyricsRepairError.invalidSelection.localizedDescription; return }
@@ -131,19 +154,34 @@ import SonoraCore
             await MetadataDiagnostics.shared.recordFailure(error, stage: .lyricsSave)
         }
     }
-    func listen(_ proposal: LyricsRepair.Proposal) {
-        guard canListen, let start = proposal.start else { return }
+    func canPreview(at time: Double?) -> Bool {
+        guard canListen, !saving, let time, time.isFinite, let audioDuration else { return false }
+        return time >= 0 && time < audioDuration
+    }
+    func isPreviewing(_ proposal: LyricsRepair.Proposal, reference: PreviewReference, at time: Double?) -> Bool {
+        guard let time, canListen, previewEnd != nil else { return false }
+        return previewSelection == PreviewSelection(proposalID:proposal.id,reference:reference,start:time)
+    }
+    func listen(_ proposal: LyricsRepair.Proposal, reference: PreviewReference = .fragment, at time: Double? = nil) {
+        let start = time ?? (reference == .current ? proposal.originalStart : proposal.start)
+        guard canPreview(at:start), let start else { return }
+        let selection = PreviewSelection(proposalID:proposal.id,reference:reference,start:start)
+        if previewSelection == selection { stopPreview(); return }
         stopPreview()
-        player.seek(to:max(0,start - 0.5)); player.resume()
-        previewEnd = min(audioDuration ?? .infinity,max(start + 1,proposal.end ?? start + 4) + 0.3)
+        let from = max(0,start - 0.5)
+        player.seek(to:from); player.resume()
+        // Both timing references get the same listening window for comparison.
+        let end = reference == .fragment ? max(start + 1,proposal.end ?? start + 4) + 0.3 : from + 4
+        previewEnd = min(audioDuration ?? end,end)
+        previewSelection = selection
     }
     func checkPreview() {
-        if !canListen { previewEnd = nil; return }
+        if !canListen { stopPreview(); return }
         if let end = previewEnd, player.currentTime >= end { stopPreview() }
     }
     func stopPreview() {
         let playingOurFragment = previewEnd != nil && canListen
-        previewEnd = nil
+        previewEnd = nil; previewSelection = nil
         if playingOurFragment { player.pause() }
     }
 }

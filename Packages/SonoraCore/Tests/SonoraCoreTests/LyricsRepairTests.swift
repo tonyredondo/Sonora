@@ -6,6 +6,40 @@ final class LyricsRepairTests: XCTestCase {
     private func transcript(_ lrc: String, duration: Double = 8) -> LyricsTranscript {
         LyricsTranscript(plainText: LyricsDocument(text:lrc).lines.map(\.text).joined(separator:"\n"),syncedText:lrc,duration:duration)
     }
+    func testMatchingWordsWithEarlierTranscriptionTimingProduceAnExplicitTimingChange() throws {
+        let original = "[00:01.00]Here\n[00:02.00]that stays"
+        let source = LyricsTranscript(plainText:"Here\nthat stays",syncedText:"[00:01.00]Here\n[00:01.80]that stays",duration:8,words:[
+            .init(text:"Here",start:1,end:1.2),.init(text:"that",start:1.8,end:1.9),.init(text:"stays",start:2.3,end:2.5)
+        ])
+        let review = try LyricsRepair(original:original,transcript:source)
+        XCTAssertTrue(review.proposals.filter { $0.kind == .correction }.isEmpty)
+        XCTAssertEqual(review.proposals.count,1)
+        XCTAssertEqual(try review.applying([:]),original)
+        let change = try XCTUnwrap(review.proposals.first)
+        XCTAssertEqual(change.kind,.timing)
+        XCTAssertEqual(change.originalStart,2)
+        XCTAssertEqual(change.start,1.8)
+        let written = LyricsDocument(text:try review.applying([change.id:.init(text:change.suggested,startTime:1.8)]))
+        XCTAssertEqual(written.lines.map(\.text),["Here","that stays"])
+        XCTAssertEqual(written.lines.map(\.time),[1,1.8])
+    }
+    func testTimingAndTextCorrectionsCanBeSelectedIndependently() throws {
+        let original = "[00:01.00]Here\n[00:02.00]that stays\n[00:04.00]Bright roan"
+        let source = LyricsTranscript(plainText:"Here\nthat stays\nBright road",syncedText:"[00:01.00]Here\n[00:01.80]that stays\n[00:04.00]Bright road",duration:8,words:[
+            .init(text:"Here",start:1,end:1.2),.init(text:"that",start:1.8,end:1.9),.init(text:"stays",start:2.3,end:2.5),
+            .init(text:"Bright",start:4,end:4.3),.init(text:"road",start:4.5,end:4.8)
+        ])
+        let review = try LyricsRepair(original:original,transcript:source)
+        XCTAssertEqual(review.proposals.filter { $0.kind == .correction }.count,1)
+        let correction = try XCTUnwrap(review.proposals.first { $0.original == "roan" })
+        XCTAssertEqual(correction.id,0)
+        XCTAssertEqual(correction.suggested,"road")
+        let result = LyricsDocument(text:try review.applying([correction.id:.init(text:correction.suggested)]))
+        XCTAssertEqual(result.lines.map(\.text),["Here","that stays","Bright road"])
+        XCTAssertEqual(result.lines.map(\.time),[1,2,4])
+        let edits = Dictionary(uniqueKeysWithValues:review.proposals.map { ($0.id,LyricsRepair.Edit(text:$0.suggested,startTime:$0.start)) })
+        XCTAssertEqual(LyricsDocument(text:try review.applying(edits)).lines.map(\.time),[1,1.8,4])
+    }
     func testZeroDurationWordCanBeReviewedAndAppliedWithoutLosingLyrics() throws {
         let source = LyricsTranscript(plainText:"Bright road",syncedText:"[00:01.00]Bright road",duration:8,words:[
             .init(text:"Bright",start:1,end:1.2),.init(text:"road",start:1.3,end:1.3)
@@ -193,12 +227,67 @@ final class LyricsRepairTests: XCTestCase {
     func testManualInsertionTimesMustStayInsideTheAudioAndBetweenNeighboringLines() throws {
         let review = try LyricsRepair(original:"[00:01.00]Bright road\n[00:05.00]We return",transcript:transcript("[00:01.00]Bright road\n[00:03.00]Walk beside me\n[00:05.00]We return"))
         let proposal = try XCTUnwrap(review.proposals.first)
-        for time in [-1,6,9,Double.nan,Double.infinity] {
-            XCTAssertThrowsError(try review.applying([proposal.id:.init(text:proposal.suggested,startTime:time)]))
+        for time in [-1,6,9,Double.nan,Double.infinity,1e300] {
+            XCTAssertThrowsError(try review.applying([proposal.id:.init(text:proposal.suggested,startTime:time)])) { error in
+                XCTAssertFalse(error.localizedDescription.isEmpty)
+            }
         }
         let written = try review.applying([proposal.id:.init(text:proposal.suggested,startTime:2.5)])
         XCTAssertEqual(LyricsDocument(text:written).lines.map(\.time),[1,2.5,5])
         XCTAssertNil(LyricsDocument(text:written).sliced(from:1,duration:5).attribution)
+    }
+    func testTimingConflictNamesTheSelectedFragmentAndItsValidInterval() throws {
+        let review = try LyricsRepair(original:"[00:01.00]Bright road\n[00:05.00]We return",transcript:transcript("[00:01.00]Bright road\n[00:03.00]Walk beside me\n[00:05.00]We return"))
+        let proposal = try XCTUnwrap(review.proposals.first { $0.kind == .completion })
+        XCTAssertThrowsError(try review.applying([proposal.id:.init(text:proposal.suggested,startTime:6)])) { error in
+            let issue = error as? LyricsRepair.TimingIssue
+            XCTAssertEqual(issue?.proposalIDs,[proposal.id])
+            XCTAssertEqual(issue?.fragment,"Walk beside me")
+            XCTAssertEqual(issue?.minimum,1); XCTAssertEqual(issue?.maximum,5)
+            XCTAssertTrue(error.localizedDescription.contains("Walk beside me"),error.localizedDescription)
+            for time in ["0:06.00","0:01.00","0:05.00"] { XCTAssertTrue(error.localizedDescription.contains(time),error.localizedDescription) }
+        }
+    }
+    func testLaterPhraseTimingCanBeAcceptedWithoutChangingItsWords() throws {
+        let original = "[00:01.00]Here\n[00:02.00]that stays"
+        let source = LyricsTranscript(plainText:"Here\nthat stays",syncedText:"[00:01.00]Here\n[00:02.20]that stays",duration:8,words:[
+            .init(text:"Here",start:1,end:1.2),.init(text:"that",start:2.2,end:2.3),.init(text:"stays",start:2.6,end:2.8)
+        ])
+        let review = try LyricsRepair(original:original,transcript:source)
+        let change = try XCTUnwrap(review.proposals.first)
+        let written = LyricsDocument(text:try review.applying([change.id:.init(text:change.suggested,startTime:2.2)]))
+        XCTAssertEqual(written.lines.map(\.text),["Here","that stays"])
+        XCTAssertEqual(written.lines.map(\.time),[1,2.2])
+    }
+    func testNeighboringTimingSelectionsAreValidatedTogether() throws {
+        let original = "[00:01.00]Here\n[00:03.00]Walk\n[00:05.00]Return"
+        let source = LyricsTranscript(plainText:"Here\nWalk\nReturn",syncedText:"[00:01.00]Here\n[00:04.00]Walk\n[00:06.00]Return",duration:8,words:[
+            .init(text:"Here",start:1,end:1.2),.init(text:"Walk",start:4,end:4.2),.init(text:"Return",start:6,end:6.2)
+        ])
+        let review = try LyricsRepair(original:original,transcript:source)
+        let walk = try XCTUnwrap(review.proposals.first { $0.original == "Walk" })
+        let returning = try XCTUnwrap(review.proposals.first { $0.original == "Return" })
+        XCTAssertThrowsError(try review.applying([walk.id:.init(text:walk.suggested,startTime:5.5)])) { error in
+            XCTAssertEqual((error as? LyricsRepair.TimingIssue)?.proposalIDs,[walk.id])
+        }
+        let edits = [walk.id:LyricsRepair.Edit(text:walk.suggested,startTime:5.5),returning.id:.init(text:returning.suggested,startTime:6)]
+        XCTAssertEqual(LyricsDocument(text:try review.applying(edits)).lines.map(\.time),[1,5.5,6])
+        XCTAssertEqual(try review.applying(edits,onlyCompletions:true),original)
+    }
+    func testTimingProposalUsesRepresentableLRCTimeAtTheEndOfTheAudio() throws {
+        let source = LyricsTranscript(plainText:"Here",syncedText:"[00:02.00]Here",duration:2.009,words:[.init(text:"Here",start:2.009,end:2.009)])
+        let review = try LyricsRepair(original:"[00:01.00]Here",transcript:source)
+        let change = try XCTUnwrap(review.proposals.first { $0.kind == .timing })
+        XCTAssertEqual(change.start,2)
+        let rendered = try review.applying([change.id:.init(text:change.suggested,startTime:change.start)])
+        let written = LyricsDocument(text:rendered)
+        XCTAssertEqual(written.lines.map(\.time),[2])
+        XCTAssertNoThrow(try LyricsRepair.validateOriginal(rendered,duration:2.009))
+    }
+    func testBinaryRoundingCannotInventAPhraseTimingDifference() throws {
+        let source = LyricsTranscript(plainText:"Here",syncedText:"[00:01.15]Here",duration:8,words:[.init(text:"Here",start:1.16,end:1.4)])
+        let review = try LyricsRepair(original:"[00:01.16]Here",transcript:source)
+        XCTAssertTrue(review.proposals.isEmpty)
     }
     func testPunctuationCaseAndUnicodeAreComparedWithoutDamagingOriginalText() throws {
         let original = "[ar:Álvaro]\n[00:01.00]¡Sí, corazón!"

@@ -24,12 +24,13 @@ root.mkdir(parents=True, exist_ok=True)
 run_id = uuid.uuid4().hex
 frequency = 300 + (int(run_id, 16) % 1_000_000_000) / 10_000_000
 marker.write_text(f'Synthetic, regenerable synchronization fixtures. Run {run_id}, tone {frequency:.7f} Hz.\n')
-tracks = [(1, 'Reparación QA'), (2, 'Letra mixta QA'), (3, 'Error de análisis QA'), (4, 'Letra conservada QA')] if args.scenario == 'repair' else [(1, 'Catálogo sincronizado QA'), (2, 'Tiempos Eleven QA'), (3, 'Sin letra IA QA')]
+tracks = [(1, 'Reparación QA'), (2, 'Letra mixta QA'), (3, 'Error de análisis QA'), (4, 'Letra conservada QA'), (5, 'Ajuste de tiempos QA')] if args.scenario == 'repair' else [(1, 'Catálogo sincronizado QA'), (2, 'Tiempos Eleven QA'), (3, 'Sin letra IA QA')]
 for index, title in tracks:
     lyrics = ({1: '[ar:Sonora Tests]\n[00:01.00]Camino de cristel\n[00:10.00]\n[00:16.00]Volvemos al hogar',
                2: '[00:01.00]Una frase con tiempos\nOtra frase sin tiempos',
                3: '[00:01.00]Camino de cristel\n[00:16.00]Volvemos al hogar',
-               4: '[00:01.00]Camino de cristal.\n[00:08.00]Vuelve la luz.\n[00:12.00]Conserva esta frase\n[00:16.00]Volvemos al hogar.'}[index] if args.scenario == 'repair' else
+               4: '[00:01.16]Camino de cristal.\n[00:08.00]Vuelve la luz.\n[00:12.00]Conserva esta frase\n[00:16.00]Volvemos al hogar.',
+               5: '[00:01.20]Camino de cristal.\n[00:08.00]Vuelve la luz.\n[00:12.00]Conserva esta frase\n[00:16.00]Volvemos al hogar.'}[index] if args.scenario == 'repair' else
               {1: 'Primera línea de Sonora\nSegunda línea de Sonora', 2: 'Mi letra de prueba\nMi letra se repite',
                3: '[ar:Sonora Tests]\n[ti:Sin letra IA QA]'}.get(index, ''))
     track_frequency = frequency + (17 if args.scenario == 'repair' and index == 3 else 0)

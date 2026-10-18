@@ -66,7 +66,7 @@ class Handler(BaseHTTPRequestHandler):
             if args.scenario == 'repair':
                 transcript = 'Camino de cristal.\nVuelve la luz.\nVolvemos al hogar.'
                 words = []
-                for start, line in [(1, 'Camino de cristal.'), (8, 'Vuelve la luz.'), (16, 'Volvemos al hogar.')]:
+                for start, line in [(1.16, 'Camino de cristal.'), (8, 'Vuelve la luz.'), (16, 'Volvemos al hogar.')]:
                     for index, word in enumerate(line.split()):
                         words.append({'text': word, 'start': start + index * 0.4, 'end': start + index * 0.4 + 0.3, 'type': 'word'})
                 return self.reply(200, {'text': transcript, 'language_code': 'spa', 'words': words})
