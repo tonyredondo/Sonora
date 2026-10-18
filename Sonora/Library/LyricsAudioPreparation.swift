@@ -1,0 +1,86 @@
+import AVFAudio
+import Foundation
+import SonoraCore
+
+/// A bounded in-memory upload, decoded through the same format support as playback.
+/// No temporary audio file or original-file mutation is needed.
+enum LyricsAudioPreparation {
+    static func prepare(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint) async throws -> Data {
+        try await read(track: track, folder: folder, expected: expected) { url, _ in
+            let source = try AudioDecoders.open(url, cue: track.cue)
+            defer { try? source.close() }
+            let duration = Double(source.length) / source.processingFormat.sampleRate
+            guard duration.isFinite, duration >= 1, duration <= 600,
+                  let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1),
+                  let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8192) else { throw LyricsSynchronizationError.unsupportedDuration }
+            let pcm = try NormalizedPCMDecoder(source, format: format)
+            guard pcm.length >= 16000, pcm.length <= 9_600_000 else { throw LyricsSynchronizationError.unsupportedDuration }
+            var data = header(bytes: UInt32(pcm.length * 2))
+            data.reserveCapacity(44 + Int(pcm.length) * 2)
+            var samples = [Int16](repeating: 0, count: 8192)
+            while pcm.position < pcm.length {
+                try Task.checkCancellation()
+                try pcm.decode(into: buffer, length: buffer.frameCapacity)
+                let count = Int(buffer.frameLength)
+                guard count > 0, let input = buffer.floatChannelData?[0] else { throw CocoaError(.fileReadCorruptFile) }
+                for frame in 0..<count {
+                    let value = input[frame]
+                    guard value.isFinite else { throw CocoaError(.fileReadCorruptFile) }
+                    samples[frame] = Int16(max(-32768, min(32767, Int((Double(max(-1, min(1, value))) * 32768).rounded())))).littleEndian
+                }
+                samples.withUnsafeBytes { data.append(contentsOf: $0.prefix(count * 2)) }
+            }
+            guard data.count == 44 + Int(pcm.length) * 2 else { throw CocoaError(.fileReadCorruptFile) }
+            return data
+        }
+    }
+    static func existingText(track: AudioTrack, folder: ScopedFolder, embedded: String, expected: FileFingerprint) async throws -> String {
+        try await read(track: track, folder: folder, expected: expected) { url, lyricsCoordinator in
+            LyricsSource.read(for: url, embedded: embedded, coordinator: lyricsCoordinator).text
+        }
+    }
+    private static func read<Value: Sendable>(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint,
+                                              operation: @escaping @Sendable (URL, NSFileCoordinator) throws -> Value) async throws -> Value {
+        try Task.checkCancellation()
+        let job = LyricsCoordinatedRead()
+        let worker = Task.detached(priority: .userInitiated) { try job.read(track: track, folder: folder, expected: expected, operation: operation) }
+        return try await withTaskCancellationHandler {
+            let result = try await worker.value; try Task.checkCancellation(); return result
+        } onCancel: { job.coordinator.cancel(); job.lyricsCoordinator.cancel(); worker.cancel() }
+    }
+    private static func header(bytes: UInt32) -> Data {
+        var result = Data("RIFF".utf8)
+        func append<T: FixedWidthInteger>(_ value: T) { var v = value.littleEndian; withUnsafeBytes(of: &v) { result.append(contentsOf: $0) } }
+        append(bytes + 36); result.append(Data("WAVEfmt ".utf8)); append(UInt32(16)); append(UInt16(1)); append(UInt16(1))
+        append(UInt32(16000)); append(UInt32(32000)); append(UInt16(2)); append(UInt16(16)); result.append(Data("data".utf8)); append(bytes)
+        return result
+    }
+}
+
+private final class LyricsCoordinatedRead: @unchecked Sendable {
+    let coordinator = NSFileCoordinator()
+    let lyricsCoordinator = NSFileCoordinator()
+    func read<Value>(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint, operation: (URL, NSFileCoordinator) throws -> Value) throws -> Value {
+        try Task.checkCancellation()
+        let url = track.url(in: folder.url)
+        let base = folder.url.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        guard url.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(base),
+              try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { throw CocoaError(.fileReadNoPermission) }
+        if (try? url.resourceValues(forKeys: [.isUbiquitousItemKey]).isUbiquitousItem) == true { try FileManager.default.startDownloadingUbiquitousItem(at: url) }
+        var coordinationError: NSError?, result: Result<Value, Error>?
+        coordinator.coordinate(readingItemAt: url, options: .withoutChanges, error: &coordinationError) { local in
+            result = Result {
+                try Task.checkCancellation()
+                guard try FileFingerprint(local) == expected else { throw MetadataIOError.changed }
+                let value = try operation(local, lyricsCoordinator)
+                try Task.checkCancellation()
+                guard try FileFingerprint(local) == expected else { throw MetadataIOError.changed }
+                return value
+            }
+        }
+        try Task.checkCancellation()
+        if let coordinationError { throw coordinationError }
+        guard let result else { throw CancellationError() }
+        return try result.get()
+    }
+}

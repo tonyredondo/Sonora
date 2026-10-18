@@ -34,6 +34,8 @@ pub enum Error {
     },
     #[error("provider returned an invalid response: {0:?}")]
     InvalidResponse(Provider),
+    #[error("alignment upload exceeds the supported size limit")]
+    UploadTooLarge,
     #[error("provider response exceeds the configured size limit")]
     TooLarge,
 }
@@ -132,7 +134,7 @@ pub struct RecordingCandidate {
 
 #[derive(Clone)]
 pub struct Client {
-    scheduler: Scheduler,
+    pub(crate) scheduler: Scheduler,
     config: Config,
 }
 impl Client {
@@ -145,7 +147,7 @@ impl Client {
     pub(crate) fn config(&self) -> &Config {
         &self.config
     }
-    fn request(
+    pub(crate) fn request(
         &self,
         provider: Provider,
         path: &str,
@@ -168,6 +170,7 @@ impl Client {
             provider,
             url,
             form: None,
+            alignment: None,
             image: false,
         })
     }
@@ -500,6 +503,11 @@ pub(crate) fn validate_payload(provider: Provider, path: &str, value: &Value) ->
             }
         }
         Provider::CoverArt => return Err(invalid()),
+        Provider::Elevenlabs => {
+            if !value.get("words").is_some_and(Value::is_array) {
+                return Err(invalid());
+            }
+        }
     }
     Ok(())
 }

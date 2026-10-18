@@ -12,6 +12,7 @@ final class MusicLibrary {
     private(set) var albums: [CollectionGroup] = []
     private(set) var artists: [CollectionGroup] = []
     private(set) var isIndexing = false
+    private(set) var isDeletingFiles = false
     private(set) var progress = ""
     var issue: String?
     @ObservationIgnored private let defaults: UserDefaults
@@ -26,6 +27,7 @@ final class MusicLibrary {
     @ObservationIgnored private var canPersist = true
     var needsReset: Bool { !canPersist }
     @ObservationIgnored private var metadataRevisions: [String: UUID] = [:]
+    @ObservationIgnored private var suspendedIndexSources: Set<String> = []
     private struct IndexRequest {
         let source: String
         let folder: ScopedFolder
@@ -106,6 +108,7 @@ final class MusicLibrary {
     }
 
     private func startIndex(source: String, folder: ScopedFolder, tracks: [AudioTrack]) {
+        guard !suspendedIndexSources.contains(source) else { return }
         indexRequests.removeAll { $0.source == source }
         if activeIndexSource == source {
             indexTask?.cancel(); indexID = UUID(); activeIndexSource = nil; isIndexing = false
@@ -168,6 +171,7 @@ final class MusicLibrary {
 
     func update(_ details: TrackDetails, source: String, track: AudioTrack) {
         let id = source + "\0" + track.localID
+        guard state.songs[id] != nil else { return }
         let old = state.songs[id]
         let value = CollectionSong(sourceID: source, relativePath: track.relativePath, tags: details.tags, duration: details.duration, format: details.format,
                                    artworkKey: old?.artworkKey, modified: old?.modified, cue: track.cue)
@@ -175,6 +179,8 @@ final class MusicLibrary {
         state.upsert([value]); persist(); rebuild()
     }
     func refresh(track: AudioTrack, source: String, folder: ScopedFolder) async {
+        let id = source + "\0" + track.localID
+        guard state.songs[id] != nil, !suspendedIndexSources.contains(source) else { return }
         metadataRevisions[source + "\0" + track.relativePath] = UUID()
         do {
             let value = try await MetadataService.read(url: track.url(in: folder.url), folder: folder)
@@ -183,6 +189,7 @@ final class MusicLibrary {
             if let embedded = value.artwork { data = embedded }
             else { data = await Task.detached(priority: .utility) { LocalArtwork.data(in: directory) }.value }
             let key = try await storeArtwork(data)
+            guard state.songs[id] != nil, !suspendedIndexSources.contains(source) else { return }
             state.upsert([CollectionSong(sourceID: source, relativePath: track.relativePath, tags: value.values, duration: value.duration,
                                          format: value.fileDescription, artworkKey: key, modified: value.fingerprint.modified)])
             persist(); rebuild()
@@ -224,6 +231,30 @@ final class MusicLibrary {
     }
     func deletePlaylist(_ id: String) { state.playlists.removeAll { $0.id == id }; persist() }
     func clearHistory() { state.history = []; persist() }
+    func beginFileDeletion(for sources: Set<String>) {
+        isDeletingFiles = true
+        suspendedIndexSources.formUnion(sources)
+        indexRequests.removeAll { sources.contains($0.source) }
+        if let activeIndexSource, sources.contains(activeIndexSource) {
+            indexTask?.cancel(); indexID = UUID(); self.activeIndexSource = nil; isIndexing = false
+        }
+        startNextIndex()
+    }
+    func finishFileDeletion(for sources: Set<String>) {
+        isDeletingFiles = false
+        suspendedIndexSources.subtract(sources)
+        for source in sources where state.sources.contains(where: { $0.id == source }) {
+            do { startIndex(source: source, folder: try access(source), tracks: state.songs.values.filter { $0.sourceID == source }.compactMap(\.audioTrack)) }
+            catch { issue = "No se pudo actualizar la fuente: \(error.localizedDescription)" }
+        }
+    }
+    func removeSongs(_ ids: Set<String>) {
+        for id in ids { state.songs.removeValue(forKey: id); metadataRevisions[id] = UUID() }
+        state.favorites.subtract(ids)
+        for index in state.playlists.indices { state.playlists[index].songIDs.removeAll { ids.contains($0) } }
+        state.history.removeAll { ids.contains($0.songID) }
+        persist(); rebuild()
+    }
     func forgetSource(_ id: String) {
         indexRequests.removeAll { $0.source == id }
         if activeIndexSource == id {

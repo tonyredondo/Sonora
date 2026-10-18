@@ -1,8 +1,8 @@
 # Sonora proxy
 
-A Rust service for MusicBrainz metadata, AcoustID identification, LRCLIB lyrics and Cover Art Archive artwork. It caches downloaded responses in SQLite and shares a separate request budget for each provider across all callers. Audio decoding, fingerprint generation, candidate selection and tag writes belong on the iPhone.
+A Rust service for MusicBrainz metadata, AcoustID identification, LRCLIB lyrics, Cover Art Archive artwork and opt-in ElevenLabs lyric alignment. It caches downloaded responses in SQLite and shares a separate request budget for each provider across all callers. Audio decoding, fingerprint generation, candidate selection and tag writes belong on the iPhone.
 
-This directory provides the backend API used by Sonora's [metadata assistant](../docs/metadata-assistant.md). The service has no audio upload endpoint and does not edit music files or publish data to providers.
+This directory provides the backend API used by Sonora's [metadata assistant](../docs/metadata-assistant.md). Ordinary metadata requests send tags or fingerprints. Explicit lyric alignment uploads a bounded PCM copy and known lyrics to ElevenLabs; the proxy never edits music files.
 
 ## Build and configure
 
@@ -23,7 +23,7 @@ Configuration discovery, in priority order:
 
 Only one file is loaded; credentials from separate files are never merged. A missing explicit file or an invalid discovered file stops startup. Relative cache paths are resolved against the TOML directory. `~/` paths are expanded. Settings are loaded at startup; restart after changing them. `--check-config` validates without opening the cache, starting a listener or contacting providers.
 
-See [the complete example](sonora-proxy.example.toml). Credentials are plaintext as requested. Configuration values and provider request URLs/bodies are excluded from logs and parse errors. MusicBrainz, LRCLIB and Cover Art Archive public lookups do not require credentials. AcoustID identification needs your own application `client_key` in `[acoustid]`; registering/submitting fingerprints is outside this API.
+See [the complete example](sonora-proxy.example.toml). Credentials are plaintext as requested. Configuration values and provider request URLs/bodies are excluded from logs and parse errors. MusicBrainz, LRCLIB and Cover Art Archive public lookups do not require credentials. AcoustID identification needs your own application `client_key` in `[acoustid]`; registering/submitting fingerprints is outside this API. Paid forced alignment requires your ElevenLabs `api_key` in `[elevenlabs]`. `/v1/status` reports whether each provider is configured without returning its key.
 
 The default listener is `127.0.0.1:8089`. If `[server].api_token` is set, every `/v1/` call requires `Authorization: Bearer <token>`. Binding to another interface requires a token of at least 24 characters. `/health` is public and returns only status/version. Use the host's reachable address in Sonora, not `0.0.0.0`. Public deployments need an HTTPS endpoint; the app also permits HTTP on private/local or Tailscale addresses. This binary serves HTTP and does not install a service or change network settings.
 
@@ -35,11 +35,23 @@ Default freshness caps are seven days for MusicBrainz, 30 days for AcoustID/LRCL
 
 The default payload budget is 512 MiB and 10,000 entries. Least recently used entries are evicted as needed; SQLite page/index metadata adds overhead. Freed pages are reclaimed after writes. The database has an ownership lock: two processes cannot use the same cache file simultaneously.
 
-Identical in-flight requests share one provider operation, including retries. Each provider has a bounded queue (128 unique active/queued lookups by default). Interactive requests take priority, with a background turn after at most three interactive turns while both queues contain work. Cancelling one consumer preserves work needed by another; cancelling the last consumer drops queued work or the active HTTP future. Cache hits bypass the queue and rate budget.
+Identical in-flight requests share one provider operation, including retries. Each provider has a bounded queue (128 unique active/queued lookups by default). Interactive requests take priority, with a background turn after at most three interactive turns while both queues contain work. Cancelling one consumer preserves work needed by another; cancelling the last consumer drops queued work or the active HTTP future for ordinary lookups. Paid alignment keeps an already-started operation alive to cache its result, and reconnecting callers share that flight. Cache hits bypass the queue and rate budget.
 
 MusicBrainz starts are spaced by at least 1.1 seconds by default, AcoustID by 350 ms, and artwork by one second. LRCLIB runs sequentially with a 500 ms delay after a completed response. Configuration rejects MusicBrainz intervals below one second and AcoustID intervals below 334 ms. A provider's retries and redirects consume the same budget. Throttling and server failures apply a shared cooldown, honor `Retry-After` and use bounded backoff with jitter when no delay is supplied. Defaults allow two retries, a 15-second HTTP timeout and a 60-second total lookup deadline, including queue time.
 
 Run **one proxy instance per upstream budget/egress IP**. Separate processes or other applications on the same IP can still exceed MusicBrainz's shared limit. Replication would require a shared scheduler; an independent limiter in each replica is insufficient. Jobs, priorities and cooldowns are in memory; completed cache entries survive restarts.
+
+## Lyric synchronization
+
+Sonora first requests an exact LRCLIB result using the song's tags and duration. It accepts complete, ordered timestamps only when they fit the audio and match the existing lyrics, preserving that text. A catalog outage or authentication error is reported without silently starting a paid operation. Missing metadata cannot identify a catalog edition; existing lyrics can still be aligned explicitly.
+
+`POST /v1/lyrics/align` is the explicit paid fallback. It accepts one `file` and one `text` part: mono, 16 kHz, signed PCM16 little-endian WAV with the canonical 44-byte header, 1–600 seconds (19,200,044 bytes maximum), and at most 65,536 UTF-8 bytes of known lyrics. The app uses its playback decoders to prepare this representation, supporting its existing audio formats. The server checks WAV structure and actual duration before contacting ElevenLabs. Only the configured provider endpoint is reachable; clients cannot supply URLs or local paths.
+
+The ElevenLabs queue admits at most four unique active/queued operations and has one worker with a one-second default start interval. Four upload permits bound buffered request bodies. Requests have a 120-second upstream timeout and 180-second total caller deadline. Paid POSTs are never automatically retried, including on timeouts, 429 or 5xx responses, and redirects are rejected. A failed/ambiguous operation may have consumed credits; retry deliberately. Process shutdown cannot recover an upstream operation whose result was not cached.
+
+Completed alignments are checked against the entire transcript, preserving Unicode, punctuation, line order and repeated verses; non-finite, backwards, incomplete, mismatched or out-of-range timing is rejected. Derived results, rather than source audio, are cached in SQLite for up to one year by default, subject to the shared size/LRU limits. Keys include canonical audio and exact text SHA-256 plus the alignment version and endpoint; API keys are excluded. These derived records use their configured retention instead of upstream HTTP freshness. Audio uploads stay in bounded memory and are not persisted by the proxy. ElevenLabs processes the submitted audio/text under its own terms.
+
+The app shows the provider and a preview before adding LRC to the metadata editor's draft. Its existing original-file save confirmation remains required. Successful analysis is retained in the iPhone cache for offline reuse until cleared or evicted. Singing accuracy still needs evaluation against real music; this integration validates structure and correspondence, not musical alignment quality.
 
 ## API
 
@@ -53,6 +65,7 @@ All JSON provider responses use an envelope with `provider`, `sources` (upstream
 | GET | `/v1/recordings/{mbid}` | Recording details, credits, genres and release choices |
 | GET | `/v1/releases/{mbid}` | Full MusicBrainz release JSON, including media/discs, track positions, dates and credits |
 | GET | `/v1/lyrics` | Required `title`, `artist`, `album`, `duration` in seconds; LRCLIB's exact-signature result, including `plainLyrics`, `syncedLyrics`, `instrumental` |
+| POST | `/v1/lyrics/align` | Multipart `file` (canonical WAV) and UTF-8 `text`; returns validated synchronized LRC and audio/text SHA-256 digests |
 | POST | `/v1/identify` | JSON `fingerprint` and `duration`; AcoustID recording IDs and scores |
 | GET | `/v1/artwork/{release_mbid}` | Front artwork at the provider's 500-pixel variant; downloaded only when requested |
 | POST | `/v1/jobs` | Create a bounded batch; returns 202 and a `Location` to poll |
@@ -75,7 +88,7 @@ Metadata and lyrics fail independently. A completed job means every track was pr
 
 Job states are `queued`, `running`, `completed`, `cancelled` and `failed`. At most four batches execute at once. Defaults retain up to 64 jobs for one hour and accept up to 100 tracks per batch. Older terminal jobs can be evicted when new jobs arrive; active jobs are never evicted to admit new work. Results are bounded to 4 MB per job. A job exceeding that limit fails with an explicit error and keeps its earlier results. Submit smaller batches to continue. Jobs do not resume after a proxy restart; resubmitting a batch reuses its still-fresh cached provider responses.
 
-Errors use JSON `error` and `message`: invalid input is 400, no provider result is 404, full queues are 429 with a retry hint, deadlines are 504, unavailable configuration/cache/providers are 503 and other upstream failures are 502. Transport success does not guarantee a matching recording, available lyrics or a cover.
+Errors use JSON `error` and `message`: invalid input is 400, oversized alignment uploads are 413, no provider result is 404, full queues are 429 with a retry hint, deadlines are 504, unavailable configuration/cache/providers are 503 and other upstream failures are 502. Transport success does not guarantee a matching recording, available lyrics or a cover.
 
 ## Verify
 
@@ -87,4 +100,6 @@ cargo clippy --locked --manifest-path proxy/Cargo.toml --all-targets -- -D warni
 
 Integration tests run real HTTP clients against local synthetic provider servers and actual temporary SQLite files. They exercise restart reuse, conditional validation, deduplication, per-provider pacing, retries, cancellation, queue/memory bounds, authentication, partial batch results and artwork redirects. They do not need real keys, send personal music metadata, or consume production provider quotas. AcoustID's live authenticated lookup still needs a user-supplied registered client key. See the [iPhone assistant guide](../docs/metadata-assistant.md) for client and offline behavior.
 
-Provider contracts: [MusicBrainz rate limiting](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting), [AcoustID web service](https://acoustid.org/webservice), [LRCLIB documentation](https://lrclib.net/docs), [Cover Art Archive API](https://musicbrainz.org/doc/Cover_Art_Archive/API), [HTTP caching](https://www.rfc-editor.org/rfc/rfc9111.html). Provider/data terms and lyrics/artwork permissions apply independently of cache retention.
+A separate ignored test, `approved_synthetic_elevenlabs_alignment` in `tests/live_alignment.rs`, can verify the real service after explicit approval. It accepts only a synthetic canonical WAV of up to ten seconds and a short known transcript. Supply the exact key, WAV, text and result paths through `SONORA_LIVE_ALIGNMENT_KEY_FILE`, `SONORA_LIVE_ALIGNMENT_WAV`, `SONORA_LIVE_ALIGNMENT_TEXT` and `SONORA_LIVE_ALIGNMENT_OUTPUT`, plus `SONORA_LIVE_ALIGNMENT_ACK=one-paid-synthetic-test`. Run that one test with `--ignored --exact`; it makes one paid request with no automatic retry. Ordinary test runs never read a provider key or run this probe.
+
+Provider contracts: [MusicBrainz rate limiting](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting), [AcoustID web service](https://acoustid.org/webservice), [LRCLIB documentation](https://lrclib.net/docs), [Cover Art Archive API](https://musicbrainz.org/doc/Cover_Art_Archive/API), [HTTP caching](https://www.rfc-editor.org/rfc/rfc9111.html), [ElevenLabs Forced Alignment](https://elevenlabs.io/docs/api-reference/forced-alignment/create). Provider/data terms and lyrics/artwork permissions apply independently of cache retention.

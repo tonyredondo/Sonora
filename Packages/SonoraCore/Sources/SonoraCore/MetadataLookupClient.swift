@@ -42,9 +42,9 @@ public protocol MetadataLookupTransport: Sendable {
 }
 public struct MetadataURLSessionTransport: MetadataLookupTransport {
     private let session: URLSession
-    public init() {
+    public init(requestTimeout: TimeInterval = 75, resourceTimeout: TimeInterval = 90) {
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 75; config.timeoutIntervalForResource = 90
+        config.timeoutIntervalForRequest = requestTimeout; config.timeoutIntervalForResource = resourceTimeout
         config.waitsForConnectivity = true; config.urlCache = nil
         session = URLSession(configuration: config)
     }

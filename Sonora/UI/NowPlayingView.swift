@@ -8,8 +8,10 @@ struct NowPlayingView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @AppStorage("showArtworkLyrics") private var showArtworkLyrics = true
     @State private var showQueue = false
     @State private var showLyrics = false
+    @State private var lyricsScrollRequest = 0
     @State private var showListening = false
     @State private var editingTrack: AudioTrack?
     @State private var volumeSelection: VolumeAnalysisSelection?
@@ -21,7 +23,10 @@ struct NowPlayingView: View {
                 VStack(spacing: compact ? 12 : 20) {
                     header.fixedSize(horizontal: false, vertical: true)
                     // Artwork yields its height before text or touch targets are compressed.
-                    ArtworkView(image: player.currentDetails?.artwork, cornerRadius: 14)
+                    NowPlayingArtwork(player: player, showsLyrics: showArtworkLyrics, scrollRequest: lyricsScrollRequest) {
+                        showLyrics = true
+                    }
+                        .id(player.current?.id)
                         .aspectRatio(1, contentMode: .fit)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .layoutPriority(-1)
@@ -35,7 +40,7 @@ struct NowPlayingView: View {
                 .frame(width: geometry.size.width, height: geometry.size.height)
             }.background(theme.background).toolbar(.hidden, for: .navigationBar)
         }.tint(theme.accent).sheet(isPresented: $showQueue) { QueueView(player: player) }
-            .sheet(isPresented: $showLyrics) { LyricsView(player: player) }
+            .sheet(isPresented: $showLyrics, onDismiss: { lyricsScrollRequest += 1 }) { LyricsView(player: player) }
             .sheet(item: $editingTrack) { MetadataEditorView(player: player, track: $0) }
             .sheet(item: $volumeSelection) { VolumeAnalysisView(player: player, selection: $0) }
             .sheet(isPresented: $showListening) {
@@ -48,7 +53,15 @@ struct NowPlayingView: View {
             Spacer(minLength: 8)
             Text(player.currentDetails?.album ?? player.folderName).font(.subheadline).lineLimit(1)
             Spacer(minLength: 8)
-            Button { showLyrics = true } label: { Image(systemName: "quote.bubble").frame(width: 44, height: 44) }.accessibilityLabel("Letra")
+            Button { showArtworkLyrics.toggle() } label: {
+                Image(systemName: showArtworkLyrics ? "quote.bubble.fill" : "quote.bubble")
+                    .frame(width: 44, height: 44)
+            }
+            .foregroundStyle(showArtworkLyrics ? theme.accent : .secondary)
+            .accessibilityLabel(showArtworkLyrics ? "Ocultar letra en portada" : "Mostrar letra en portada")
+            .accessibilityValue(showArtworkLyrics ? "Visibles" : "Ocultas")
+            .accessibilityAddTraits(showArtworkLyrics ? .isSelected : [])
+            .accessibilityIdentifier("toggleArtworkLyrics")
             Menu {
                 if let track = player.current { Button(player.isFavorite(track) ? "Quitar de favoritos" : "Marcar como favorita", systemImage: "heart") { player.toggleFavorite(track) } }
                 Button("Editar información", systemImage: "info.circle") { editingTrack = player.current }

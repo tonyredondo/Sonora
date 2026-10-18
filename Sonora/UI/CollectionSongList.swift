@@ -28,6 +28,12 @@ struct CollectionSongList: View {
     private var songs: [CollectionSong] { activeIDs.compactMap { library.state.songs[$0] }.filter { $0.matches(query) } }
     var body: some View {
         List(selection: $selection) {
+            if let sourceID, !editMode.isEditing {
+                Section {
+                    NavigationLink { SourceFolderView(player: player, sourceID: sourceID) } label: { Label("Explorar archivos", systemImage: "folder") }
+                        .accessibilityIdentifier("browseSourceFiles")
+                }
+            }
             if !songs.isEmpty && !editMode.isEditing {
                 Section {
                     Button("Reproducir", systemImage: "play.fill") { player.playSongs(songs.map(\.id)) }

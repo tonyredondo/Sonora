@@ -8,7 +8,12 @@ struct LyricsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("lyricsAutoScroll") private var autoScroll = true
     @State private var offset: Double = 0
-    @State private var editingTrack: AudioTrack?
+    private struct EditorRequest: Identifiable {
+        let track: AudioTrack
+        let synchronize: Bool
+        var id: String { track.id }
+    }
+    @State private var editor: EditorRequest?
     private var lyrics: LyricsDocument { player.currentDetails?.lyrics ?? LyricsDocument(text: "") }
     private var active: Int? { lyrics.activeLine(at: player.currentTime, offset: offset) }
 
@@ -20,8 +25,13 @@ struct LyricsView: View {
                         Label("Sin letra", systemImage: "quote.bubble")
                     } description: {
                         Text("Añade una letra en la información de la canción o coloca un archivo .lrc junto al audio.")
-                    } actions: { Button("Añadir letra") { editingTrack = player.current } }
+                    } actions: { Button("Añadir letra") { edit() } }
                 } else {
+                    if !lyrics.isTimed {
+                        Button { edit(synchronize: true) } label: {
+                            Label("Sincronizar letra", systemImage: "waveform").frame(minHeight: 44)
+                        }.accessibilityIdentifier("synchronizeUntimedLyrics")
+                    }
                     if lyrics.isTimed {
                         VStack {
                             Toggle("Seguir la letra", isOn: $autoScroll)
@@ -38,7 +48,7 @@ struct LyricsView: View {
                                 ForEach(lyrics.lines) { line in
                                     if let time = line.time {
                                         Button { player.seek(to: max(0, time + offset)) } label: {
-                                            Text(line.text.isEmpty ? "♪" : line.text).font(.title2.weight(active == line.id ? .bold : .medium))
+                                            Text(line.text.isEmpty ? "♪" : line.text).font(active == line.id ? .title.bold() : .title2.weight(.medium))
                                                 .foregroundStyle(active == line.id ? PlayerTheme(scheme).accent : .primary)
                                                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                                         }.buttonStyle(.plain).id(line.id).accessibilityIdentifier("lyricLine\(line.id)")
@@ -47,7 +57,7 @@ struct LyricsView: View {
                                 }
                             }.padding(24)
                         }
-                        .onChange(of: active) { if autoScroll, let active { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { reader.scrollTo(active, anchor: .center) } } }
+                        .onChange(of: active, initial: true) { if autoScroll, let active { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { reader.scrollTo(active, anchor: .center) } } }
                         .onChange(of: autoScroll) { if autoScroll, let active { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { reader.scrollTo(active, anchor: .center) } } }
                     }
                     if let source = player.currentDetails?.lyricsSource { Text(source).font(.caption).foregroundStyle(.secondary).padding(8) }
@@ -57,11 +67,15 @@ struct LyricsView: View {
             .navigationTitle("Letra").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Listo") { dismiss() } }
-                ToolbarItem(placement: .primaryAction) { Button("Editar") { editingTrack = player.current }.disabled(player.current == nil) }
+                ToolbarItem(placement: .primaryAction) { Button("Editar") { edit() }.disabled(player.current == nil) }
             }
             .task(id: player.current?.id) { offset = UserDefaults.standard.double(forKey: "lyricsOffset.\(player.current?.id ?? "")") }
             .onChange(of: offset) { if let id = player.current?.id { UserDefaults.standard.set(offset, forKey: "lyricsOffset.\(id)") } }
-            .sheet(item: $editingTrack) { MetadataEditorView(player: player, track: $0) }
+            .sheet(item: $editor) { MetadataEditorView(player: player, track: $0.track, synchronizeLyricsOnOpen: $0.synchronize) }
         }
+    }
+    private func edit(synchronize: Bool = false) {
+        guard let track = player.current else { return }
+        editor = EditorRequest(track: track, synchronize: synchronize)
     }
 }

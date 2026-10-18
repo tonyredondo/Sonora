@@ -6,6 +6,8 @@ struct LocalMusicView: View {
     @State private var chooseFolder = false
     @State private var deleting: ImportedMusicRecord?
     @State private var removing = false
+    @State private var browsingSource: String?
+    @State private var showFiles = false
     @Environment(\.scenePhase) private var phase
     @Environment(\.dynamicTypeSize) private var textSize
     private var imports: LocalImportController { player.localImports }
@@ -13,7 +15,7 @@ struct LocalMusicView: View {
         List {
             Section {
                 Button("Importar carpeta", systemImage: "square.and.arrow.down") { chooseFolder = true }
-                    .disabled(imports.isImporting || removing).accessibilityIdentifier("importLocalFolder")
+                    .disabled(imports.isImporting || removing || player.isDeletingFiles).accessibilityIdentifier("importLocalFolder")
                 Text("Guarda una carpeta con su música, carátulas y letras para escucharla sin conexión. El original se conserva.").font(.footnote).foregroundStyle(.secondary)
             }
             if imports.isImporting {
@@ -33,14 +35,24 @@ struct LocalMusicView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(copy.name).font(.headline).accessibilityIdentifier("localCopyName:" + copy.id)
                         Text("\(copy.files) archivos · \(ByteCountFormatter.string(fromByteCount: copy.bytes, countStyle: .file))").font(.caption).foregroundStyle(.secondary)
+                        Button("Explorar archivos", systemImage: "folder") {
+                            removing = true
+                            Task {
+                                defer { removing = false }
+                                do {
+                                    if player.library.sourceID(matching: imports.musicURL(copy)) == nil { try await imports.include(copy, library: player.library) }
+                                    browsingSource = player.library.sourceID(matching: imports.musicURL(copy)); showFiles = browsingSource != nil
+                                } catch { imports.issue = error.localizedDescription }
+                            }
+                        }.buttonStyle(.borderless).disabled(imports.isImporting || removing || player.isDeletingFiles).accessibilityIdentifier("browseLocalCopy:" + copy.id)
                         let layout = textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout())
                         layout {
-                            Button("Reproducir", systemImage: "play.fill") { player.chooseFolder(LocalMusicImport.musicURL(copy), name: copy.name + " · Local") }
+                            Button("Reproducir", systemImage: "play.fill") { player.chooseFolder(imports.musicURL(copy), name: copy.name + " · Local") }
                                 .accessibilityIdentifier("playLocalCopy:" + copy.id)
                             if !textSize.isAccessibilitySize { Spacer() }
                             Button("Eliminar copia local", systemImage: "trash", role: .destructive) { deleting = copy }
                                 .accessibilityIdentifier("deleteLocalCopy:" + copy.id)
-                        }.buttonStyle(.borderless).disabled(imports.isImporting || removing)
+                        }.buttonStyle(.borderless).disabled(imports.isImporting || removing || player.isDeletingFiles)
                     }.padding(.vertical, 6)
                 }
                 if imports.copies.isEmpty { Text("Todavía no has importado carpetas. Tus fuentes de Archivos siguen disponibles en la biblioteca.").foregroundStyle(.secondary) }
@@ -60,12 +72,12 @@ struct LocalMusicView: View {
                 Task {
                     defer { removing = false }
                     do {
-                        if let source = player.library.sourceID(matching: LocalMusicImport.musicURL(copy)) { player.forgetSource(source) }
-                        try await imports.remove(copy)
+                        try await player.deleteLocalCopy(copy)
                     } catch { imports.issue = error.localizedDescription }
                 }
             }
         } message: { Text("Se quitarán esta copia y sus referencias de Sonora. La carpeta original de Archivos o iCloud Drive se conservará.") }
+        .navigationDestination(isPresented: $showFiles) { if let browsingSource { SourceFolderView(player: player, sourceID: browsingSource) } }
         .onChange(of: phase) { if phase == .background { imports.cancel() } }
         .onDisappear { imports.cancel() }
     }

@@ -21,6 +21,7 @@ final class PlaybackController: NSObject {
     private(set) var isPlaying = false
     private(set) var isLoading = false
     private(set) var isPreparing = false
+    var isDeletingFiles: Bool { library.isDeletingFiles }
     private(set) var folderName = "Tu música"
     var issue: String?
     var repeatMode: RepeatMode = .off { didSet { if oldValue != repeatMode { rebuildBufferedQueue() } } }
@@ -158,12 +159,12 @@ final class PlaybackController: NSObject {
         return try await body(token)
     }
 
-    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer()) {
+    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage) {
         self.defaults = defaults
         player = audioPlayer
         library = MusicLibrary(defaults: defaults)
         volumeAnalysis = VolumeAnalysisStore(defaults: defaults)
-        localImports = LocalImportController()
+        localImports = LocalImportController(storage: localStorage)
         let listening = defaults.data(forKey: "listeningSettings").flatMap { try? JSONDecoder().decode(ListeningSettings.self, from: $0) }?.validated ?? ListeningSettings()
         listeningSettings = listening
         var timer = defaults.data(forKey: "sleepTimer").flatMap { try? JSONDecoder().decode(SleepTimer.self, from: $0) }
@@ -197,6 +198,7 @@ final class PlaybackController: NSObject {
     }
     func cancelLoading() { loadTask?.cancel(); loadID = UUID(); isLoading = false }
     func appendFolder(_ url: URL, playNext: Bool = false) async {
+        guard !isDeletingFiles else { return }
         if queue.tracks.isEmpty { await loadFolder(url, autoPlay: false); return }
         let request = UUID(); loadID = request; isLoading = true; issue = nil
         defer { if loadID == request { isLoading = false } }
@@ -219,9 +221,11 @@ final class PlaybackController: NSObject {
         loadTask?.cancel(); loadTask = Task { await appendFolder(url, playNext: playNext) }
     }
     func enqueue(_ track: AudioTrack, playNext: Bool) {
+        guard !isDeletingFiles else { return }
         refresh(); queue.insert([track], afterCurrent: playNext); rebuildBufferedQueue(); save()
     }
     func addFolderToLibrary(_ url: URL) {
+        guard !isDeletingFiles else { return }
         loadTask?.cancel()
         loadTask = Task {
             let request = UUID(); loadID = request; isLoading = true
@@ -237,6 +241,7 @@ final class PlaybackController: NSObject {
         }
     }
     func playSongs(_ ids: [String], startingAt id: String? = nil) {
+        guard !isDeletingFiles else { return }
         loadTask?.cancel()
         loadTask = Task {
             var scopes: [String: ScopedFolder] = [:], tracks: [AudioTrack] = []
@@ -249,6 +254,7 @@ final class PlaybackController: NSObject {
         }
     }
     func enqueueSongs(_ ids: [String], playNext: Bool) {
+        guard !isDeletingFiles else { return }
         var tracks: [AudioTrack] = []
         for id in ids {
             guard let song = library.state.songs[id] else { continue }
@@ -272,9 +278,104 @@ final class PlaybackController: NSObject {
         if primaryLibraryID == id { folder = nil; bookmark = nil; primaryLibraryID = nil }
         extraFolders.removeValue(forKey: id); library.forgetSource(id); save()
     }
+    func deleteSourceFile(_ item: SourceFile, sourceID: String) async throws {
+        let access = try library.access(sourceID)
+        guard AudioTrack(relativePath: item.relativePath) != nil else { throw CocoaError(.fileWriteNoPermission) }
+        try await deleteFiles(at: access.url.appendingPathComponent(item.relativePath)) {
+            try await SourceFileService.remove(item, from: access)
+        }
+    }
+    func deleteLocalCopy(_ copy: ImportedMusicRecord) async throws {
+        let target = localImports.musicURL(copy).deletingLastPathComponent()
+        try await deleteFiles(at: target) { try await localImports.remove(copy) }
+    }
+    /// Release current and prebuffered decoders before touching files. Reconcile
+    /// every overlapping source, including CUE identities, before resuming audio.
+    private func deleteFiles(at target: URL, operation: () async throws -> Void) async throws {
+        guard !isDeletingFiles, !localImports.isImporting, !linkImports.isImporting else {
+            throw MusicTextError.invalid("Espera a que termine la operación actual.")
+        }
+        guard !library.needsReset else { throw MusicTextError.invalid("Restablece la biblioteca antes de borrar archivos.") }
+        let targetPath = target.standardizedFileURL.resolvingSymlinksInPath().path
+        func contains(_ parent: String, _ child: String) -> Bool { child == parent || child.hasPrefix(parent + "/") }
+        var affected: [String: ScopedFolder] = [:]
+        for source in library.state.sources {
+            guard let url = try? library.sourceURL(source.id) else { continue }
+            let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+            if contains(path, targetPath) || contains(targetPath, path) { affected[source.id] = try library.access(source.id) }
+        }
+        let affectedIDs = Set(affected.keys)
+        let copies = localImports.copies.filter {
+            let path = localImports.musicURL($0).standardizedFileURL.resolvingSymlinksInPath().path
+            return contains(path, targetPath) || contains(targetPath, path)
+        }
+        let oldSongs = library.state.songs
+        let dependentSheets = Set(oldSongs.values.compactMap { song -> String? in
+            guard let scope = affected[song.sourceID], let cue = song.cue,
+                  contains(targetPath, scope.url.appendingPathComponent(song.relativePath).standardizedFileURL.resolvingSymlinksInPath().path),
+                  !contains(targetPath, scope.url.appendingPathComponent(cue.sheetPath).standardizedFileURL.resolvingSymlinksInPath().path) else { return nil }
+            return cue.sheetPath
+        })
+        guard dependentSheets.isEmpty else {
+            throw MusicTextError.invalid("Este audio tiene pistas CUE. Elimina primero el CUE (\(dependentSheets.sorted().prefix(3).joined(separator: ", "))) o borra una carpeta que contenga también esos CUE.")
+        }
+        let queuedLibraryIDs = Dictionary(uniqueKeysWithValues: queue.tracks.compactMap { track in libraryID(for: track).map { (track.id, $0) } })
+        let affectedQueue = Set(queue.tracks.filter { affectedIDs.contains($0.sourceID ?? primaryLibraryID ?? "") }.map(\.id))
+        cancelLoading(); library.beginFileDeletion(for: affectedIDs)
+        refresh()
+        let selected = current?.id, position = resumePosition, shouldResume = playIntent, intent = pauseRevision
+        invalidatePlayback(); playIntent = false
+        let token = generation
+        defer {
+            library.finishFileDeletion(for: affectedIDs)
+            if generation == token {
+                if let current { requestPlayback(trackID: current.id, position: current.id == selected ? position : 0, start: shouldResume && pauseRevision == intent) }
+                else { stop() }
+            }
+            save()
+        }
+        var deletionError: Error?, warnings: [String] = []
+        do { try await operation() } catch { deletionError = error }
+        // Also rescan on failure: a provider may have removed part of a folder
+        // before reporting an error. Never assume a failed recursive write was atomic.
+        for (id, access) in affected where library.state.sources.contains(where: { $0.id == id }) {
+            let rootPath = access.url.standardizedFileURL.resolvingSymlinksInPath().path
+            if deletionError == nil && contains(targetPath, rootPath) { forgetSource(id); continue }
+            do {
+                let tracks = try await FolderScanService.scan(access)
+                // Source registration retains its identity and the tags of surviving songs.
+                if library.state.sources.contains(where: { $0.id == id }) { try library.register(access, tracks: tracks) }
+            } catch {
+                if deletionError == nil {
+                    let removed = Set(oldSongs.values.filter { song in
+                        guard song.sourceID == id else { return false }
+                        return contains(targetPath, access.url.appendingPathComponent(song.relativePath).standardizedFileURL.resolvingSymlinksInPath().path)
+                            || song.cue.map { contains(targetPath, access.url.appendingPathComponent($0.sheetPath).standardizedFileURL.resolvingSymlinksInPath().path) } == true
+                    }.map(\.id))
+                    library.removeSongs(removed)
+                }
+                warnings.append("No se pudo actualizar una fuente: \(error.localizedDescription)")
+            }
+        }
+        let removed = Set(oldSongs.keys).subtracting(library.state.songs.keys)
+        library.removeSongs(removed); volumeAnalysis.forget(removed)
+        queue.remove(atOffsets: IndexSet(queue.tracks.indices.filter { index in
+            let track = queue.tracks[index]
+            return queuedLibraryIDs[track.id].map { removed.contains($0) } ?? false
+        }))
+        details = details.filter { !affectedQueue.contains($0.key) }
+        if case .endOfTrack(let id) = sleepTimer, current?.id != id { storeSleepTimer(nil) }
+        for copy in copies where localImports.copies.contains(where: { $0.id == copy.id }) {
+            do { try await localImports.refresh(copy) }
+            catch { warnings.append("No se pudo actualizar el tamaño de la copia local: \(error.localizedDescription)") }
+        }
+        if !warnings.isEmpty { issue = warnings.joined(separator: "\n") }
+        if let deletionError { throw deletionError }
+    }
     func loadFolder(_ url: URL, autoPlay: Bool = true, name: String? = nil) async { await load(url, autoPlay: autoPlay, restoring: nil, name: name) }
 
     private func load(_ url: URL, autoPlay: Bool, restoring savedSnapshot: FolderSnapshot?, name: String? = nil) async {
+        guard !isDeletingFiles else { return }
         var snapshot = savedSnapshot
         let request = UUID(); let intent = pauseRevision
         loadID = request; isLoading = true; issue = nil
@@ -357,6 +458,7 @@ final class PlaybackController: NSObject {
     }
     @discardableResult
     private func loadQueue(tracks: [AudioTrack], scopes: [String: ScopedFolder], selected: String?, position: Double, name: String, autoPlay: Bool, primaryID: String?) async -> Bool {
+        guard !isDeletingFiles else { return false }
         let request = UUID(), intent = pauseRevision
         loadID = request; isLoading = true
         defer { if loadID == request { isLoading = false } }
@@ -393,6 +495,7 @@ final class PlaybackController: NSObject {
         requestPlayback(trackID: queue.tracks[index].id, position: 0, start: true)
     }
     private func requestPlayback(trackID: String, position: Double, start: Bool) {
+        guard !isDeletingFiles else { return }
         guard let index = queue.tracks.firstIndex(where: { $0.id == trackID }) else { return }
         let track = queue.tracks[index]
         if case .endOfTrack(let target) = sleepTimer, target != trackID { storeSleepTimer(nil) }
@@ -425,6 +528,7 @@ final class PlaybackController: NSObject {
         }
     }
     private func requestPlayback(trackID: String, position: Double, start: Bool, preservingFailures: Set<String>) {
+        guard !isDeletingFiles else { return }
         requestPlayback(trackID: trackID, position: position, start: start)
         failedTracks = preservingFailures
     }

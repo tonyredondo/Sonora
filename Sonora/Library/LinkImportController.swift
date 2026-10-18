@@ -90,6 +90,7 @@ import UIKit
 
     func start(_ input: String, name: String) {
         guard job == nil else { return }
+        guard !library.isDeletingFiles else { issue = "Espera a que termine el borrado de archivos."; return }
         guard !library.needsReset else { issue = "Restablece la biblioteca antes de importar música."; return }
         do {
             _ = try WeTransferLink(input)
@@ -101,6 +102,7 @@ import UIKit
         } catch { if job != nil { fail(error) } else { issue = error.localizedDescription } }
     }
     func retry() {
+        guard !library.isDeletingFiles else { return }
         guard let current = job, current.phase == .failed, work == nil else { return }
         issue = nil; cancelling = false; job?.failure = nil
         if FileManager.default.fileExists(atPath: payloadURL(current.id).path) {

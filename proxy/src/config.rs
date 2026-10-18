@@ -43,7 +43,7 @@ pub fn discover_config(
     .ok_or(ConfigError::Missing)
 }
 
-/// The four independent upstream budgets. All callers of one process share each budget.
+/// The independent upstream budgets. All callers of one process share each budget.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Provider {
@@ -51,14 +51,16 @@ pub enum Provider {
     Acoustid,
     Lrclib,
     CoverArt,
+    Elevenlabs,
 }
 
 impl Provider {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Musicbrainz,
         Self::Acoustid,
         Self::Lrclib,
         Self::CoverArt,
+        Self::Elevenlabs,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -66,6 +68,7 @@ impl Provider {
             Self::Acoustid => "acoustid",
             Self::Lrclib => "lrclib",
             Self::CoverArt => "cover_art",
+            Self::Elevenlabs => "elevenlabs",
         }
     }
     pub fn base_url(self) -> &'static str {
@@ -74,6 +77,7 @@ impl Provider {
             Self::Acoustid => "https://api.acoustid.org",
             Self::Lrclib => "https://lrclib.net",
             Self::CoverArt => "https://coverartarchive.org",
+            Self::Elevenlabs => "https://api.elevenlabs.io",
         }
     }
     pub fn interval(self) -> Duration {
@@ -82,6 +86,7 @@ impl Provider {
             Self::Acoustid => 350,
             Self::Lrclib => 500,
             Self::CoverArt => 1000,
+            Self::Elevenlabs => 1000,
         })
     }
     pub fn ttl(self) -> u64 {
@@ -90,6 +95,7 @@ impl Provider {
                 Self::Musicbrainz => 7,
                 Self::Acoustid | Self::Lrclib => 30,
                 Self::CoverArt => 90,
+                Self::Elevenlabs => 365,
             }
     }
 }
@@ -104,6 +110,8 @@ pub struct ProviderConfig {
     /// Intended for administrator-controlled mirrors and local test servers.
     pub base_url: Option<String>,
     pub client_key: Option<String>,
+    /// ElevenLabs credential. Never included in diagnostic output or cache keys.
+    pub api_key: Option<String>,
 }
 impl Default for ProviderConfig {
     fn default() -> Self {
@@ -113,6 +121,7 @@ impl Default for ProviderConfig {
             ttl_seconds: None,
             base_url: None,
             client_key: None,
+            api_key: None,
         }
     }
 }
@@ -195,6 +204,7 @@ pub struct Config {
     pub acoustid: ProviderConfig,
     pub lrclib: ProviderConfig,
     pub cover_art: ProviderConfig,
+    pub elevenlabs: ProviderConfig,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -207,6 +217,7 @@ impl Default for Config {
             acoustid: ProviderConfig::default(),
             lrclib: ProviderConfig::default(),
             cover_art: ProviderConfig::default(),
+            elevenlabs: ProviderConfig::default(),
         }
     }
 }
@@ -245,6 +256,7 @@ impl Config {
             Provider::Acoustid => &self.acoustid,
             Provider::Lrclib => &self.lrclib,
             Provider::CoverArt => &self.cover_art,
+            Provider::Elevenlabs => &self.elevenlabs,
         }
     }
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -306,6 +318,7 @@ impl Config {
                 Provider::Acoustid => 334,
                 Provider::Lrclib => 200,
                 Provider::CoverArt => 200,
+                Provider::Elevenlabs => 1000,
             };
             if settings
                 .min_interval_ms
@@ -334,6 +347,13 @@ impl Config {
                         "provider base_url requires HTTPS or loopback HTTP, without credentials, query or fragment",
                     ));
                 }
+            }
+            if settings.api_key.as_ref().is_some_and(|key| {
+                key.is_empty() || key.len() > 512 || !key.bytes().all(|b| b.is_ascii_graphic())
+            }) {
+                return Err(invalid(
+                    "provider api_key must contain 1-512 visible ASCII characters",
+                ));
             }
             if settings
                 .client_key

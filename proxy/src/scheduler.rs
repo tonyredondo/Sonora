@@ -25,6 +25,7 @@ pub(crate) struct RequestSpec {
     pub url: Url,
     pub form: Option<Vec<(String, String)>>,
     pub image: bool,
+    pub alignment: Option<crate::alignment::AlignmentInput>,
 }
 impl RequestSpec {
     fn key(&self, user_agent: &str) -> String {
@@ -43,6 +44,11 @@ impl RequestSpec {
                 hash.update(b"\0");
                 hash.update(value);
             }
+        }
+        if let Some(input) = &self.alignment {
+            hash.update(b"\0alignment-v1\0");
+            hash.update(crate::alignment::digest(&input.audio));
+            hash.update(crate::alignment::digest(input.text.as_bytes()));
         }
         format!("{:x}", hash.finalize())
     }
@@ -149,7 +155,11 @@ impl Scheduler {
         })))
     }
     pub async fn fetch(&self, spec: RequestSpec, priority: Priority) -> Result<FetchResult, Error> {
-        let deadline = Duration::from_secs(self.0.config.network.deadline_seconds);
+        let deadline = Duration::from_secs(if spec.alignment.is_some() {
+            180
+        } else {
+            self.0.config.network.deadline_seconds
+        });
         tokio::time::timeout(deadline, self.fetch_inner(spec, priority))
             .await
             .map_err(|_| Error::Deadline)?
@@ -195,7 +205,12 @@ impl Scheduler {
                 }
                 (rx, true)
             } else {
-                if state.flights.len() >= self.0.config.network.queue_capacity {
+                let capacity = if spec.alignment.is_some() {
+                    self.0.config.network.queue_capacity.min(4)
+                } else {
+                    self.0.config.network.queue_capacity
+                };
+                if state.flights.len() >= capacity {
                     return Err(Error::QueueFull);
                 }
                 let (tx, rx) = watch::channel(None);
@@ -254,10 +269,31 @@ async fn worker(
         let Some(storage) = cache.upgrade() else {
             return;
         };
-        let result = tokio::select! {
-            biased;
-            _=work.result.closed()=>None,
-            result=fetch_remote(&client,&storage,&config,&work.key,&work.spec,&mut next_start)=>Some(result),
+        // Once a paid request starts, finish caching even if the phone disconnects.
+        // Keep its flight registered so a reconnect shares the same request.
+        let _paid_receiver = work
+            .spec
+            .alignment
+            .as_ref()
+            .map(|_| work.result.subscribe());
+        let result = if work.spec.alignment.is_some() {
+            Some(
+                fetch_remote(
+                    &client,
+                    &storage,
+                    &config,
+                    &work.key,
+                    &work.spec,
+                    &mut next_start,
+                )
+                .await,
+            )
+        } else {
+            tokio::select! {
+                biased;
+                _=work.result.closed()=>None,
+                result=fetch_remote(&client,&storage,&config,&work.key,&work.spec,&mut next_start)=>Some(result),
+            }
         };
         drop(storage);
         let mut state = queue.state.lock().await;
@@ -296,13 +332,37 @@ async fn fetch_remote(
         .min_interval_ms
         .map(Duration::from_millis)
         .unwrap_or_else(|| spec.provider.interval());
+    let max_retries = if spec.alignment.is_some() {
+        0
+    } else {
+        config.network.max_retries
+    };
     let mut retries = 0;
     let mut redirects = 0;
     let mut url = spec.url.clone();
     loop {
         tokio::time::sleep_until(*next_start).await;
         *next_start = Instant::now() + interval;
-        let mut request = if let Some(form) = &spec.form {
+        let mut request = if let Some(input) = &spec.alignment {
+            let part = reqwest::multipart::Part::bytes(input.audio.to_vec())
+                .file_name("audio.wav")
+                .mime_str("audio/wav")
+                .map_err(|_| Error::Configuration)?;
+            let form = reqwest::multipart::Form::new()
+                .part("file", part)
+                .text("text", input.text.clone());
+            client
+                .post(url.clone())
+                .header(
+                    "xi-api-key",
+                    settings
+                        .api_key
+                        .as_deref()
+                        .ok_or(Error::NotConfigured(spec.provider))?,
+                )
+                .multipart(form)
+                .timeout(Duration::from_secs(120))
+        } else if let Some(form) = &spec.form {
             client.post(url.clone()).form(form)
         } else {
             client.get(url.clone())
@@ -326,7 +386,7 @@ async fn fetch_remote(
             Ok(response) => response,
             Err(_) => {
                 // reqwest errors can include URLs and form data. Do not propagate them.
-                if retries >= config.network.max_retries {
+                if retries >= max_retries {
                     return Err(Error::Upstream {
                         provider: spec.provider,
                         status: None,
@@ -339,7 +399,7 @@ async fn fetch_remote(
         };
         let status = response.status();
         if status.is_redirection() && status != StatusCode::NOT_MODIFIED {
-            if spec.form.is_some() || redirects >= 4 {
+            if spec.form.is_some() || spec.alignment.is_some() || redirects >= 4 {
                 return Err(Error::InvalidResponse(spec.provider));
             }
             let location = response
@@ -365,7 +425,7 @@ async fn fetch_remote(
                 .and_then(retry_after)
                 .unwrap_or_else(|| backoff(retries));
             *next_start = (*next_start).max(Instant::now() + delay);
-            if retries >= config.network.max_retries {
+            if retries >= max_retries {
                 return Err(Error::Upstream {
                     provider: spec.provider,
                     status: Some(status.as_u16()),
@@ -388,11 +448,11 @@ async fn fetch_remote(
                     status: Some(status.as_u16()),
                 });
             }
-            let body = match read_body(response, config.network.max_response_bytes).await {
+            let mut body = match read_body(response, config.network.max_response_bytes).await {
                 Ok(body) => body,
                 Err(BodyError::Large) => return Err(Error::TooLarge),
                 Err(BodyError::Network) => {
-                    if retries >= config.network.max_retries {
+                    if retries >= max_retries {
                         return Err(Error::Upstream {
                             provider: spec.provider,
                             status: None,
@@ -421,6 +481,12 @@ async fn fetch_remote(
                     let value: serde_json::Value = serde_json::from_slice(&body)
                         .map_err(|_| Error::InvalidResponse(spec.provider))?;
                     crate::providers::validate_payload(spec.provider, spec.url.path(), &value)?;
+                    if let Some(input) = &spec.alignment {
+                        body = Bytes::from(
+                            serde_json::to_vec(&input.aligned(&value)?)
+                                .map_err(|_| Error::InvalidResponse(spec.provider))?,
+                        );
+                    }
                 }
             }
             (
@@ -440,7 +506,14 @@ async fn fetch_remote(
             settings.ttl_seconds.unwrap_or_else(|| spec.provider.ttl())
         };
         let mut entry = entry;
-        if let Some(ttl) = entry.headers.lifetime(now, configured_ttl) {
+        // Alignment is our derived result, keyed by immutable PCM + exact text.
+        // Do not inherit upstream HTTP caching directives for this representation.
+        let lifetime = if spec.alignment.is_some() {
+            Some(configured_ttl)
+        } else {
+            entry.headers.lifetime(now, configured_ttl)
+        };
+        if let Some(ttl) = lifetime {
             entry.expires_at = now.saturating_add(ttl);
             cache
                 .put(key, entry.clone())

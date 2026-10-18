@@ -92,13 +92,35 @@ enum LocalMusicImport {
             let data = try Data(contentsOf: folder.appendingPathComponent(".sonora-import.json"))
             guard data.count < 16_384 else { throw CocoaError(.fileReadCorruptFile) }
             let record = try JSONDecoder().decode(ImportedMusicRecord.self, from: data)
-            guard record.id == folder.lastPathComponent, record.files > 0, record.bytes >= 0, record.name.utf8.count <= 4096 else { throw CocoaError(.fileReadCorruptFile) }
+            guard record.id == folder.lastPathComponent, record.files >= 0, record.bytes >= 0, record.name.utf8.count <= 4096 else { throw CocoaError(.fileReadCorruptFile) }
             return record
         }.sorted { $0.importedAt > $1.importedAt }
     }
     static func remove(_ record: ImportedMusicRecord, storage: URL = defaultStorage) throws {
         guard UUID(uuidString: record.id) != nil, try records(in: storage).contains(record) else { throw CocoaError(.fileWriteNoPermission) }
         try FileManager.default.removeItem(at: storage.appendingPathComponent(record.id))
+    }
+    static func refresh(_ record: ImportedMusicRecord, storage: URL = defaultStorage) throws {
+        guard try records(in: storage).contains(record) else { throw CocoaError(.fileWriteNoPermission) }
+        let root = musicURL(record, storage: storage)
+        let info = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        var enumerationError: Error?
+        guard info.isDirectory == true, info.isSymbolicLink != true,
+              let entries = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
+                  errorHandler: { _, error in enumerationError = error; return false }) else { throw CocoaError(.fileReadNoPermission) }
+        var count = 0, bytes: Int64 = 0, hasAudio = false
+        for case let url as URL in entries {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+            count += 1; bytes += Int64(values.fileSize ?? 0)
+            hasAudio = hasAudio || FolderScanner.defaultExtensions.contains(url.pathExtension.lowercased())
+        }
+        if let enumerationError { throw enumerationError }
+        // Keep an empty copy visible so it can be removed, but let its link be
+        // imported again after the user deletes the last audio file.
+        let updated = ImportedMusicRecord(id: record.id, name: record.name, bytes: bytes, files: count, importedAt: record.importedAt,
+                                          linkID: hasAudio ? record.linkID : nil)
+        try JSONEncoder().encode(updated).write(to: root.deletingLastPathComponent().appendingPathComponent(".sonora-import.json"), options: .atomic)
     }
     static func copy(_ url: URL, storage: URL = defaultStorage,
                      progress: @escaping @Sendable (LocalMusicImportProgress) -> Void = { _ in }) async throws -> ImportedMusicRecord {

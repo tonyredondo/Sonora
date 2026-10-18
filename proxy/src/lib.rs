@@ -1,5 +1,6 @@
-//! Sonora's read-only enrichment service. File access and tag writes stay on the device.
+//! Sonora's metadata and opt-in lyric alignment service. File access and tag writes stay on the device.
 
+pub mod alignment;
 pub mod api;
 pub mod cache;
 pub mod config;

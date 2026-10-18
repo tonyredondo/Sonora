@@ -1,4 +1,4 @@
-//! Versioned, read-only provider API and asynchronous lookup jobs.
+//! Versioned provider and opt-in alignment API and asynchronous lookup jobs.
 
 use crate::{
     config::{Config, Provider},
@@ -8,7 +8,7 @@ use crate::{
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::{Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -24,6 +24,7 @@ struct App {
     client: Client,
     jobs: Jobs,
     token: Option<Arc<[u8]>>,
+    uploads: Arc<tokio::sync::Semaphore>,
 }
 
 /// Must be constructed inside a Tokio runtime. Dropping the last router cancels its jobs.
@@ -36,6 +37,7 @@ pub fn router(config: Config) -> Result<Router, Error> {
     let client = Client::new(config)?;
     let state = App {
         jobs: Jobs::new(client.clone()),
+        uploads: Arc::new(tokio::sync::Semaphore::new(4)),
         client,
         token,
     };
@@ -49,6 +51,12 @@ pub fn router(config: Config) -> Result<Router, Error> {
         .route("/v1/recordings/{id}", get(recording))
         .route("/v1/releases/{id}", get(release))
         .route("/v1/lyrics", get(lyrics))
+        .route(
+            "/v1/lyrics/align",
+            post(align).layer(DefaultBodyLimit::max(
+                crate::alignment::MAX_AUDIO_BYTES + crate::alignment::MAX_TEXT_BYTES + 4096,
+            )),
+        )
         .route("/v1/identify", post(identify))
         .route("/v1/artwork/{id}", get(artwork))
         .route("/v1/jobs", post(create_job))
@@ -63,7 +71,11 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
         .into_iter()
         .map(|provider| {
             let settings = app.client.config().provider(provider);
-            let configured = provider != Provider::Acoustid || settings.client_key.is_some();
+            let configured = match provider {
+                Provider::Acoustid => settings.client_key.is_some(),
+                Provider::Elevenlabs => settings.api_key.is_some(),
+                _ => true,
+            };
             (
                 provider.name().to_owned(),
                 json!({"enabled":settings.enabled,"configured":configured}),
@@ -107,6 +119,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code) = match self.0 {
             Error::InvalidInput(_) => (StatusCode::BAD_REQUEST, "invalid_input"),
+            Error::UploadTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "too_large"),
             Error::QueueFull => (StatusCode::TOO_MANY_REQUESTS, "queue_full"),
             Error::Deadline => (StatusCode::GATEWAY_TIMEOUT, "deadline_exceeded"),
             Error::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
@@ -219,4 +232,47 @@ async fn cancel_job(State(app): State<App>, Path(id): Path<Uuid>) -> Result<Resp
         )
             .into_response(),
     })
+}
+
+/// Authentication runs before extraction; limit concurrent buffered audio uploads as well as the provider queue.
+async fn align(
+    State(app): State<App>,
+    mut multipart: Multipart,
+) -> Result<impl IntoResponse, ApiError> {
+    let _permit = app.uploads.try_acquire().map_err(|_| Error::QueueFull)?;
+    let mut audio = None;
+    let mut text = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| Error::InvalidInput("invalid multipart upload"))?
+    {
+        let name = field.name().unwrap_or("").to_owned();
+        let limit = match name.as_str() {
+            "file" if audio.is_none() => crate::alignment::MAX_AUDIO_BYTES,
+            "text" if text.is_none() => crate::alignment::MAX_TEXT_BYTES,
+            _ => return Err(Error::InvalidInput("expected one file and one text field").into()),
+        };
+        let data = field.bytes().await.map_err(|_| Error::UploadTooLarge)?;
+        if data.len() > limit {
+            return Err(Error::UploadTooLarge.into());
+        }
+        if name == "file" {
+            audio = Some(data);
+        } else {
+            text = Some(
+                String::from_utf8(data.to_vec())
+                    .map_err(|_| Error::InvalidInput("text must be UTF-8"))?,
+            );
+        }
+    }
+    Ok(Json(
+        app.client
+            .align(
+                audio.ok_or(Error::InvalidInput("file is required"))?,
+                text.ok_or(Error::InvalidInput("text is required"))?,
+                Priority::Interactive,
+            )
+            .await?,
+    ))
 }

@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 struct MetadataEditorView: View {
     let player: PlaybackController
     let track: AudioTrack
+    var synchronizeLyricsOnOpen = false
     @Environment(\.dismiss) private var dismiss
     @State private var snapshot: MetadataSnapshot?
     @State private var loadedTrackID: String?
@@ -19,6 +20,8 @@ struct MetadataEditorView: View {
     @State private var importLyrics = false
     @State private var confirm = false
     @State private var showAssistant = false
+    @State private var showLyricsSynchronization = false
+    @State private var sidecarLyrics = ""
     @State private var issue: String?
 
     private var patch: MetadataPatch {
@@ -65,6 +68,8 @@ struct MetadataEditorView: View {
                         if cover != nil { Button("Quitar carátulas", role: .destructive) { artwork = .remove; coverPreview = nil } }
                     }.disabled(!snapshot.canWrite || saving || importing)
                     Section("Letra") {
+                        Button("Sincronizar letra", systemImage: "waveform") { showLyricsSynchronization = true }
+                            .accessibilityIdentifier("openLyricsSynchronization")
                         NavigationLink("Editar letra") {
                             Form {
                                 TextEditor(text: binding(.lyrics)).frame(minHeight: 300).accessibilityIdentifier("metadata-lyrics")
@@ -121,6 +126,10 @@ struct MetadataEditorView: View {
                     let value = try await player.readMetadata(for: track)
                     try Task.checkCancellation()
                     snapshot = value; values = value.values; loadedTrackID = track.id
+                    if (value.values[.lyrics] ?? "").isEmpty {
+                        sidecarLyrics = try await LyricsAudioPreparation.existingText(track: track, folder: player.folderAccess(for: track), embedded: "", expected: value.fingerprint)
+                    }
+                    if synchronizeLyricsOnOpen && value.canWrite { showLyricsSynchronization = true }
                     if let data = value.artwork, let preview = try? await Task.detached(operation: { try ArtworkCodec.prepare(data) }).value {
                         coverPreview = UIImage(data: preview)
                     }
@@ -129,6 +138,13 @@ struct MetadataEditorView: View {
                 catch { issue = error.localizedDescription }
             }
             .interactiveDismissDisabled(saving)
+            .sheet(isPresented: $showLyricsSynchronization) {
+                if let snapshot {
+                    let draft = values[.lyrics] ?? ""
+                    let existing = draft.isEmpty && draft == (snapshot.values[.lyrics] ?? "") ? sidecarLyrics : draft
+                    LyricsSynchronizationView(player: player, track: track, current: values, snapshot: snapshot, lyrics: existing) { values[.lyrics] = $0 }
+                }
+            }
             .sheet(isPresented: $showAssistant) {
                 MetadataLookupView(player: player, track: track, current: values, hasArtwork: cover != nil,
                     duration: snapshot?.duration ?? 0) { changes, image in

@@ -45,7 +45,10 @@ extension XCUIApplication {
         if buttons["Browse"].exists { buttons["Browse"].tap() }
         let local = picker.staticTexts["On My iPhone"]
         XCTAssertTrue(local.waitForExistence(timeout: 10), debugDescription)
-        local.tap(); picker.staticTexts["Sonora"].tap()
+        local.tap()
+        let container = picker.cells.containing(.staticText, identifier: "Sonora").firstMatch
+        XCTAssertTrue(container.waitForExistence(timeout: 10), debugDescription)
+        container.images.firstMatch.tap()
         for name in path {
             let folder = picker.cells.containing(.staticText, identifier: name).firstMatch
             for _ in 0..<8 where !folder.isHittable { picker.swipeUp() }
