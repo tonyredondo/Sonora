@@ -50,8 +50,8 @@ ttl_seconds = 7776000
 
 [elevenlabs]
 enabled = true
-# Paid, opt-in forced alignment. The iPhone never receives this provider credential.
+# Paid, opt-in forced alignment and Scribe v2 transcription. The iPhone never receives this provider credential.
 # api_key = "your-elevenlabs-api-key"
 min_interval_ms = 1000
-# Derived alignment cache, keyed by canonical audio + exact lyrics + algorithm version.
+# Derived audio analysis cache, keyed by canonical audio + job parameters/version.
 ttl_seconds = 31536000

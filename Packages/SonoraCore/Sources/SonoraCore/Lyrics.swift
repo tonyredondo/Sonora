@@ -7,13 +7,17 @@ public struct LyricsDocument: Equatable, Sendable {
         public let text: String
     }
     public let lines: [Line]
+    /// Persisted inside LRC so attribution survives tag writes, sidecars and offline reloads.
+    public static let aiTranscriptionMarker = "[by:Sonora AI transcription - ElevenLabs]"
+    public let isAITranscribed: Bool
+    public var attribution: String? { isAITranscribed ? "Transcrita por IA · ElevenLabs" : nil }
     public var isTimed: Bool { lines.contains { $0.time != nil } }
-    private init(lines: [Line]) { self.lines = lines }
+    private init(lines: [Line], isAITranscribed: Bool) { self.lines = lines; self.isAITranscribed = isAITranscribed }
 
     public func sliced(from start: Double, duration: Double) -> LyricsDocument {
         guard isTimed, start.isFinite, duration.isFinite else { return self }
         let selected = lines.filter { ($0.time ?? -1) >= start && ($0.time ?? .infinity) < start + duration }
-        return LyricsDocument(lines: selected.enumerated().map { Line(id: $0.offset, time: $0.element.time.map { $0 - start }, text: $0.element.text) })
+        return LyricsDocument(lines: selected.enumerated().map { Line(id: $0.offset, time: $0.element.time.map { $0 - start }, text: $0.element.text) }, isAITranscribed: isAITranscribed)
     }
 
     private static let timestamp = try! NSRegularExpression(pattern: #"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]"#)
@@ -21,6 +25,7 @@ public struct LyricsDocument: Equatable, Sendable {
     private static let fileOffset = try! NSRegularExpression(pattern: #"\[offset:([+-]?\d+)\]"#, options: .caseInsensitive)
 
     public init(text: String) {
+        isAITranscribed = text.components(separatedBy: .newlines).contains { $0.trimmingCharacters(in: .whitespaces) == Self.aiTranscriptionMarker }
         let range = NSRange(text.startIndex..., in: text)
         let offset = Self.fileOffset.firstMatch(in: text, range: range)
             .flatMap { Range($0.range(at: 1), in: text) }

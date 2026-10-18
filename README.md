@@ -20,7 +20,7 @@ The [metadata assistant](docs/metadata-assistant.md) connects to the [Rust metad
 - Optional managed local folder copies for offline listening, including sidecars, progress, cancellation and explicit copy removal.
 - Native CarPlay browsing and shared transport; device activation requires Apple's audio entitlement approval.
 - Play next or append songs and entire recursive folders; queues can reference several source folders and restore paused.
-- Plain/timed lyrics from embedded text or LRC/TXT sidecars, seeking, timing offset, and optional automatic scrolling.
+- Plain/timed lyrics from embedded text or LRC/TXT sidecars, seeking, timing offset, and optional automatic scrolling. Cached LRCLIB lookup, ElevenLabs alignment and missing-text Scribe v2 transcription, with persistent AI attribution and preview before saving.
 - Individual and batch file-tag editing, including artwork and lyrics, with explicit Save and conflict detection.
 - Track/album ReplayGain, manual local loudness analysis with progress/cancellation and optional file tags, stereo balance, and a sleep timer by duration or at the end of the current song. See the [ReplayGain analysis guide](docs/replaygain-analysis.md) and [native screens](docs/screenshots/replaygain/README.md).
 - Embedded title/artist/album metadata, embedded artwork, and `cover.jpg`, `folder.jpg`, `cover.png`, or `folder.png` sidecars.

@@ -2,6 +2,16 @@ import XCTest
 @testable import SonoraCore
 
 final class LyricsTests: XCTestCase {
+    func testAIAttributionSurvivesParsingAndCueSlicingWithoutBecomingALyric() {
+        let body = "[00:01]Hello\n[00:03]Again"
+        let original = LyricsDocument(text: body)
+        let generated = LyricsDocument(text: "[by:Sonora AI transcription - ElevenLabs]\n" + body)
+        XCTAssertEqual(generated.lines, original.lines)
+        XCTAssertNotEqual(generated, original, "AI origin is part of the displayed document")
+        XCTAssertNotEqual(generated.sliced(from: 1, duration: 3), original.sliced(from: 1, duration: 3))
+        XCTAssertEqual(LyricsDocument(text: "[by:Someone else]\n" + body), original)
+    }
+
     func testActiveLineAnticipatesTimestampsBy250Milliseconds() {
         let lyrics = LyricsDocument(text: "[00:01]Primera\n[00:03]Segunda")
         XCTAssertNil(lyrics.activeLine(at: 0.749))

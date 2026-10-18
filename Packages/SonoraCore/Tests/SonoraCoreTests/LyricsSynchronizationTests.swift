@@ -3,7 +3,7 @@ import Foundation
 import XCTest
 @testable import SonoraCore
 
-private func pcmFixture(marker: UInt8 = 0) -> Data {
+func pcmFixture(marker: UInt8 = 0) -> Data {
     var data = Data("RIFF".utf8)
     func append<T: FixedWidthInteger>(_ value: T) { var v = value.littleEndian; withUnsafeBytes(of: &v) { data.append(contentsOf: $0) } }
     append(UInt32(64036)); data.append(Data("WAVEfmt ".utf8)); append(UInt32(16)); append(UInt16(1)); append(UInt16(1))

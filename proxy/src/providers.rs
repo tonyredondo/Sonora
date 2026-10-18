@@ -34,7 +34,7 @@ pub enum Error {
     },
     #[error("provider returned an invalid response: {0:?}")]
     InvalidResponse(Provider),
-    #[error("alignment upload exceeds the supported size limit")]
+    #[error("audio upload exceeds the supported size limit")]
     UploadTooLarge,
     #[error("provider response exceeds the configured size limit")]
     TooLarge,
@@ -170,7 +170,7 @@ impl Client {
             provider,
             url,
             form: None,
-            alignment: None,
+            audio_job: None,
             image: false,
         })
     }

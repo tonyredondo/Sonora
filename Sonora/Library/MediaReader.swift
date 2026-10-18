@@ -79,7 +79,7 @@ private final class CoordinatedRead: @unchecked Sendable {
         let lyrics = LyricsSource.read(for: url, embedded: details.tags[.lyrics] ?? "", coordinator: coordinator)
         details.lyrics = LyricsDocument(text: lyrics.text)
         if let cue = track.cue { details.lyrics = details.lyrics.sliced(from: cue.startSeconds, duration: details.duration) }
-        details.lyricsSource = lyrics.source
+        details.lyricsSource = details.lyrics.attribution ?? lyrics.source
         return PreparedTrack(decoder: prepared.decoder, details: details)
     }
     private static func thumbnail(_ data: Data) -> UIImage? {

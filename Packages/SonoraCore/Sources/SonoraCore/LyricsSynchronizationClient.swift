@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 public struct LyricsSynchronizationResult: Codable, Sendable, Equatable {
-    public enum Source: String, Codable, Sendable { case lrclib, elevenlabs }
+    public enum Source: String, Codable, Sendable { case lrclib, elevenlabs, elevenlabsTranscription }
     public let text: String
     public let source: Source
 
@@ -37,19 +37,22 @@ public struct LyricsSynchronizationResult: Codable, Sendable, Equatable {
 }
 
 public enum LyricsSynchronizationError: LocalizedError {
-    case requiresLyrics, providerUnavailable, invalidAlignment, alreadyTimed, unsupportedDuration
+    case requiresLyrics, providerUnavailable, invalidAlignment, alreadyTimed, unsupportedDuration, noSpeech, noSpeechNotCached
     public var errorDescription: String? {
         switch self {
         case .alreadyTimed: "Esta letra ya tiene tiempos. Puedes ajustarlos en Editar letra."
-        case .unsupportedDuration: "La sincronización con ElevenLabs admite audio de entre un segundo y diez minutos."
+        case .unsupportedDuration: "El análisis con ElevenLabs admite audio de entre un segundo y diez minutos."
         case .requiresLyrics: "No hay una letra sincronizada compatible. Añade primero la letra para poder sincronizarla con ElevenLabs."
         case .providerUnavailable: "ElevenLabs no está disponible. Comprueba que esté habilitado y que su API key esté configurada en el proxy."
         case .invalidAlignment: "Los tiempos recibidos no corresponden a esta letra o a este audio. No se ha cambiado la canción."
+        case .noSpeech: "No se han encontrado palabras en el audio. Este resultado queda guardado para evitar repetir la transcripción."
+        case .noSpeechNotCached: "No se han encontrado palabras en el audio y no se pudo guardar el resultado. Volver a intentarlo puede consumir créditos."
         }
     }
 }
 
-/// Catalog lookup never uploads audio. Forced alignment only runs after a genuine catalog miss.
+/// Catalog lookup never uploads audio. Paid work only runs after a genuine catalog miss;
+/// known text is aligned, and missing text is transcribed. Every stage has persistent cache.
 public actor LyricsSynchronizationClient {
     private let connection: MetadataProxyConnection
     private let cache: MetadataLookupCache
@@ -63,27 +66,42 @@ public actor LyricsSynchronizationClient {
                             audio: @Sendable () async throws -> Data) async throws -> MetadataLookupResult<LyricsSynchronizationResult> {
         guard duration.isFinite, duration > 0, duration <= 604800, lyrics.utf8.count <= 65_536, !lyrics.contains("\0") else { throw MetadataLookupError.invalidSearch }
         guard !LyricsDocument(text: lyrics).isTimed else { throw LyricsSynchronizationError.alreadyTimed }
+        let wasAITranscribed = LyricsDocument(text: lyrics).isAITranscribed
+        var knownText = lyrics.components(separatedBy: .newlines)
+            .filter { $0.trimmingCharacters(in: .whitespaces) != LyricsDocument.aiTranscriptionMarker }.joined(separator: "\n")
+        func attributed(_ result: MetadataLookupResult<LyricsSynchronizationResult>) -> MetadataLookupResult<LyricsSynchronizationResult> {
+            guard wasAITranscribed else { return result }
+            return MetadataLookupResult(value: LyricsSynchronizationResult(text: LyricsDocument.aiTranscriptionMarker + "\n" + result.value.text, source: result.value.source), savedAt: result.savedAt, warning: result.warning)
+        }
         try Task.checkCancellation()
         if !query.title.isEmpty && !query.artist.isEmpty && !query.album.isEmpty {
             do {
                 let found = try await lookup.lyrics(title: query.title, artist: query.artist, album: query.album, duration: max(1, Int(duration.rounded())), offline: offline)
                 if !found.value.instrumental, abs(found.value.duration - duration) <= 2,
                    let timed = found.value.syncedLyrics,
-                   let result = LyricsSynchronizationResult.catalog(text: timed, existing: lyrics, duration: duration) {
-                    return MetadataLookupResult(value: result, savedAt: found.savedAt, warning: found.warning)
+                   let result = LyricsSynchronizationResult.catalog(text: timed, existing: knownText, duration: duration) {
+                    return attributed(MetadataLookupResult(value: result, savedAt: found.savedAt, warning: found.warning))
                 }
                 // A stale catalog result after a network error is not proof of a fresh miss.
                 if !offline && found.warning != nil { throw MetadataLookupError.unavailable }
+                if knownText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   !found.value.instrumental, abs(found.value.duration - duration) <= 2,
+                   let plain = found.value.plainLyrics, !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    guard plain.utf8.count <= 65_536, !plain.contains("\0"), !LyricsDocument(text: plain).isTimed else { throw LyricsSynchronizationError.invalidAlignment }
+                    knownText = plain
+                }
             } catch MetadataLookupError.notFound { }
               catch MetadataLookupError.notCached where offline { }
         }
-        guard !lyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw LyricsSynchronizationError.requiresLyrics }
         guard (1...600).contains(duration) else { throw LyricsSynchronizationError.unsupportedDuration }
         try Task.checkCancellation()
         let pcm = try await audio()
         try Task.checkCancellation()
         let pcmDuration = try Self.pcmDuration(pcm)
-        return try await align(audio: pcm, lyrics: lyrics, duration: pcmDuration, offline: offline)
+        if knownText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return try await transcribe(audio: pcm, duration: pcmDuration, offline: offline)
+        }
+        return attributed(try await align(audio: pcm, lyrics: knownText, duration: pcmDuration, offline: offline))
     }
     private struct Alignment: Codable {
         let plain_lyrics: String
@@ -114,16 +132,60 @@ public actor LyricsSynchronizationClient {
         body.append(audio); body.append(Data("\r\n--\(boundary)--\r\n".utf8))
         request.httpMethod = "POST"; request.httpBody = body; request.timeoutInterval = 180
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        let data = try await sendAudioRequest(request)
+        let result = try decode(data)
+        do { try await cache.store(data, key: key, status: 200) }
+        catch { return MetadataLookupResult(value: result, savedAt: nil, warning: "No se pudo guardar la sincronización para usarla sin conexión.") }
+        return MetadataLookupResult(value: result, savedAt: nil, warning: nil)
+    }
+    private struct Transcription: Codable {
+        let plain_lyrics: String
+        let synced_lyrics: String
+        let audio_sha256: String
+        let duration: Double
+        let model_id: String
+    }
+    private func transcribe(audio: Data, duration: Double, offline: Bool) async throws -> MetadataLookupResult<LyricsSynchronizationResult> {
+        let audioHash = Self.digest(audio)
+        var request = try connection.request(path: "v1/lyrics/transcribe")
+        guard let url = request.url else { throw MetadataLookupError.invalidConnection }
+        let key = url.absoluteString + "#transcription-v1:scribe_v2:" + audioHash
+        // A valid empty transcript is also a reusable result, never an automatic paid retry.
+        func decode(_ data: Data) throws -> LyricsSynchronizationResult? {
+            let value = try JSONDecoder().decode(MetadataProxyEnvelope<Transcription>.self, from: data).data
+            guard value.audio_sha256 == audioHash, value.model_id == "scribe_v2",
+                  value.duration.isFinite, abs(value.duration - duration) <= 0.1 else { throw LyricsSynchronizationError.invalidAlignment }
+            if value.plain_lyrics.isEmpty && value.synced_lyrics.isEmpty { return nil }
+            guard value.plain_lyrics.utf8.count <= 65_536, !value.plain_lyrics.contains("\0"),
+                  let valid = LyricsSynchronizationResult.catalog(text: value.synced_lyrics, existing: value.plain_lyrics, duration: value.duration) else { throw LyricsSynchronizationError.invalidAlignment }
+            return LyricsSynchronizationResult(text: LyricsDocument.aiTranscriptionMarker + "\n" + valid.text, source: .elevenlabsTranscription)
+        }
+        if let old = try await cache.read(key: key) {
+            guard let result = try decode(old.data) else { throw LyricsSynchronizationError.noSpeech }
+            return MetadataLookupResult(value: result, savedAt: old.savedAt, warning: nil)
+        }
+        if offline { throw MetadataLookupError.notCached }
+        let boundary = "SonoraTranscription" + audioHash
+        var body = Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".utf8)
+        body.append(audio); body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        request.httpMethod = "POST"; request.httpBody = body; request.timeoutInterval = 180
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        let data = try await sendAudioRequest(request)
+        let result = try decode(data)
+        var warning: String?
+        do { try await cache.store(data, key: key, status: 200) }
+        catch { warning = "No se pudo guardar la transcripción para usarla sin conexión." }
+        guard let result else { throw warning == nil ? LyricsSynchronizationError.noSpeech : LyricsSynchronizationError.noSpeechNotCached }
+        return MetadataLookupResult(value: result, savedAt: nil, warning: warning)
+    }
+    private func sendAudioRequest(_ request: URLRequest) async throws -> Data {
         let response = try await transport.send(request)
         try Task.checkCancellation()
         if response.status == 401 || response.status == 403 { throw MetadataLookupError.unauthorized }
         if response.status == 503 { throw LyricsSynchronizationError.providerUnavailable }
         guard response.status == 200 else { throw MetadataLookupError.unavailable }
         guard response.data.count <= 1_000_000 else { throw MetadataLookupError.tooLarge }
-        let result = try decode(response.data)
-        do { try await cache.store(response.data, key: key, status: 200) }
-        catch { return MetadataLookupResult(value: result, savedAt: nil, warning: "No se pudo guardar la sincronización para usarla sin conexión.") }
-        return MetadataLookupResult(value: result, savedAt: nil, warning: nil)
+        return response.data
     }
     private static func pcmDuration(_ audio: Data) throws -> Double {
         guard (32_044...19_200_044).contains(audio.count), (audio.count - 44).isMultiple(of: 2) else { throw MetadataLookupError.tooLarge }

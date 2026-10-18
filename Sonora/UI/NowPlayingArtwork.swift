@@ -80,6 +80,14 @@ private struct ArtworkLyrics: View {
             }
             .accessibilityLabel("Letra de la canción")
             .accessibilityIdentifier("playerLyrics")
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let attribution = lyrics.attribution {
+                    Text(attribution).font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 24).padding(.top, 16)
+                        .accessibilityIdentifier("playerLyricsAttribution")
+                }
+            }
             .onChange(of: activeLine, initial: true) { old, new in
                 follow(using: reader, animated: old != new)
             }

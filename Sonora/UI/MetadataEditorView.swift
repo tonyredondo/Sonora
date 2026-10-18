@@ -28,6 +28,10 @@ struct MetadataEditorView: View {
         MetadataPatch(values: values.filter { snapshot?.values[$0.key] != $0.value }, artwork: artwork)
     }
     private var changed: Bool { !patch.values.isEmpty || artwork != .keep }
+    private var existingLyrics: String {
+        let draft = values[.lyrics] ?? ""
+        return draft.isEmpty && draft == (snapshot?.values[.lyrics] ?? "") ? sidecarLyrics : draft
+    }
     private func binding(_ field: MetadataField) -> Binding<String> {
         Binding(get: { values[field] ?? "" }, set: { values[field] = $0 })
     }
@@ -68,7 +72,7 @@ struct MetadataEditorView: View {
                         if cover != nil { Button("Quitar carátulas", role: .destructive) { artwork = .remove; coverPreview = nil } }
                     }.disabled(!snapshot.canWrite || saving || importing)
                     Section("Letra") {
-                        Button("Sincronizar letra", systemImage: "waveform") { showLyricsSynchronization = true }
+                        Button(existingLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Buscar o transcribir letra" : "Sincronizar letra", systemImage: "waveform") { showLyricsSynchronization = true }
                             .accessibilityIdentifier("openLyricsSynchronization")
                         NavigationLink("Editar letra") {
                             Form {
@@ -140,9 +144,7 @@ struct MetadataEditorView: View {
             .interactiveDismissDisabled(saving)
             .sheet(isPresented: $showLyricsSynchronization) {
                 if let snapshot {
-                    let draft = values[.lyrics] ?? ""
-                    let existing = draft.isEmpty && draft == (snapshot.values[.lyrics] ?? "") ? sidecarLyrics : draft
-                    LyricsSynchronizationView(player: player, track: track, current: values, snapshot: snapshot, lyrics: existing) { values[.lyrics] = $0 }
+                    LyricsSynchronizationView(player: player, track: track, current: values, snapshot: snapshot, lyrics: existingLyrics) { values[.lyrics] = $0 }
                 }
             }
             .sheet(isPresented: $showAssistant) {
