@@ -6,6 +6,18 @@ Open **Editar información → Completar información** for an editable song. Se
 
 MusicBrainz supplies recording, artist, album, release date, genre and track/disc information. Track positions are proposed only when the selected recording occurs once in the edition. LRCLIB supplies plain or synchronized lyrics for the selected title, artist, album and the actual file duration. Cover Art Archive supplies that edition's artwork. Missing artwork or lyrics is reported independently; it does not discard the other proposals. A duration difference over three seconds is shown for review.
 
+## Recovering confirmed edits
+
+Saving a song or a batch also keeps a durable copy of the editor's tags, embedded artwork and lyrics, including LRC timing and AI attribution. The app sends these confirmed values to your configured Sonora server; it does not upload the audio for this feature. Each confirmation has an immutable ID, so two albums, editions or devices cannot silently overwrite each other's choices.
+
+Open **Editar información → Recuperar información guardada**, choose a copy and review the fields and artwork. The default completes empty fields. Disable that option to choose replacements or restore an empty value. **Aplicar al editor** changes the draft; **Guardar → Guardar en archivo** still performs the original file-conflict check. Cancelling leaves the file unchanged.
+
+The match is a versioned SHA-256 over all decoded samples at their original rate and channel layout, without tags, paths, resampling or downmixing. Renaming a file and editing tags retain its identity. Re-encoding, changing samples or using a decoder that produces different samples can prevent an exact match; there is no approximate automatic restore. Computing this identity reads the full file during save or recovery, without scanning the whole library.
+
+Confirmed copies and the outgoing queue live in **Application Support/Sonora/ConfirmedMetadata**, outside the lookup cache. An offline save remains pending for its original server address. Sonora retries when the network returns, the app becomes active, another edit is saved or you tap **Enviar copias pendientes** in the assistant settings. A failed or unsupported server leaves the copy pending and reports the problem. Changing the server does not forward another address's pending data. Without a configured server, copies remain local. Keep the original server address to resume its queue.
+
+Server copies use a separate permanent SQLite database, configured by `[metadata]`, in the platform application-data directory. There is no TTL or LRU eviction. The default 5 GiB budget rejects new copies when full and keeps existing ones. Back up this database independently of the provider cache. Clearing the app or server provider cache does not remove confirmed editions. A new device can recover copies by identifying the same audio, connecting to the same server and reviewing the saved edition. Read-only and CUE editing restrictions remain unchanged.
+
 ## Connection
 
 In **Ajustes → Asistente de información**, enter the server URL and its access token, save, then check the connection. The token is stored in this app's Keychain item; it is not included in UserDefaults, cache entries, URLs or bundled source. A connection check calls the authenticated `/v1/status` endpoint and reports whether AcoustID has an application key.

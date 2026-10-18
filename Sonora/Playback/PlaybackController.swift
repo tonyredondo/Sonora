@@ -10,6 +10,7 @@ final class PlaybackController: NSObject {
     let library: MusicLibrary
     let volumeAnalysis: VolumeAnalysisStore
     let localImports: LocalImportController
+    let metadataArchive: MetadataArchiveController?
     @ObservationIgnored lazy var linkImports = LinkImportController(library: library, copies: localImports)
     private(set) var transitionSettings: TransitionSettings
     private(set) var lastTransition: TransitionOutcome?
@@ -116,15 +117,19 @@ final class PlaybackController: NSObject {
         guard track.cue == nil else { throw MusicTextError.invalid("Una pista CUE comparte el archivo de audio. Sus etiquetas se leen del CUE; no se puede sobrescribir el archivo desde esta pista.") }
         let access = try folderAccess(for: track)
         let source = track.sourceID ?? primaryLibraryID
-        try await metadataTransaction { token in
+        let destination = metadataArchive?.destination
+        let saved = try await metadataTransaction { token in
             let saved = try await MetadataService.save(url: track.url(in: access.url), folder: access, expected: expected, patch: patch)
             if let id = libraryID(for: track) { try volumeAnalysis.rebind(id, from: expected, to: saved.fingerprint) }
             if generation == token { details.removeValue(forKey: track.id) }
             if let source { await library.refresh(track: track, source: source, folder: access) }
+            return saved
         }
+        await backUpMetadata(saved, track:track, folder:access, server:destination)
     }
     func saveMetadataBatch(_ tracks: [AudioTrack], expected: [String: FileFingerprint], patch: MetadataPatch, progress: @escaping @MainActor (Int) -> Void) async -> MetadataBatchResult {
         let primary = primaryLibraryID
+        let destination = metadataArchive?.destination
         return await metadataTransaction { token in
             var written = 0, failures: [MetadataWriteFailure] = []
             for (index, track) in tracks.enumerated() {
@@ -140,10 +145,19 @@ final class PlaybackController: NSObject {
                     if generation == token { details.removeValue(forKey: track.id) }
                     if let source = track.sourceID ?? primary { await library.refresh(track: track, source: source, folder: access) }
                     written += 1
+                    await backUpMetadata(saved, track:track, folder:access, server:destination)
                 } catch { failures.append(MetadataWriteFailure(id: track.id, filename: location(for: track), message: error.localizedDescription)) }
                 progress(index + 1)
             }
             return MetadataBatchResult(written: written, failures: failures)
+        }
+    }
+    private func backUpMetadata(_ snapshot: MetadataSnapshot, track: AudioTrack, folder: ScopedFolder, server: URL?) async {
+        guard let metadataArchive else { return }
+        do { try await metadataArchive.capture(track:track,folder:folder,snapshot:snapshot,server:server) }
+        catch {
+            metadataArchive.reportFailure(error)
+            issue = "El archivo \(track.filename) se ha guardado, pero no se pudo conservar su copia de información: \(error.localizedDescription)"
         }
     }
     func metadataTransaction<T>(_ body: (UUID) async throws -> T) async rethrows -> T {
@@ -159,8 +173,9 @@ final class PlaybackController: NSObject {
         return try await body(token)
     }
 
-    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage) {
+    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil) {
         self.defaults = defaults
+        self.metadataArchive = metadataArchive
         player = audioPlayer
         library = MusicLibrary(defaults: defaults)
         volumeAnalysis = VolumeAnalysisStore(defaults: defaults)

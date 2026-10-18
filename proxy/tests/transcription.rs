@@ -117,6 +117,7 @@ async fn setup(
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut config = Config::default();
     config.cache.path = root.path().join("cache.sqlite");
+    config.metadata.path = root.path().join("metadata.sqlite");
     config.server.api_token = Some("fixture-token".into());
     config.elevenlabs.api_key = Some("synthetic-eleven-key".into());
     config.elevenlabs.base_url = Some(format!("http://{}", listener.local_addr().unwrap()));

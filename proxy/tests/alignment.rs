@@ -82,6 +82,7 @@ async fn aligns_preserving_unicode_and_repeated_lines_deduplicates_and_reuses_di
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut config = Config::default();
     config.cache.path = root.path().join("cache.sqlite");
+    config.metadata.path = root.path().join("metadata.sqlite");
     config.elevenlabs.base_url = Some(format!("http://{}", listener.local_addr().unwrap()));
     config.elevenlabs.api_key = Some("synthetic-eleven-key".into());
     let app = Router::new()
@@ -135,6 +136,7 @@ async fn ambiguous_paid_errors_are_not_automatically_retried_and_invalid_audio_i
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut config = Config::default();
     config.cache.path = root.path().join("cache.sqlite");
+    config.metadata.path = root.path().join("metadata.sqlite");
     config.elevenlabs.base_url = Some(format!("http://{}", listener.local_addr().unwrap()));
     config.elevenlabs.api_key = Some("synthetic-eleven-key".into());
     config.network.max_retries = 5;
@@ -175,6 +177,7 @@ async fn route_requires_authentication_and_valid_complete_multipart_without_usin
     let root = TempDir::new().unwrap();
     let mut config = Config::default();
     config.cache.path = root.path().join("cache.sqlite");
+    config.metadata.path = root.path().join("metadata.sqlite");
     config.server.api_token = Some("synthetic-proxy-token".into());
     let app = sonora_proxy::api::router(config).unwrap();
     let response = app
@@ -230,6 +233,7 @@ async fn disconnect_during_paid_work_still_caches_and_reconnect_shares_request()
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut config = Config::default();
     config.cache.path = root.path().join("cache.sqlite");
+    config.metadata.path = root.path().join("metadata.sqlite");
     config.elevenlabs.api_key = Some("synthetic".into());
     config.elevenlabs.base_url = Some(format!("http://{}", listener.local_addr().unwrap()));
     let app = Router::new()
@@ -279,6 +283,7 @@ async fn missing_key_and_oversized_upload_are_explicit_and_never_start_paid_work
     let root = TempDir::new().unwrap();
     let mut config = Config::default();
     config.cache.path = root.path().join("cache.sqlite");
+    config.metadata.path = root.path().join("metadata.sqlite");
     let client = Client::new(config.clone()).unwrap();
     assert!(matches!(
         client
@@ -313,6 +318,7 @@ async fn oversized_provider_response_keeps_existing_bad_gateway_contract() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut config = Config::default();
     config.cache.path = root.path().join("cache.sqlite");
+    config.metadata.path = root.path().join("metadata.sqlite");
     config.cover_art.base_url = Some(format!("http://{}", listener.local_addr().unwrap()));
     config.network.max_response_bytes = 1024;
     let upstream = Router::new().fallback(get(|| async { vec![0u8; 2048] }));

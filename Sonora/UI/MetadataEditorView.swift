@@ -20,6 +20,8 @@ struct MetadataEditorView: View {
     @State private var importLyrics = false
     @State private var confirm = false
     @State private var showAssistant = false
+    private struct RestoreRequest: Identifiable { let id = UUID(); let folder: ScopedFolder }
+    @State private var restoreRequest: RestoreRequest?
     @State private var showLyricsSynchronization = false
     @State private var sidecarLyrics = ""
     @State private var issue: String?
@@ -51,6 +53,13 @@ struct MetadataEditorView: View {
                     Section {
                         Button { showAssistant = true } label: { Label("Completar información", systemImage: "magnifyingglass") }
                             .accessibilityIdentifier("completeMetadata")
+                        if player.metadataArchive != nil {
+                            Button("Recuperar información guardada",systemImage:"clock.arrow.circlepath") {
+                                do { restoreRequest = RestoreRequest(folder:try player.folderAccess(for:track)) }
+                                catch { issue = error.localizedDescription }
+                            }
+                                .accessibilityIdentifier("restoreMetadata")
+                        }
                     }.disabled(!snapshot.canWrite || saving || importing)
                     Section("Información") {
                         ForEach(MetadataField.allCases.filter { ![.lyrics, .comment].contains($0) }) { field in
@@ -152,6 +161,18 @@ struct MetadataEditorView: View {
                     duration: snapshot?.duration ?? 0) { changes, image in
                     values.merge(changes) { _, proposed in proposed }
                     if let image { artwork = .replace(image); coverPreview = UIImage(data: image) }
+                }
+            }
+            .sheet(item:$restoreRequest) { request in
+                if let snapshot, let controller = player.metadataArchive {
+                    MetadataRestoreView(controller:controller,track:track,folder:request.folder,snapshot:snapshot,current:values,hasArtwork:cover != nil) { changes, image in
+                        values.merge(changes) { _, proposed in proposed }
+                        if image != .keep {
+                            artwork = image
+                            if case .replace(let data) = image { coverPreview = UIImage(data:data) }
+                            else { coverPreview = nil }
+                        }
+                    }
                 }
             }
         }

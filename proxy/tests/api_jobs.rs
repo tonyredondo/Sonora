@@ -50,6 +50,7 @@ async fn request(
 fn config(directory: &TempDir) -> Config {
     let mut config = Config::default();
     config.cache.path = directory.path().join("cache.sqlite");
+    config.metadata.path = directory.path().join("metadata.sqlite");
     config
 }
 
@@ -209,11 +210,10 @@ async fn batch_returns_progress_and_partial_provider_results_without_writing_fil
     );
     assert_eq!(hits.load(Ordering::SeqCst), 2);
     assert!(directory.path().read_dir().unwrap().all(|e| {
-        e.unwrap()
-            .file_name()
-            .to_str()
-            .unwrap()
-            .starts_with("cache.")
+        let filename = e.unwrap().file_name();
+        let filename = filename.to_str().unwrap();
+        filename.starts_with("cache.")
+            || matches!(filename, "metadata.sqlite" | "metadata.lockfile")
     }));
     server.abort();
 }

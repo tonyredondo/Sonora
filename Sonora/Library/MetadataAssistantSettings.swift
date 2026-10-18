@@ -54,7 +54,7 @@ struct MetadataTokenStore {
     }
     private(set) var endpoint: String
     private(set) var hasToken: Bool
-    var offline: Bool { didSet { defaults.set(offline, forKey: "metadata.offline") } }
+    var offline: Bool { didSet { defaults.set(offline, forKey: "metadata.offline"); onArchiveConnectionChange?() } }
     private(set) var networkAvailable = true
     private(set) var configurationRevision = 0
     private(set) var configurationIssue: String?
@@ -63,6 +63,7 @@ struct MetadataTokenStore {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let tokens: MetadataTokenStore
     @ObservationIgnored private var monitor: NWPathMonitor?
+    @ObservationIgnored var onArchiveConnectionChange: (@MainActor () -> Void)?
 
     init(defaults: UserDefaults, tokens: MetadataTokenStore, cache: MetadataLookupCache) {
         self.defaults = defaults; self.tokens = tokens; self.cache = cache
@@ -80,6 +81,7 @@ struct MetadataTokenStore {
         defaults.set(address, forKey: "metadata.endpoint")
         self.endpoint = address; hasToken = !token.isEmpty
         configurationIssue = nil; configurationRevision += 1
+        onArchiveConnectionChange?()
     }
 
     func client() throws -> MetadataLookupClient {
@@ -106,7 +108,10 @@ struct MetadataTokenStore {
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
             let available = path.status == .satisfied
-            Task { @MainActor [weak self] in self?.networkAvailable = available }
+            Task { @MainActor [weak self] in
+                guard let self, networkAvailable != available else { return }
+                networkAvailable = available; onArchiveConnectionChange?()
+            }
         }
         self.monitor = monitor
         monitor.start(queue: DispatchQueue(label: "Sonora.MetadataConnectivity"))

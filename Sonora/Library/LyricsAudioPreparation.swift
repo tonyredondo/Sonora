@@ -6,7 +6,7 @@ import SonoraCore
 /// No temporary audio file or original-file mutation is needed.
 enum LyricsAudioPreparation {
     static func prepare(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint) async throws -> Data {
-        try await read(track: track, folder: folder, expected: expected) { url, _ in
+        try await CoordinatedAudioRead.read(track: track, folder: folder, expected: expected) { url, _ in
             let source = try AudioDecoders.open(url, cue: track.cue)
             defer { try? source.close() }
             let duration = Double(source.length) / source.processingFormat.sampleRate
@@ -35,18 +35,9 @@ enum LyricsAudioPreparation {
         }
     }
     static func existingText(track: AudioTrack, folder: ScopedFolder, embedded: String, expected: FileFingerprint) async throws -> String {
-        try await read(track: track, folder: folder, expected: expected) { url, lyricsCoordinator in
+        try await CoordinatedAudioRead.read(track: track, folder: folder, expected: expected) { url, lyricsCoordinator in
             LyricsSource.read(for: url, embedded: embedded, coordinator: lyricsCoordinator).text
         }
-    }
-    private static func read<Value: Sendable>(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint,
-                                              operation: @escaping @Sendable (URL, NSFileCoordinator) throws -> Value) async throws -> Value {
-        try Task.checkCancellation()
-        let job = LyricsCoordinatedRead()
-        let worker = Task.detached(priority: .userInitiated) { try job.read(track: track, folder: folder, expected: expected, operation: operation) }
-        return try await withTaskCancellationHandler {
-            let result = try await worker.value; try Task.checkCancellation(); return result
-        } onCancel: { job.coordinator.cancel(); job.lyricsCoordinator.cancel(); worker.cancel() }
     }
     private static func header(bytes: UInt32) -> Data {
         var result = Data("RIFF".utf8)
@@ -54,33 +45,5 @@ enum LyricsAudioPreparation {
         append(bytes + 36); result.append(Data("WAVEfmt ".utf8)); append(UInt32(16)); append(UInt16(1)); append(UInt16(1))
         append(UInt32(16000)); append(UInt32(32000)); append(UInt16(2)); append(UInt16(16)); result.append(Data("data".utf8)); append(bytes)
         return result
-    }
-}
-
-private final class LyricsCoordinatedRead: @unchecked Sendable {
-    let coordinator = NSFileCoordinator()
-    let lyricsCoordinator = NSFileCoordinator()
-    func read<Value>(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint, operation: (URL, NSFileCoordinator) throws -> Value) throws -> Value {
-        try Task.checkCancellation()
-        let url = track.url(in: folder.url)
-        let base = folder.url.resolvingSymlinksInPath().standardizedFileURL.path + "/"
-        guard url.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(base),
-              try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { throw CocoaError(.fileReadNoPermission) }
-        if (try? url.resourceValues(forKeys: [.isUbiquitousItemKey]).isUbiquitousItem) == true { try FileManager.default.startDownloadingUbiquitousItem(at: url) }
-        var coordinationError: NSError?, result: Result<Value, Error>?
-        coordinator.coordinate(readingItemAt: url, options: .withoutChanges, error: &coordinationError) { local in
-            result = Result {
-                try Task.checkCancellation()
-                guard try FileFingerprint(local) == expected else { throw MetadataIOError.changed }
-                let value = try operation(local, lyricsCoordinator)
-                try Task.checkCancellation()
-                guard try FileFingerprint(local) == expected else { throw MetadataIOError.changed }
-                return value
-            }
-        }
-        try Task.checkCancellation()
-        if let coordinationError { throw coordinationError }
-        guard let result else { throw CancellationError() }
-        return try result.get()
     }
 }

@@ -171,6 +171,25 @@ impl Default for CacheConfig {
     }
 }
 
+/// Confirmed edits are durable data, never subject to provider-cache eviction.
+#[derive(Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MetadataConfig {
+    pub path: PathBuf,
+    /// Reaching this budget rejects new copies; existing copies are never evicted.
+    pub max_bytes: u64,
+}
+impl Default for MetadataConfig {
+    fn default() -> Self {
+        Self {
+            path: dirs::data_local_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("sonora-proxy/metadata.sqlite"),
+            max_bytes: 5 * 1024 * 1024 * 1024,
+        }
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct NetworkConfig {
@@ -199,6 +218,7 @@ pub struct Config {
     pub user_agent: String,
     pub server: ServerConfig,
     pub cache: CacheConfig,
+    pub metadata: MetadataConfig,
     pub network: NetworkConfig,
     pub musicbrainz: ProviderConfig,
     pub acoustid: ProviderConfig,
@@ -212,6 +232,7 @@ impl Default for Config {
             user_agent: "SonoraProxy/0.1.0 (https://github.com/tonyredondo/Sonora)".into(),
             server: ServerConfig::default(),
             cache: CacheConfig::default(),
+            metadata: MetadataConfig::default(),
             network: NetworkConfig::default(),
             musicbrainz: ProviderConfig::default(),
             acoustid: ProviderConfig::default(),
@@ -237,7 +258,7 @@ impl Config {
             absolute.parent().ok_or(ConfigError::Read)?.to_owned(),
         )
     }
-    /// Relative cache paths are resolved against the configuration file's directory.
+    /// Relative storage paths are resolved against the configuration file's directory.
     pub fn parse(text: &str, directory: PathBuf) -> Result<Self, ConfigError> {
         let mut config: Self = toml::from_str(text).map_err(|_| ConfigError::Parse)?;
         if let Ok(suffix) = config.cache.path.strip_prefix("~") {
@@ -246,6 +267,13 @@ impl Config {
                 .join(suffix);
         } else if config.cache.path.is_relative() {
             config.cache.path = directory.join(&config.cache.path);
+        }
+        if let Ok(suffix) = config.metadata.path.strip_prefix("~") {
+            config.metadata.path = dirs::home_dir()
+                .ok_or(ConfigError::Invalid("home directory is unavailable"))?
+                .join(suffix);
+        } else if config.metadata.path.is_relative() {
+            config.metadata.path = directory.join(&config.metadata.path);
         }
         config.validate()?;
         Ok(config)
@@ -261,6 +289,14 @@ impl Config {
     }
     pub fn validate(&self) -> Result<(), ConfigError> {
         let invalid = ConfigError::Invalid;
+        if config_paths_overlap(&self.cache.path, &self.metadata.path)
+            || self.metadata.path.as_os_str().is_empty()
+            || !(22_000_000..=1024 * 1024 * 1024 * 1024).contains(&self.metadata.max_bytes)
+        {
+            return Err(invalid(
+                "metadata storage requires a separate path and a 22 MB-1 TiB budget",
+            ));
+        }
         if self.user_agent.len() < 10
             || self.user_agent.len() > 512
             || reqwest::header::HeaderValue::from_str(&self.user_agent).is_err()
@@ -365,4 +401,8 @@ impl Config {
         }
         Ok(())
     }
+}
+
+fn config_paths_overlap(cache: &Path, metadata: &Path) -> bool {
+    cache == metadata || cache.with_extension("lockfile") == metadata.with_extension("lockfile")
 }

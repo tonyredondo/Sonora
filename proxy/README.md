@@ -27,6 +27,20 @@ See [the complete example](sonora-proxy.example.toml). Credentials are plaintext
 
 The default listener is `127.0.0.1:8089`. If `[server].api_token` is set, every `/v1/` call requires `Authorization: Bearer <token>`. Binding to another interface requires a token of at least 24 characters. `/health` is public and returns only status/version. Use the host's reachable address in Sonora, not `0.0.0.0`. Public deployments need an HTTPS endpoint; the app also permits HTTP on private/local or Tailscale addresses. This binary serves HTTP and does not install a service or change network settings.
 
+## Confirmed metadata archive
+
+`[metadata].path` stores immutable copies of user-confirmed editor values in a separate SQLite database. It defaults to the platform application-data directory (`~/Library/Application Support/sonora-proxy/metadata.sqlite` on macOS), not the cache directory. Omitted settings keep existing configurations valid. Relative paths resolve against the configuration file. Back up this database as personal data; cache clearing and provider TTL/LRU eviction do not apply to it.
+
+All routes use the existing bearer authentication and do not call providers:
+
+| Method | Route | Result |
+| --- | --- | --- |
+| PUT | `/v1/metadata-records/{uuid}` | Confirm an immutable copy; 201 when created, 200 for an identical retry, 409 if that ID already has different content. |
+| GET | `/v1/metadata-records/{uuid}` | Full copy, or `metadata_not_found` with HTTP 404. |
+| GET | `/v1/audio/{audio_id}/metadata?before={cursor}` | Up to 50 summaries and `next_cursor`; omit `before` for the first page. |
+
+A record contains `id`, `audio_id` (`pcm64-v1:` and a lowercase SHA-256 digest), `confirmed_at` (Unix milliseconds), `values` (the editor's field names and strings) and nullable base64 `artwork`. No filesystem path, audio or credentials are part of a record. Limits match the editor: 16,384 UTF-8 bytes per tag, 1,000,000 for lyrics and 10,000,000 decoded artwork bytes. Requests are capped at 22 MB to allow JSON escaping and base64. `[metadata].max_bytes` defaults to 5 GiB; HTTP 507 rejects additional data without evicting any confirmed copy. `/v1/status` adds `metadata_archive_version: 1`; existing provider routes and response envelopes are unchanged.
+
 ## Cache and scheduling
 
 Provider JSON, plain/timed lyrics and actual artwork bytes share one persistent SQLite cache. Secrets are not cache keys or cached headers. Cache keys include the upstream endpoint and lookup arguments, so changing an administrator-configured mirror does not reuse another endpoint's answers.
