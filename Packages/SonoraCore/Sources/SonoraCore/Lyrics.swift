@@ -53,13 +53,15 @@ public struct LyricsDocument: Equatable, Sendable {
         }
     }
 
-    /// Positive user offset delays the lyrics. LRC file offsets are applied while parsing.
+    /// Highlights anticipate adjusted timestamps by 250 ms. Positive user offset delays
+    /// the lyrics; LRC file offsets are applied while parsing. Line times stay unchanged.
     public func activeLine(at time: Double, offset: Double = 0) -> Int? {
         guard isTimed, time.isFinite, offset.isFinite else { return nil }
+        let displayTime = time - offset + 0.25
         var low = 0, high = lines.count
         while low < high {
             let middle = (low + high) / 2
-            if (lines[middle].time ?? .infinity) <= time - offset { low = middle + 1 }
+            if (lines[middle].time ?? .infinity) <= displayTime { low = middle + 1 }
             else { high = middle }
         }
         return low == 0 ? nil : low - 1

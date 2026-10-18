@@ -114,9 +114,13 @@ final class InlineLyricsUITests: XCTestCase {
         XCTAssertGreaterThan(seconds, 20)
         XCTAssertLessThan(seconds, 39)
         let lyrics = app.scrollViews["playerLyrics"]
-        let current = lyrics.staticTexts[String(format: "Línea sincronizada %02d", seconds)]
-        let previous = lyrics.staticTexts[String(format: "Línea sincronizada %02d", seconds - 1)]
+        let current = lyrics.staticTexts.matching(NSPredicate(format: "value == %@", "Línea actual")).firstMatch
         XCTAssertTrue(current.waitForExistence(timeout: 5))
+        let line = Int(current.label.split(separator: " ").last ?? "") ?? -1
+        // The clock displays whole seconds; the highlighted phrase can already be the next one.
+        XCTAssertGreaterThanOrEqual(line, seconds)
+        XCTAssertLessThanOrEqual(line, seconds + 1)
+        let previous = lyrics.staticTexts[String(format: "Línea sincronizada %02d", line - 1)]
         XCTAssertTrue(current.isHittable)
         XCTAssertEqual(current.value as? String, "Línea actual")
         XCTAssertNotEqual(previous.value as? String, "Línea actual", "The preceding phrase should return to its normal style")
@@ -137,14 +141,20 @@ final class InlineLyricsUITests: XCTestCase {
         let offset = app.sliders["lyricsOffset"]
         XCTAssertTrue(offset.waitForExistence(timeout: 5))
         offset.adjust(toNormalizedSliderPosition: 0.5)
+        let active = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND value == %@", "lyricLine", "Línea actual")).firstMatch
+        XCTAssertTrue(active.waitForExistence(timeout: 5))
+        let line = Int(active.identifier.dropFirst("lyricLine".count)) ?? -1
+        XCTAssertGreaterThan(line, 10)
+        XCTAssertLessThan(line, 40)
+        // A +5 second offset moves back five one-second phrases, including any visual anticipation.
         offset.adjust(toNormalizedSliderPosition: 1)
-        let adjustedLine = app.buttons["lyricLine\(seconds - 5)"]
+        let adjustedLine = app.buttons["lyricLine\(line - 5)"]
         XCTAssertTrue(adjustedLine.waitForExistence(timeout: 5))
         XCTAssertEqual(adjustedLine.value as? String, "Línea actual")
         capture("current-lyric-papel-expanded-offset", app)
         app.buttons["Listo"].tap()
         let lyrics = app.scrollViews["playerLyrics"]
-        let delayed = lyrics.staticTexts[String(format: "Línea sincronizada %02d", seconds - 5)]
+        let delayed = lyrics.staticTexts[String(format: "Línea sincronizada %02d", line - 5)]
         XCTAssertTrue(delayed.waitForExistence(timeout: 5))
         XCTAssertTrue(delayed.isHittable, app.debugDescription)
         XCTAssertEqual(delayed.value as? String, "Línea actual", "Artwork must apply the expanded view's +5 second adjustment")
@@ -155,15 +165,20 @@ final class InlineLyricsUITests: XCTestCase {
         XCTAssertEqual(app.switches["Seguir la letra"].value as? String, "0")
         offset.adjust(toNormalizedSliderPosition: 0.5)
         app.buttons["Listo"].tap()
-        let current = lyrics.staticTexts[String(format: "Línea sincronizada %02d", seconds)]
+        let current = lyrics.staticTexts[String(format: "Línea sincronizada %02d", line)]
         XCTAssertFalse(current.isHittable, "Disabling following should allow the listener to keep reading elsewhere")
 
         app.buttons["expandLyrics"].tap()
         setFollowing(true, in: app)
+        // A simulated midpoint drag may leave a fractional offset; use the expanded reader's selection.
+        XCTAssertTrue(active.waitForExistence(timeout: 5))
+        let restoredLine = Int(active.identifier.dropFirst("lyricLine".count)) ?? -1
+        XCTAssertGreaterThanOrEqual(restoredLine, 0)
+        let restored = lyrics.staticTexts[String(format: "Línea sincronizada %02d", restoredLine)]
         app.buttons["Listo"].tap()
-        XCTAssertTrue(current.waitForExistence(timeout: 5))
-        XCTAssertTrue(current.isHittable, "Enabling following should bring the current phrase back immediately")
-        XCTAssertEqual(current.value as? String, "Línea actual")
+        XCTAssertTrue(restored.waitForExistence(timeout: 5))
+        XCTAssertTrue(restored.isHittable, "Enabling following should bring the current phrase back immediately")
+        XCTAssertEqual(restored.value as? String, "Línea actual")
         XCTAssertTrue(app.buttons["playerTransport"].isHittable)
         capture("current-lyric-papel-follow-restored", app)
     }
