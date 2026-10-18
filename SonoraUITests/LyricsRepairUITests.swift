@@ -6,9 +6,25 @@ final class LyricsRepairUITests: XCTestCase {
         let attachment = XCTAttachment(screenshot:app.screenshot())
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
-    @MainActor private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
-        for _ in 0..<12 where !element.isHittable { app.swipeUp() }
-        XCTAssertTrue(element.isHittable)
+    private enum ScrollDirection { case up, down }
+    @MainActor private func reveal(_ element: XCUIElement, in app: XCUIApplication, toward direction: ScrollDirection = .up) {
+        for _ in 0..<16 {
+            let navigation = app.navigationBars.firstMatch
+            let top = navigation.exists ? navigation.frame.maxY + 8 : app.frame.minY + 8
+            let footer = app.buttons["previewLyricsRepair"]
+            let bottom = footer.exists ? footer.frame.minY - 8 : app.frame.maxY - 40
+            let frame = element.exists ? element.frame : nil
+            if let frame, element.isHittable && frame.minY >= top && frame.maxY <= bottom { return }
+            // Full-screen swipes can jump past a control at maximum Dynamic Type.
+            // Drag toward the viewport center without crossing its fixed chrome.
+            let center = (top + bottom) / 2
+            let limit = max(40, (bottom - top) / 2 - 16)
+            let distance = frame.map { max(-limit, min(limit, center - $0.midY)) }
+                ?? (direction == .down ? limit : -limit)
+            let start = app.coordinate(withNormalizedOffset:.zero).withOffset(CGVector(dx:app.frame.midX,dy:center))
+            start.press(forDuration:0.05,thenDragTo:start.withOffset(CGVector(dx:0,dy:distance)),withVelocity:.slow,thenHoldForDuration:0.1)
+        }
+        XCTFail("The control must be fully visible above the fixed review button: \(element)")
     }
     @MainActor private func open(_ app:XCUIApplication, filename:String = "01 - Reparación QA.flac") {
         app.launchArguments = ["-appearance","noche","-metadata.offline","NO","-UIPreferredContentSizeCategoryName","UICTContentSizeCategoryL"]
@@ -21,7 +37,12 @@ final class LyricsRepairUITests: XCTestCase {
         reveal(source,in:app)
         app.buttons["source-options:Sonora Repair QA"].tap(); app.buttons["Actualizar fuente"].tap(); source.tap()
         let song = app.buttons["library-song:" + filename]
-        XCTAssertTrue(song.waitForExistence(timeout:10)); song.tap(); app.closeMusicSource("Sonora Repair QA")
+        XCTAssertTrue(song.waitForExistence(timeout:10))
+        let search = app.searchFields.firstMatch
+        if search.exists && song.frame.maxY > search.frame.minY { app.swipeUp() }
+        song.tap(); app.closeMusicSource("Sonora Repair QA")
+        let title = URL(fileURLWithPath:filename).deletingPathExtension().lastPathComponent.components(separatedBy:" - ").dropFirst().joined(separator:" - ")
+        XCTAssertTrue(app.buttons["openNowPlaying"].label.contains(title), "The requested song must actually be selected")
         let playing = XCTNSPredicateExpectation(predicate:NSPredicate(format:"label == %@","Pausar"),object:app.buttons["miniTransport"])
         XCTAssertEqual(XCTWaiter.wait(for:[playing],timeout:10),.completed)
         app.buttons["miniTransport"].tap(); openReader(app)
@@ -63,7 +84,8 @@ final class LyricsRepairUITests: XCTestCase {
         let preview = app.buttons["previewLyricsRepair"]; preview.tap()
         XCTAssertTrue(app.buttons["saveLyricsRepair"].waitForExistence(timeout:10))
         XCTAssertFalse(app.staticTexts["repairPreviewAttribution"].exists)
-        XCTAssertTrue(app.staticTexts["Camino de cristel"].exists); XCTAssertTrue(app.staticTexts["Vuelve la luz."].exists)
+        let previewContent = app.scrollViews["repairPreviewContent"]
+        XCTAssertTrue(previewContent.staticTexts["Camino de cristel"].exists); XCTAssertTrue(previewContent.staticTexts["Vuelve la luz."].exists)
         capture("repair-preview-cancel-noche",app)
         app.buttons["cancelRepairPreview"].tap()
         app.navigationBars["Reparar letra"].buttons["BackButton"].tap()
@@ -77,6 +99,7 @@ final class LyricsRepairUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["repairAnalysisSource"].label.contains("guardado"))
         capture("repair-offline-papel-maximum-text",app)
         reveal(completion,in:app); completion.tap()
+        XCTAssertEqual(app.buttons["previewLyricsRepair"].label,"Revisar selección (1)")
         reveal(app.buttons["repairEdit-1"],in:app); app.buttons["repairEdit-1"].tap()
         let text = app.textViews["repairEditText"]; XCTAssertTrue(text.waitForExistence(timeout:10))
         // Tap the trailing whitespace of its first line to place the caret at
@@ -85,14 +108,25 @@ final class LyricsRepairUITests: XCTestCase {
         text.typeText(" transparente")
         XCTAssertEqual(text.value as? String,"cristal transparente")
         app.buttons["repairUseEdit"].tap()
-        for _ in 0..<12 where !app.switches["repairOnlyCompletions"].isHittable { app.swipeDown() }
-        app.switches["repairOnlyCompletions"].tap(); preview.tap()
+        XCTAssertEqual(app.buttons["previewLyricsRepair"].label,"Revisar selección (2)")
+        let filter = app.switches["repairOnlyCompletions"]
+        reveal(filter,in:app,toward:.down)
+        // Toggle's accessibility frame includes its multiline label. Tap the trailing control.
+        let filterControl = filter.coordinate(withNormalizedOffset:CGVector(dx:0.9,dy:0.5))
+        filterControl.tap()
+        XCTAssertEqual(filter.value as? String,"1")
+        XCTAssertEqual(app.buttons["previewLyricsRepair"].label,"Revisar selección (1)")
+        preview.tap()
         XCTAssertTrue(app.buttons["saveLyricsRepair"].waitForExistence(timeout:10))
         XCTAssertFalse(app.staticTexts["repairPreviewAttribution"].exists)
-        XCTAssertTrue(app.staticTexts["Camino de cristel"].exists,"The additions-only filter must exclude a selected correction")
+        XCTAssertTrue(previewContent.staticTexts["Camino de cristel"].exists,"The additions-only filter must exclude a selected correction")
+        XCTAssertTrue(previewContent.staticTexts["Vuelve la luz."].exists)
         capture("repair-only-completions-preview-papel",app)
-        app.buttons["cancelRepairPreview"].tap(); app.switches["repairOnlyCompletions"].tap(); preview.tap()
-        XCTAssertTrue(app.staticTexts["Camino de cristal transparente"].waitForExistence(timeout:10))
+        app.buttons["cancelRepairPreview"].tap(); filterControl.tap()
+        XCTAssertEqual(filter.value as? String,"0")
+        XCTAssertEqual(preview.label,"Revisar selección (2)")
+        preview.tap()
+        XCTAssertTrue(previewContent.staticTexts["Camino de cristal transparente"].waitForExistence(timeout:10))
         capture("repair-manual-preview-papel",app)
         app.buttons["saveLyricsRepair"].tap(); app.buttons["Guardar en archivo"].tap()
         XCTAssertTrue(app.buttons["repairLyrics"].waitForExistence(timeout:15))
@@ -119,7 +153,9 @@ final class LyricsRepairUITests: XCTestCase {
         XCTAssertTrue(empty.waitForExistence(timeout:25))
         XCTAssertFalse(app.staticTexts["Texto no reconocido por la IA"].exists)
         XCTAssertFalse(app.buttons["previewLyricsRepair"].isEnabled)
-        app.switches["repairOnlyCompletions"].tap()
+        let filter = app.switches["repairOnlyCompletions"]
+        filter.coordinate(withNormalizedOffset:CGVector(dx:0.9,dy:0.5)).tap()
+        XCTAssertEqual(filter.value as? String,"1")
         XCTAssertTrue(empty.exists)
         XCTAssertFalse(app.staticTexts["No hay propuestas para completar. Desactiva el filtro para revisar las correcciones."].exists)
         capture("repair-no-actionable-proposals-noche",app)

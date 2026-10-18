@@ -188,6 +188,7 @@ private struct LyricsRepairEditView: View {
                     }
                 }.padding(24).frame(maxWidth:.infinity,alignment:.leading)
             }
+            .accessibilityIdentifier("repairPreviewContent")
             .navigationTitle("Vista previa").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement:.cancellationAction) { Button("Volver") { dismiss() }.disabled(session.saving).accessibilityIdentifier("cancelRepairPreview") }
