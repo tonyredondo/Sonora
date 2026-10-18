@@ -5,8 +5,7 @@ import UniformTypeIdentifiers
 struct LibrarySourcesView: View {
     let player: PlaybackController
     @Environment(\.dismiss) private var dismiss
-    @State private var chooseFolder = false
-    @State private var chooseLink = false
+    @State private var addMusic = false
     @State private var removing: CollectionSource?
     @State private var confirmRemoval = false
     @State private var deletingCopy: ImportedMusicRecord?
@@ -17,6 +16,10 @@ struct LibrarySourcesView: View {
         let counts = library.state.songs.values.reduce(into: [String: Int]()) { $0[$1.sourceID, default: 0] += 1 }
         NavigationStack {
             List {
+                Section {
+                    Button("Añadir música", systemImage: "plus.circle.fill") { addMusic = true }
+                    NavigationLink { LocalMusicView(player: player) } label: { Label("Copias guardadas en Sonora", systemImage: "internaldrive") }
+                }
                 Section {
                     ForEach(library.state.sources) { source in
                         HStack {
@@ -29,6 +32,8 @@ struct LibrarySourcesView: View {
                                         Text(source.name)
                                         let count = counts[source.id, default: 0]
                                         Text("\(count) \(count == 1 ? "canción" : "canciones")").font(.caption).foregroundStyle(.secondary)
+                                        Text(isLocalCopy(source) ? "Copia de Sonora · Sin conexión" : "Carpeta vinculada · Archivos / iCloud")
+                                            .font(.caption).foregroundStyle(.secondary)
                                     }
                                 } icon: { Image(systemName: "folder") }
                             }.accessibilityIdentifier("source:" + source.name)
@@ -38,22 +43,17 @@ struct LibrarySourcesView: View {
                                     do { player.addFolderToLibrary(try library.sourceURL(source.id)) }
                                     catch { player.issue = "Vuelve a añadir esta carpeta para recuperar el acceso: \(error.localizedDescription)" }
                                 }.disabled(player.isLoading)
-                                Button("Quitar fuente", systemImage: "minus.circle", role: .destructive) {
+                                Button("Quitar de la biblioteca", systemImage: "minus.circle", role: .destructive) {
                                     removing = source; confirmRemoval = true
                                 }
                                 if let url = try? library.sourceURL(source.id), let copy = player.localImports.copy(containing: url) {
-                                    Button("Eliminar copia local", systemImage: "trash", role: .destructive) { deletingCopy = copy; confirmCopyDeletion = true }
+                                    Button("Eliminar copia de Sonora", systemImage: "trash", role: .destructive) { deletingCopy = copy; confirmCopyDeletion = true }
                                 }
                             } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
                                 .accessibilityLabel("Opciones de la fuente \(source.name)")
                                 .accessibilityIdentifier("source-options:" + source.name)
                         }
                     }
-                    Button { chooseFolder = true } label: { Label("Añadir carpeta", systemImage: "folder.badge.plus") }
-                        .disabled(player.isLoading || player.linkImports.isImporting)
-                    Button { chooseLink = true } label: { Label("Añadir enlace", systemImage: "link") }
-                        .disabled(player.isLoading)
-                        .accessibilityIdentifier("addLinkSource")
                 } header: { Text("Carpetas de música") }
                 footer: { Text("La biblioteca reúne la música de todas tus fuentes, incluidas sus subcarpetas. Puedes usar carpetas de Archivos, iCloud Drive y copias guardadas en Sonora.") }
                 if library.state.sources.isEmpty {
@@ -79,16 +79,9 @@ struct LibrarySourcesView: View {
             .disabled(player.isDeletingFiles)
             .interactiveDismissDisabled(player.isDeletingFiles)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { dismiss() } } }
-            .sheet(isPresented: $chooseLink) { LinkImportView(imports: player.linkImports) }
-            .fileImporter(isPresented: $chooseFolder, allowedContentTypes: [.folder]) { result in
-                switch result {
-                case .success(let url): player.addFolderToLibrary(url)
-                case .failure(let error):
-                    if (error as NSError).code != NSUserCancelledError { player.issue = error.localizedDescription }
-                }
-            }
+            .sheet(isPresented: $addMusic) { AddMusicView(player: player) }
             .alert("¿Quitar esta fuente de la biblioteca?", isPresented: $confirmRemoval) {
-                Button("Quitar fuente", role: .destructive) {
+                Button("Quitar de la biblioteca", role: .destructive) {
                     if let source = removing { player.forgetSource(source.id) }
                     removing = nil
                 }
@@ -106,4 +99,9 @@ struct LibrarySourcesView: View {
             }
         }
     }
+    private func isLocalCopy(_ source: CollectionSource) -> Bool {
+        guard let url = try? library.sourceURL(source.id) else { return false }
+        return player.localImports.copy(containing: url) != nil
+    }
+
 }

@@ -13,6 +13,8 @@ private func lyricRepairTimestamp(_ time:Double) -> String {
     @State private var preview: PreviewRequest?
     @State private var editing: EditRequest?
     @State private var previewIssue = false
+    @State private var confirmDiscard = false
+    private var hasDecisions: Bool { !session.saved && (!session.edits.isEmpty || !session.kept.isEmpty) }
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
     @Environment(\.scenePhase) private var scenePhase
@@ -30,12 +32,12 @@ private func lyricRepairTimestamp(_ time:Double) -> String {
                     Text("Comparamos la letra con una transcripción de toda la canción. Tú eliges qué corregir y qué completar.")
                     Button(settings.effectiveOffline ? "Buscar análisis guardado" : "Analizar letra con IA") { Task { await session.analyze() } }
                         .disabled(!session.canAnalyze).accessibilityIdentifier("analyzeLyricsRepair")
-                    Text("Usamos ElevenLabs y guardamos el análisis para reutilizarlo. Un análisis nuevo envía el audio y consume créditos de tu cuenta. Máximo: 10 minutos.")
+                    Text("Primero reutilizamos el análisis guardado. Si no existe, ElevenLabs analiza el audio y consume créditos de tu cuenta. Máximo: 10 minutos.")
                         .font(.footnote).foregroundStyle(.secondary)
                     if settings.endpoint.isEmpty { NavigationLink("Configurar asistente") { MetadataConnectionView() } }
                 }
                 if session.loading { ProgressView(session.phase).accessibilityIdentifier("repairProgress") }
-                if let issue = session.issue { Text(issue).foregroundStyle(.red).textSelection(.enabled).accessibilityIdentifier("repairIssue") }
+                if let issue = session.issue { ServiceIssueView(message: issue).accessibilityIdentifier("repairIssue") }
                 ForEach(session.timingProblemProposals) { proposal in
                     Button("Editar fragmento: \(String(proposal.suggested.prefix(60)))") { edit(proposal) }
                         .frame(minHeight:44).accessibilityIdentifier("repairFixTiming-\(proposal.id)")
@@ -47,6 +49,9 @@ private func lyricRepairTimestamp(_ time:Double) -> String {
                     Label(session.isCached ? "Análisis guardado · ElevenLabs" : "Análisis de ElevenLabs",systemImage:session.isCached ? "internaldrive" : "waveform")
                         .accessibilityIdentifier("repairAnalysisSource")
                     Toggle("Solo completar lo que falta",isOn:$session.onlyCompletions).accessibilityIdentifier("repairOnlyCompletions")
+                    let visibleIDs = Set(session.visibleProposals.map(\.id))
+                    let reviewed = Set(session.edits.keys).union(session.kept).intersection(visibleIDs).count
+                    Text("\(reviewed) de \(visibleIDs.count) propuestas revisadas").accessibilityIdentifier("repairReviewProgress")
                     Text("\(session.selectedCount) cambios seleccionados").font(.subheadline).accessibilityIdentifier("repairSelectionCount")
                     Text("La IA puede confundir palabras cantadas. Escucha cada propuesta antes de aceptarla.")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -73,7 +78,19 @@ private func lyricRepairTimestamp(_ time:Double) -> String {
         .scrollContentBackground(.hidden).background(PlayerTheme(scheme).background)
         .tint(PlayerTheme(scheme).accent)
         .navigationTitle("Reparar letra").navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(session.saving)
+        .navigationBarBackButtonHidden(true)
+        .interactiveDismissDisabled(session.saving || hasDecisions)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Volver", systemImage: "chevron.left") {
+                    if hasDecisions { confirmDiscard = true } else { dismiss() }
+                }.disabled(session.saving)
+            }
+        }
+        .alert("Hay decisiones sin guardar", isPresented: $confirmDiscard) {
+            Button("Descartar decisiones", role: .destructive) { dismiss() }
+            Button("Seguir revisando", role: .cancel) { }
+        }
         .safeAreaInset(edge:.bottom) {
             if session.review != nil {
                 Button {

@@ -16,6 +16,8 @@ struct BulkMetadataEditorView: View {
     @State private var issue: String?
     @State private var blocked: [String] = []
     @State private var confirm = false
+    @State private var confirmDiscard = false
+    private var changed: Bool { result == nil && (!enabled.isEmpty || artwork != .keep) }
     @State private var photo: PhotosPickerItem?
     @State private var importingArtwork = false
     @State private var artwork: ArtworkEdit = .keep
@@ -48,7 +50,10 @@ struct BulkMetadataEditorView: View {
                                         .keyboardType(field.isNumber ? .numberPad : .default)
                                         .accessibilityIdentifier("bulk-field-\(field.rawValue)")
                                 }
-                            } else if mixed.contains(field) { Text("Varios valores · se conservarán").font(.caption).foregroundStyle(.secondary) }
+                            } else {
+                                Text(mixed.contains(field) ? "Varios valores · se conservarán" : (values[field].flatMap { $0.isEmpty ? nil : $0 } ?? "Sin información"))
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                            }
                         }.disabled(saving || result != nil)
                     }
                     Section("Carátula común") {
@@ -64,7 +69,7 @@ struct BulkMetadataEditorView: View {
             }
             .navigationTitle("Información").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button(result == nil ? "Cancelar" : "Listo") { dismiss() }.disabled(saving) }
+                ToolbarItem(placement: .cancellationAction) { Button(result == nil ? "Cancelar" : "Listo") { if changed { confirmDiscard = true } else { dismiss() } }.disabled(saving || importingArtwork) }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Guardar") { confirm = true }.disabled(tracks.isEmpty || expected.count != tracks.count || !loaded || !blocked.isEmpty || saving || importingArtwork || result != nil || (enabled.isEmpty && artwork == .keep))
                 }
@@ -80,6 +85,10 @@ struct BulkMetadataEditorView: View {
                     }
                 }
             } message: { Text("Se aplicarán únicamente los campos activados. Cada archivo se comprobará antes de sustituirlo.") }
+            .alert("Hay cambios sin guardar", isPresented: $confirmDiscard) {
+                Button("Descartar cambios", role: .destructive) { dismiss() }
+                Button("Seguir editando", role: .cancel) { }
+            }
             .task {
                 guard !loaded else { return }
                 do {
@@ -105,7 +114,7 @@ struct BulkMetadataEditorView: View {
                     catch { issue = error.localizedDescription }
                 }
             }
-            .interactiveDismissDisabled(saving || importingArtwork)
+            .interactiveDismissDisabled(saving || importingArtwork || changed)
         }
     }
 }

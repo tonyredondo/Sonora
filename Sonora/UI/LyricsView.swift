@@ -3,11 +3,21 @@ import SwiftUI
 
 struct LyricsView: View {
     let player: PlaybackController
+    var track: AudioTrack? = nil
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var textSize
     @AppStorage("lyricsAutoScroll") private var autoScroll = true
     @State private var offset: Double = 0
+    @State private var loadedLyrics: LyricsDocument?
+    @State private var loadedTrackID: String?
+    @State private var title = ""
+    @State private var artist = ""
+    @State private var issue: String?
+    @State private var refresh = UUID()
+    @State private var adjusting = false
+    @State private var repairAfterTiming = false
     private struct EditorRequest: Identifiable {
         let track: AudioTrack
         let synchronize: Bool
@@ -16,53 +26,72 @@ struct LyricsView: View {
     @State private var editor: EditorRequest?
     private struct RepairRequest: Hashable {
         let track: AudioTrack
-        static func == (lhs:Self,rhs:Self) -> Bool { lhs.track.id == rhs.track.id }
-        func hash(into hasher:inout Hasher) { hasher.combine(track.id) }
+        static func == (lhs: Self, rhs: Self) -> Bool { lhs.track.id == rhs.track.id }
+        func hash(into hasher: inout Hasher) { hasher.combine(track.id) }
     }
     @State private var repair: RepairRequest?
-    private var lyrics: LyricsDocument { player.currentDetails?.lyrics ?? LyricsDocument(text: "") }
-    private var active: Int? { lyrics.activeLine(at: player.currentTime, offset: offset) }
+    private var selectedTrack: AudioTrack? { track ?? player.current }
+    private var isCurrent: Bool { selectedTrack?.id == player.current?.id }
+    private var lyrics: LyricsDocument {
+        if loadedTrackID == selectedTrack?.id, let loadedLyrics { return loadedLyrics }
+        return isCurrent ? player.currentDetails?.lyrics ?? LyricsDocument(text: "") : LyricsDocument(text: "")
+    }
+    private var active: Int? { isCurrent ? lyrics.activeLine(at: player.currentTime, offset: offset) : nil }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if lyrics.lines.isEmpty {
+                ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(title.isEmpty ? selectedTrack?.displayName ?? "Letra" : title).font(.headline).lineLimit(2)
+                    if !artist.isEmpty { Text(artist).font(.subheadline).foregroundStyle(.secondary) }
+                    let layout = textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading)) : AnyLayout(HStackLayout())
+                    layout {
+                        Button { edit() } label: { Label("Editar texto", systemImage: "pencil").fixedSize(horizontal: false, vertical: true).frame(minHeight: 44) }.accessibilityIdentifier("editLyricsText")
+                        if !lyrics.lines.isEmpty {
+                            Button { openRepair() } label: { Label("Reparar y completar", systemImage: "text.badge.checkmark").fixedSize(horizontal: false, vertical: true).frame(minHeight: 44) }
+                                .accessibilityIdentifier("repairLyrics")
+                        }
+                    }.buttonStyle(.bordered).disabled(selectedTrack == nil)
+                    if !lyrics.lines.isEmpty && !lyrics.isTimed {
+                        Button("Sincronizar letra", systemImage: "waveform") { edit(synchronize: true) }
+                            .frame(minHeight: 44).accessibilityIdentifier("synchronizeUntimedLyrics")
+                    }
+                    if lyrics.isTimed {
+                        if isCurrent { Toggle("Seguir canción", isOn: $autoScroll) }
+                        Button("Ajustar tiempos", systemImage: "clock") { adjusting = true }.frame(minHeight: 44)
+                    }
+                }.padding(.horizontal).padding(.vertical, 12)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(maxHeight: textSize.isAccessibilitySize ? 300 : nil)
+                .fixedSize(horizontal: false, vertical: !textSize.isAccessibilitySize)
+                .contentShape(.rect).clipped()
+                .accessibilityIdentifier("lyricsTools")
+                Divider()
+                if let issue {
+                    ContentUnavailableView("No se pudo leer la letra", systemImage: "exclamationmark.circle", description: Text(issue))
+                    Button("Reintentar") { refresh = UUID() }.padding()
+                } else if loadedTrackID != selectedTrack?.id && lyrics.lines.isEmpty {
+                    ProgressView("Leyendo letra…").frame(maxHeight: .infinity)
+                } else if lyrics.lines.isEmpty {
                     ContentUnavailableView {
                         Label("Sin letra", systemImage: "quote.bubble")
                     } description: {
-                        Text("Busca la letra o genera una transcripción con IA. También puedes añadirla tú o colocar un archivo .lrc junto al audio.")
+                        Text("Busca una letra o añade el texto. Si no la encontramos, podrás transcribir el audio con IA.")
                     } actions: {
-                        Button("Buscar o transcribir letra") { edit(synchronize: true) }
-                            .accessibilityIdentifier("findMissingLyrics")
+                        Button("Buscar letra") { edit(synchronize: true) }.accessibilityIdentifier("findMissingLyrics")
                         Button("Añadir letra") { edit() }
                     }
                 } else {
-                    Button {
-                        if let track = player.current { repair = RepairRequest(track:track) }
-                    } label: { Label("Reparar letra con IA",systemImage:"text.badge.checkmark").frame(minHeight:44) }
-                        .accessibilityIdentifier("repairLyrics")
-                    if !lyrics.isTimed {
-                        Button { edit(synchronize: true) } label: {
-                            Label("Sincronizar letra", systemImage: "waveform").frame(minHeight: 44)
-                        }.accessibilityIdentifier("synchronizeUntimedLyrics")
-                    }
-                    if lyrics.isTimed {
-                        VStack {
-                            Toggle("Seguir la letra", isOn: $autoScroll)
-                            HStack {
-                                Text("Ajuste \(offset, specifier: "%+.1f") s").monospacedDigit().font(.caption)
-                                MediaSlider(value: $offset, range: -5...5, tint: PlayerTheme(scheme).accent, label: "Ajuste de sincronización")
-                                    .frame(height: 44).accessibilityIdentifier("lyricsOffset")
-                            }
-                        }.padding(.horizontal)
-                    }
                     ScrollViewReader { reader in
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 22) {
                                 ForEach(lyrics.lines) { line in
-                                    if let time = line.time {
+                                    if let time = line.time, isCurrent {
                                         Button { player.seek(to: max(0, time + offset)) } label: {
-                                            Text(line.text.isEmpty ? "♪" : line.text).font(active == line.id ? .title.bold() : .title2.weight(.medium))
+                                            Text(line.text.isEmpty ? "♪" : line.text)
+                                                .font(active == line.id ? .title.bold() : .title2.weight(.medium))
                                                 .foregroundStyle(active == line.id ? PlayerTheme(scheme).accent : .primary)
                                                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                                         }.buttonStyle(.plain).id(line.id).accessibilityIdentifier("lyricLine\(line.id)")
@@ -71,29 +100,75 @@ struct LyricsView: View {
                                 }
                             }.padding(24)
                         }
-                        .onChange(of: active, initial: true) { if autoScroll, let active { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { reader.scrollTo(active, anchor: .center) } } }
-                        .onChange(of: autoScroll) { if autoScroll, let active { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { reader.scrollTo(active, anchor: .center) } } }
+                        .contentShape(.rect).clipped()
+                        .accessibilityIdentifier("lyricsReader")
+                        .onChange(of: active, initial: true) { scroll(reader) }
+                        .onChange(of: autoScroll) { scroll(reader) }
                     }
-                    if let source = player.currentDetails?.lyricsSource {
-                        Text(source).font(.caption).foregroundStyle(.secondary).padding(8)
-                            .accessibilityIdentifier("lyricsSource")
+                    if let attribution = lyrics.attribution {
+                        Text(attribution).font(.caption).foregroundStyle(.secondary).padding(8).accessibilityIdentifier("lyricsSource")
+                    } else if isCurrent, let source = player.currentDetails?.lyricsSource {
+                        Text(source).font(.caption).foregroundStyle(.secondary).padding(8).accessibilityIdentifier("lyricsSource")
                     }
                 }
             }
             .background(PlayerTheme(scheme).background)
             .navigationTitle("Letra").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Listo") { dismiss() } }
-                ToolbarItem(placement: .primaryAction) { Button("Editar") { edit() }.disabled(player.current == nil) }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Listo") { dismiss() } } }
+            .task(id: "\(selectedTrack?.id ?? "")-\(refresh)") { await load() }
+            .onChange(of: offset) {
+                if let id = selectedTrack?.id, loadedTrackID == id { UserDefaults.standard.set(offset, forKey: "lyricsOffset.\(id)") }
             }
-            .task(id: player.current?.id) { offset = UserDefaults.standard.double(forKey: "lyricsOffset.\(player.current?.id ?? "")") }
-            .onChange(of: offset) { if let id = player.current?.id { UserDefaults.standard.set(offset, forKey: "lyricsOffset.\(id)") } }
-            .sheet(item: $editor) { MetadataEditorView(player: player, track: $0.track, synchronizeLyricsOnOpen: $0.synchronize) }
-            .navigationDestination(item:$repair) { request in LyricsRepairView(player:player,track:request.track) }
-        }
+            .onChange(of: repair) { if repair == nil { refresh = UUID() } }
+            .sheet(item: $editor, onDismiss: { refresh = UUID() }) {
+                MetadataEditorView(player: player, track: $0.track, synchronizeLyricsOnOpen: $0.synchronize, lyricsOnly: true)
+            }
+            .sheet(isPresented: $adjusting, onDismiss: {
+                if repairAfterTiming { repairAfterTiming = false; openRepair() }
+            }) {
+                NavigationStack {
+                    Form {
+                        Section("Toda la letra") {
+                            Text("Desplazamiento: \(offset, specifier: "%+.1f") s").monospacedDigit()
+                            MediaSlider(value: $offset, range: -5...5, tint: PlayerTheme(scheme).accent, label: "Ajuste de sincronización")
+                                .frame(height: 44).accessibilityIdentifier("lyricsOffset")
+                            Button("Restablecer ajuste") { offset = 0 }
+                            Text("Un valor positivo retrasa las frases; uno negativo las adelanta. El ajuste se guarda automáticamente para esta canción.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                        Section("Frases individuales") {
+                            Button("Revisar tiempos por frase") { repairAfterTiming = true; adjusting = false }
+                        }
+                    }
+                    .navigationTitle("Ajustar tiempos").navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { adjusting = false } } }
+                }
+            }
+            .navigationDestination(item: $repair) { request in LyricsRepairView(player: player, track: request.track) }
+        }.tint(PlayerTheme(scheme).accent)
+    }
+    private func scroll(_ reader: ScrollViewProxy) {
+        guard autoScroll, let active else { return }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { reader.scrollTo(active, anchor: .center) }
     }
     private func edit(synchronize: Bool = false) {
-        guard let track = player.current else { return }
+        guard let track = selectedTrack else { return }
         editor = EditorRequest(track: track, synchronize: synchronize)
+    }
+    private func openRepair() { if let track = selectedTrack { repair = RepairRequest(track: track) } }
+    private func load() async {
+        guard let track = selectedTrack else { return }
+        issue = nil
+        if loadedTrackID != track.id { title = track.displayName; artist = ""; loadedLyrics = nil }
+        do {
+            let snapshot = try await player.readMetadata(for: track)
+            let text = try await LyricsAudioPreparation.existingText(track: track, folder: player.folderAccess(for: track),
+                                                                   embedded: snapshot.values[.lyrics] ?? "", expected: snapshot.fingerprint)
+            try Task.checkCancellation()
+            title = snapshot.values[.title] ?? track.displayName; artist = snapshot.values[.artist] ?? ""
+            loadedLyrics = LyricsDocument(text: text); loadedTrackID = track.id
+            offset = UserDefaults.standard.double(forKey: "lyricsOffset.\(track.id)")
+        } catch is CancellationError { }
+        catch { issue = error.localizedDescription }
     }
 }

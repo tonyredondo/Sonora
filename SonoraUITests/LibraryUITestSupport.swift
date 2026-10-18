@@ -56,12 +56,30 @@ extension XCUIApplication {
             folder.images.firstMatch.tap()
         }
         buttons["DOCPicker.actionButton"].tap()
+        if navigationBars["Añadir música"].waitForExistence(timeout: 3) {
+            navigationBars["Añadir música"].buttons["Listo"].tap()
+        }
     }
 
     @MainActor func addDemoSourceFromFiles() {
-        assertLibraryHome(); buttons["Fuentes"].tap(); buttons["Añadir carpeta"].tap()
+        assertLibraryHome(); buttons["Fuentes"].tap(); beginLinkingFolder()
         selectSyntheticFolder(["Sonora QA"])
         XCTAssertTrue(buttons["source:Sonora QA"].waitForExistence(timeout: 15))
         navigationBars["Fuentes"].buttons["Listo"].tap()
     }
+    @MainActor func beginLinkingFolder() {
+        buttons["Añadir música"].tap()
+        XCTAssertTrue(buttons["linkMusicFolder"].waitForExistence(timeout: 5))
+        buttons["linkMusicFolder"].tap()
+    }
+    @MainActor func openSoundTool(_ title: String) {
+        if buttons["Sonido"].exists { buttons["Sonido"].tap() }
+        XCTAssertTrue(buttons[title].waitForExistence(timeout: 5))
+        buttons[title].tap()
+    }
+    @MainActor func returnToSettings() {
+        for _ in 0..<3 where !navigationBars["Ajustes"].exists { navigationBars.buttons["BackButton"].tap() }
+        XCTAssertTrue(navigationBars["Ajustes"].exists)
+    }
+
 }

@@ -12,9 +12,7 @@ final class InlineLyricsUITests: XCTestCase {
         app.launch(); app.assertLibraryHome(); app.buttons["Fuentes"].tap()
         let source = app.buttons["source:Sonora Lyrics QA"]
         if !source.exists {
-            let add = app.buttons["Añadir carpeta"]
-            for _ in 0..<8 where !add.isHittable { app.swipeUp() }
-            add.tap(); app.selectSyntheticFolder(["Sonora Lyrics QA"])
+            app.beginLinkingFolder(); app.selectSyntheticFolder(["Sonora Lyrics QA"])
         }
         for _ in 0..<8 where !source.isHittable { app.swipeUp() }
         XCTAssertTrue(source.waitForExistence(timeout: 15)); source.tap()
@@ -40,9 +38,11 @@ final class InlineLyricsUITests: XCTestCase {
         app.buttons["expandLyrics"].tap()
         XCTAssertTrue(app.navigationBars["Letra"].waitForExistence(timeout: 5))
         setFollowing(true, in: app)
-        app.sliders["lyricsOffset"].adjust(toNormalizedSliderPosition: 0.5)
+        app.buttons["Ajustar tiempos"].tap()
+        app.buttons["Restablecer ajuste"].tap()
+        app.navigationBars["Ajustar tiempos"].buttons["Listo"].tap()
         let target = app.buttons["lyricLine\(line)"]
-        let scroll = app.scrollViews.matching(NSPredicate(format: "identifier != %@", "playerLyrics")).firstMatch
+        let scroll = app.scrollViews["lyricsReader"]
         for _ in 0..<25 {
             if target.isHittable { break }
             let start = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: line > 10 ? 0.8 : 0.3))
@@ -54,10 +54,17 @@ final class InlineLyricsUITests: XCTestCase {
         app.buttons["Listo"].tap()
     }
 
+    @MainActor private func revealLyricsTool(_ element: XCUIElement, in app: XCUIApplication) {
+        let tools = app.scrollViews["lyricsTools"]
+        for _ in 0..<10 where !element.isHittable { tools.swipeUp() }
+        XCTAssertTrue(element.isHittable, app.debugDescription)
+    }
+
     @MainActor private func setFollowing(_ enabled: Bool, in app: XCUIApplication) {
-        let control = app.switches["Seguir la letra"]
+        let control = app.switches["Seguir canción"]
         let value = enabled ? "1" : "0"
         if control.value as? String == value { return }
+        revealLyricsTool(control, in: app)
         // The large Dynamic Type label can cover the center of the accessibility frame.
         control.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
         let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: control)
@@ -185,16 +192,22 @@ final class InlineLyricsUITests: XCTestCase {
         XCTAssertLessThan(seconds, 40, "Use a timestamp within the fixture's 40 timed lines")
         app.buttons["expandLyrics"].tap()
         setFollowing(true, in: app)
+        app.buttons["Ajustar tiempos"].tap()
         let offset = app.sliders["lyricsOffset"]
         XCTAssertTrue(offset.waitForExistence(timeout: 5))
-        offset.adjust(toNormalizedSliderPosition: 0.5)
+        app.buttons["Restablecer ajuste"].tap()
+        app.navigationBars["Ajustar tiempos"].buttons["Listo"].tap()
         let active = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND value == %@", "lyricLine", "Línea actual")).firstMatch
         XCTAssertTrue(active.waitForExistence(timeout: 5))
         let line = Int(active.identifier.dropFirst("lyricLine".count)) ?? -1
         XCTAssertGreaterThan(line, 10)
         XCTAssertLessThan(line, 40)
         // A +5 second offset moves back five one-second phrases, including any visual anticipation.
+        app.buttons["Ajustar tiempos"].tap()
+        XCTAssertTrue(offset.waitForExistence(timeout: 5)); XCTAssertTrue(offset.isHittable)
         offset.adjust(toNormalizedSliderPosition: 1)
+        XCTAssertEqual(Double((offset.value as? String ?? "").replacingOccurrences(of: ",", with: ".")) ?? -99, 5, accuracy: 0.01)
+        app.navigationBars["Ajustar tiempos"].buttons["Listo"].tap()
         let adjustedLine = app.buttons["lyricLine\(line - 5)"]
         XCTAssertTrue(adjustedLine.waitForExistence(timeout: 5))
         XCTAssertEqual(adjustedLine.value as? String, "Línea actual")
@@ -209,8 +222,10 @@ final class InlineLyricsUITests: XCTestCase {
 
         app.buttons["expandLyrics"].tap()
         setFollowing(false, in: app)
-        XCTAssertEqual(app.switches["Seguir la letra"].value as? String, "0")
-        offset.adjust(toNormalizedSliderPosition: 0.5)
+        XCTAssertEqual(app.switches["Seguir canción"].value as? String, "0")
+        app.buttons["Ajustar tiempos"].tap()
+        app.buttons["Restablecer ajuste"].tap()
+        app.navigationBars["Ajustar tiempos"].buttons["Listo"].tap()
         app.buttons["Listo"].tap()
         let current = lyrics.staticTexts[String(format: "Línea sincronizada %02d", line)]
         XCTAssertFalse(current.isHittable, "Disabling following should allow the listener to keep reading elsewhere")
@@ -252,8 +267,8 @@ final class InlineLyricsUITests: XCTestCase {
         XCTAssertTrue(app.buttons["expandLyrics"].isHittable)
         app.buttons["expandLyrics"].tap()
         XCTAssertTrue(app.navigationBars["Letra"].waitForExistence(timeout: 5))
-        app.buttons["Editar"].tap()
-        XCTAssertTrue(app.textFields["metadata-title"].waitForExistence(timeout: 5))
+        app.buttons["editLyricsText"].tap()
+        XCTAssertTrue(app.textViews["metadata-lyrics"].waitForExistence(timeout: 5))
         app.buttons["Cancelar"].tap()
         app.buttons["Listo"].tap()
         XCTAssertTrue(lyrics.exists, "Opening the full lyrics should keep inline lyrics visible")
@@ -305,11 +320,8 @@ final class InlineLyricsUITests: XCTestCase {
         capture("inline-lyrics-noche-scrolled", app)
         app.buttons["expandLyrics"].tap()
         XCTAssertTrue(app.navigationBars["Letra"].waitForExistence(timeout: 5))
-        app.buttons["Editar"].tap()
-        XCTAssertTrue(app.textFields["metadata-title"].waitForExistence(timeout: 5))
-        let edit = app.buttons["editLyrics"]
-        for _ in 0..<10 where !edit.isHittable { app.swipeUp() }
-        edit.tap()
+        app.buttons["editLyricsText"].tap()
+        XCTAssertTrue(app.textViews["metadata-lyrics"].waitForExistence(timeout: 5))
         let text = app.textViews["metadata-lyrics"]
         XCTAssertTrue(text.waitForExistence(timeout: 5)); text.tap()
         text.press(forDuration: 1.2)
@@ -318,9 +330,8 @@ final class InlineLyricsUITests: XCTestCase {
         let replacement = "Letra actualizada desde el editor\nSegundo verso actualizado"
         text.typeText(replacement)
         XCTAssertEqual(text.value as? String, replacement)
-        app.buttons["BackButton"].tap()
         app.buttons["metadataSave"].tap(); app.buttons["Guardar en archivo"].tap()
-        XCTAssertTrue(app.buttons["Editar"].waitForExistence(timeout: 10)); app.buttons["Listo"].tap()
+        XCTAssertTrue(app.buttons["editLyricsText"].waitForExistence(timeout: 10)); app.buttons["Listo"].tap()
         XCTAssertTrue(lyrics.staticTexts["Letra actualizada desde el editor"].waitForExistence(timeout: 10))
         XCTAssertTrue(lyrics.staticTexts["Letra actualizada desde el editor"].isHittable)
         XCTAssertFalse(lyrics.staticTexts["Verso 01 de la prueba de Sonora"].exists)
@@ -369,8 +380,8 @@ final class InlineLyricsUITests: XCTestCase {
         toggle.tap()
         XCTAssertTrue(lyrics.waitForExistence(timeout: 5))
         app.buttons["expandLyrics"].tap()
-        XCTAssertTrue(app.switches["Seguir la letra"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Editar"].isHittable)
+        XCTAssertTrue(app.switches["Seguir canción"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["editLyricsText"].isHittable)
         capture("inline-lyrics-papel-expanded", app)
     }
 }

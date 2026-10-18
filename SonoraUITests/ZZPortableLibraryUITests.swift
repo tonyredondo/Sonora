@@ -29,7 +29,7 @@ final class ZZPortableLibraryUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication(); app.launchArguments = ["-appearance", "noche"]; app.launch()
         app.assertLibraryHome()
-        app.buttons["Playlists"].tap(); app.buttons["Importar playlist"].tap()
+        app.tabBars.buttons["Listas"].tap(); app.buttons["Importar playlist"].tap()
         app.buttons["chooseM3U"].tap()
         portableFolder(app, filePicker: true)
         let picker = app.otherElements["Browse View (Picker)"].firstMatch
@@ -59,7 +59,7 @@ final class ZZPortableLibraryUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication(); app.launchArguments = ["-appearance", "papel", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]; app.launch()
         app.assertLibraryHome()
-        reveal(app.buttons["Copias locales"], in: app); app.buttons["Copias locales"].tap()
+        reveal(app.buttons["Disponible sin conexión"], in: app); app.buttons["Disponible sin conexión"].tap()
         reveal(app.buttons["importLocalFolder"], in: app); app.buttons["importLocalFolder"].tap()
         portableFolder(app); app.buttons["DOCPicker.actionButton"].tap()
         let completed = app.descendants(matching: .any)["localImportCompleted"].firstMatch

@@ -31,8 +31,7 @@ final class LyricsRepairUITests: XCTestCase {
         app.launch(); app.assertLibraryHome(); app.buttons["Fuentes"].tap()
         let source = app.buttons["source:Sonora Repair QA"]
         if !source.exists {
-            let add = app.buttons["Añadir carpeta"]; reveal(add,in:app)
-            add.tap(); app.selectSyntheticFolder(["Sonora Repair QA"])
+            app.beginLinkingFolder(); app.selectSyntheticFolder(["Sonora Repair QA"])
         }
         reveal(source,in:app)
         app.buttons["source-options:Sonora Repair QA"].tap(); app.buttons["Actualizar fuente"].tap(); source.tap()
@@ -88,7 +87,8 @@ final class LyricsRepairUITests: XCTestCase {
         XCTAssertTrue(previewContent.staticTexts["Camino de cristel"].exists); XCTAssertTrue(previewContent.staticTexts["Vuelve la luz."].exists)
         capture("repair-preview-cancel-noche",app)
         app.buttons["cancelRepairPreview"].tap()
-        app.navigationBars["Reparar letra"].buttons["BackButton"].tap()
+        app.navigationBars["Reparar letra"].buttons["Volver"].tap()
+        if app.buttons["Descartar decisiones"].exists { app.buttons["Descartar decisiones"].tap() }
         XCTAssertEqual(app.buttons["lyricLine0"].label,"Camino de cristel","Cancelling must leave the file unchanged")
         app.buttons["Listo"].tap(); app.buttons["Cerrar reproductor"].tap(); app.terminate()
 
@@ -159,7 +159,8 @@ final class LyricsRepairUITests: XCTestCase {
         XCTAssertTrue(empty.exists)
         XCTAssertFalse(app.staticTexts["No hay propuestas para completar. Desactiva el filtro para revisar las correcciones."].exists)
         capture("repair-no-actionable-proposals-noche",app)
-        app.navigationBars["Reparar letra"].buttons["BackButton"].tap()
+        app.navigationBars["Reparar letra"].buttons["Volver"].tap()
+        if app.buttons["Descartar decisiones"].exists { app.buttons["Descartar decisiones"].tap() }
         XCTAssertEqual(app.buttons["lyricLine2"].label,"Conserva esta frase")
     }
     @MainActor func testPhraseTimingConflictCanBeEditedAndSaved() async throws {

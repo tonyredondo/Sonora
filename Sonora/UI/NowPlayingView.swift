@@ -14,8 +14,8 @@ struct NowPlayingView: View {
     @State private var showLyrics = false
     @State private var lyricsScrollRequest = 0
     @State private var showListening = false
-    @State private var editingTrack: AudioTrack?
-    @State private var volumeSelection: VolumeAnalysisSelection?
+    @State private var showTimer = false
+    @State private var songAction: SongActionRequest?
     @GestureState private var downwardDrag: CGFloat = 0
     @State private var completedDrag: CGFloat?
     private var theme: PlayerTheme { PlayerTheme(scheme) }
@@ -51,10 +51,12 @@ struct NowPlayingView: View {
             }.background(theme.background).toolbar(.hidden, for: .navigationBar)
         }.tint(theme.accent).sheet(isPresented: $showQueue) { QueueView(player: player) }
             .sheet(isPresented: $showLyrics, onDismiss: { lyricsScrollRequest += 1 }) { LyricsView(player: player) }
-            .sheet(item: $editingTrack) { MetadataEditorView(player: player, track: $0) }
-            .sheet(item: $volumeSelection) { VolumeAnalysisView(player: player, selection: $0) }
+            .sheet(item: $songAction) { SongActionSheet(player: player, request: $0) }
             .sheet(isPresented: $showListening) {
-                NavigationStack { ListeningSettingsView(player: player).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { showListening = false } } } }
+                NavigationStack { SoundSettingsView(player: player).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { showListening = false } } } }
+            }
+            .sheet(isPresented: $showTimer) {
+                NavigationStack { SleepTimerView(player: player).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { showTimer = false } } } }
             }
     }
     private var minimizeGesture: some Gesture {
@@ -88,10 +90,10 @@ struct NowPlayingView: View {
             .accessibilityAddTraits(showArtworkLyrics ? .isSelected : [])
             .accessibilityIdentifier("toggleArtworkLyrics")
             Menu {
-                if let track = player.current { Button(player.isFavorite(track) ? "Quitar de favoritos" : "Marcar como favorita", systemImage: "heart") { player.toggleFavorite(track) } }
-                Button("Editar información", systemImage: "info.circle") { editingTrack = player.current }
-                if let track = player.current { Button("Analizar volumen", systemImage: "waveform") { volumeSelection = .init(tracks: [track]) } }
-                Button("Temporizador y escucha", systemImage: "moon.zzz") { showListening = true }
+                Button("Sonido", systemImage: "slider.horizontal.3") { showListening = true }
+                Button("Temporizador", systemImage: "moon.zzz") { showTimer = true }
+                Divider()
+                if let track = player.current { SongActions(player: player, track: track) { songAction = $0 } }
             } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }.accessibilityLabel("Opciones de canción")
             Button { showQueue = true } label: { Image(systemName: "list.bullet").frame(width: 44, height: 44) }.accessibilityLabel("Cola").accessibilityIdentifier("playerQueue")
         }.font(.system(size: 18, weight: .medium))

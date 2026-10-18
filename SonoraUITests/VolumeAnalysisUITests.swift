@@ -52,7 +52,8 @@ final class VolumeAnalysisUITests: XCTestCase {
         app.buttons["Álbumes"].tap()
         let album = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "library-album:")).firstMatch
         XCTAssertTrue(album.waitForExistence(timeout: 10)); album.tap()
-        let action = app.buttons["Analizar álbum completo"]
+        reveal(app.buttons["Más opciones"], in: app); app.buttons["Más opciones"].tap()
+        let action = app.buttons["Analizar volumen del álbum"]
         XCTAssertTrue(action.waitForExistence(timeout: 5)); reveal(action, in: app); action.tap()
         XCTAssertTrue(app.staticTexts["Álbum completo"].waitForExistence(timeout: 5))
         reveal(app.buttons["volumeAnalyze"], in: app); app.buttons["volumeAnalyze"].tap()
@@ -71,7 +72,7 @@ final class VolumeAnalysisUITests: XCTestCase {
         XCTAssertFalse(selectAll.frame.intersects(app.buttons["openNowPlaying"].frame), "Selection actions must stay above the mini-player")
         capture("library-selection-no-overlap", app)
         selectAll.tap()
-        app.buttons["3 seleccionadas"].tap(); app.buttons["Analizar volumen"].firstMatch.tap()
+        app.buttons["Más"].tap(); app.buttons["Analizar volumen"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["3 canciones seleccionadas"].waitForExistence(timeout: 5))
         reveal(app.buttons["volumeAnalyze"], in: app); app.buttons["volumeAnalyze"].tap()
         XCTAssertTrue(app.staticTexts["Análisis completado"].waitForExistence(timeout: 30))
@@ -81,7 +82,7 @@ final class VolumeAnalysisUITests: XCTestCase {
         app.navigationBars["Analizar volumen"].buttons["Listo"].tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.openMusicSource()
-        app.buttons["Analizar volumen"].tap()
+        app.buttons["Más opciones"].tap(); app.buttons["Analizar volumen"].tap()
         XCTAssertTrue(app.staticTexts["3 canciones seleccionadas"].waitForExistence(timeout: 5))
         app.buttons["volumeAnalyze"].tap()
         XCTAssertTrue(app.staticTexts["Análisis completado"].waitForExistence(timeout: 10))

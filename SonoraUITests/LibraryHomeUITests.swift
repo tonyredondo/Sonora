@@ -22,13 +22,14 @@ final class LibraryHomeUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication(); app.launchArguments = ["-appearance", "noche"]; app.launch()
         app.assertLibraryHome()
-        XCTAssertTrue(app.staticTexts["Tu biblioteca"].exists)
+        XCTAssertTrue(app.buttons["addMusic"].exists)
         capture("library-empty-noche", app)
-        app.buttons["Añadir fuente"].tap()
+        app.buttons["Fuentes"].tap()
         XCTAssertTrue(app.staticTexts["Sin fuentes"].waitForExistence(timeout: 5))
-        app.buttons["Añadir carpeta"].tap()
+        app.beginLinkingFolder()
         XCTAssertTrue(app.buttons["DOCPicker.actionButton"].waitForExistence(timeout: 20))
         app.buttons["Cancel"].tap()
+        app.navigationBars["Añadir música"].buttons["Listo"].tap()
         XCTAssertTrue(app.navigationBars["Fuentes"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Sin fuentes"].exists)
         app.navigationBars["Fuentes"].buttons["Listo"].tap()
@@ -42,13 +43,15 @@ final class LibraryHomeUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.navigationBars["Biblioteca"].waitForExistence(timeout: 15))
         XCTAssertFalse(app.navigationBars["Biblioteca"].buttons["Listo"].exists)
-        for category in ["Artistas", "Álbumes", "Canciones", "Favoritos", "Playlists"] {
+        for category in ["Artistas", "Álbumes", "Canciones"] {
             XCTAssertTrue(app.buttons[category].exists, category)
         }
+        XCTAssertTrue(app.tabBars.buttons["Listas"].exists)
+        XCTAssertTrue(app.tabBars.buttons["Buscar"].exists)
         XCTAssertFalse(app.buttons["Reproducir carpeta"].exists)
         app.buttons["Fuentes"].tap()
         XCTAssertTrue(app.navigationBars["Fuentes"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Añadir carpeta"].exists)
+        XCTAssertTrue(app.buttons["Añadir música"].exists)
         app.navigationBars["Fuentes"].buttons["Listo"].tap()
         XCTAssertTrue(app.navigationBars["Biblioteca"].exists)
         app.buttons["Artistas"].tap()
@@ -78,7 +81,7 @@ final class LibraryHomeUITests: XCTestCase {
         let previous = app.buttons["openNowPlaying"].exists ? app.buttons["openNowPlaying"].label : nil
         app.buttons["Fuentes"].tap()
         for letter in ["A", "B"] {
-            app.buttons["Añadir carpeta"].tap()
+            app.beginLinkingFolder()
             app.selectSyntheticFolder(["Sonora Home QA", "Fuente \(letter) QA"])
             XCTAssertTrue(app.buttons["source:Fuente \(letter) QA"].waitForExistence(timeout: 15))
         }
@@ -92,6 +95,7 @@ final class LibraryHomeUITests: XCTestCase {
         app.buttons["Álbumes"].tap()
         for letter in ["A", "B"] { XCTAssertTrue(app.staticTexts["Álbum fuente \(letter) QA"].waitForExistence(timeout: 10)) }
         app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.tabBars.buttons["Buscar"].tap()
         let search = app.searchFields.firstMatch
         search.tap(); search.typeText("Artista fuentes QA")
         for path in ["tema-a.flac", "En directo/tema-b.flac"] {
@@ -104,13 +108,13 @@ final class LibraryHomeUITests: XCTestCase {
         app.terminate(); app.launchArguments = ["-appearance", "papel"]; app.launch(); app.assertLibraryHome()
         XCTAssertTrue(app.buttons["openNowPlaying"].label.contains("Tema fuente A QA"))
         app.buttons["Fuentes"].tap()
-        chooseSourceAction("Quitar fuente", source: "Fuente B QA", app: app)
+        chooseSourceAction("Quitar de la biblioteca", source: "Fuente B QA", app: app)
         capture("source-removal-confirmation", app)
         XCTAssertTrue(app.buttons["Cancelar"].waitForExistence(timeout: 5))
         app.buttons["Cancelar"].tap()
         XCTAssertTrue(app.buttons["source:Fuente B QA"].exists, "Cancelling removal must keep the source")
-        chooseSourceAction("Quitar fuente", source: "Fuente B QA", app: app)
-        app.buttons["Quitar fuente"].tap()
+        chooseSourceAction("Quitar de la biblioteca", source: "Fuente B QA", app: app)
+        app.buttons["Quitar de la biblioteca"].tap()
         XCTAssertTrue(app.buttons["source:Fuente B QA"].waitForNonExistence(timeout: 5))
         app.navigationBars["Fuentes"].buttons["Listo"].tap()
         XCTAssertTrue(app.buttons["openNowPlaying"].label.contains("Tema fuente A QA"))
@@ -120,6 +124,7 @@ final class LibraryHomeUITests: XCTestCase {
         XCTAssertTrue(app.queueRow("tema-a.flac").exists)
         XCTAssertFalse(app.queueRow("En directo/tema-b.flac").exists)
         app.buttons["Listo"].tap()
+        app.tabBars.buttons["Buscar"].tap()
         search.tap(); search.typeText("Artista fuentes QA")
         XCTAssertTrue(app.buttons["library-song:tema-a.flac"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["library-song:En directo/tema-b.flac"].exists)
@@ -128,8 +133,8 @@ final class LibraryHomeUITests: XCTestCase {
         app.buttons["Fuentes"].tap()
         XCTAssertFalse(app.buttons["source:Fuente B QA"].exists)
         XCTAssertTrue(app.buttons["source:Fuente A QA"].exists)
-        chooseSourceAction("Quitar fuente", source: "Fuente A QA", app: app)
-        app.buttons["Quitar fuente"].tap()
+        chooseSourceAction("Quitar de la biblioteca", source: "Fuente A QA", app: app)
+        app.buttons["Quitar de la biblioteca"].tap()
         XCTAssertTrue(app.buttons["source:Fuente A QA"].waitForNonExistence(timeout: 5))
         app.navigationBars["Fuentes"].buttons["Listo"].tap()
         XCTAssertFalse(app.buttons["openNowPlaying"].exists, "Removing the last queued source must clear the queue")

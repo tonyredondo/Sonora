@@ -14,7 +14,7 @@ final class SourceFileDeletionUITests: XCTestCase {
         let name = "CUE Borrado QA"
         app.launchArguments = ["-appearance", "noche"]
         app.launch(); app.assertLibraryHome(); app.buttons["Fuentes"].tap()
-        reveal(app.buttons["Añadir carpeta"], in: app); app.buttons["Añadir carpeta"].tap()
+        app.beginLinkingFolder()
         app.selectSyntheticFolder(["Sonora Borrado QA", name])
         let source = app.buttons["source:" + name]
         XCTAssertTrue(source.waitForExistence(timeout: 15)); reveal(source, in: app); source.tap()
@@ -36,8 +36,8 @@ final class SourceFileDeletionUITests: XCTestCase {
         XCTAssertEqual(app.buttons.matching(identifier: "library-song:borrar.flac").count, 1)
         capture("cue-deleted-source-updated", app)
         app.navigationBars[name].buttons.element(boundBy: 0).tap()
-        app.buttons["source-options:" + name].tap(); app.buttons["Quitar fuente"].tap()
-        app.alerts.firstMatch.buttons["Quitar fuente"].tap()
+        app.buttons["source-options:" + name].tap(); app.buttons["Quitar de la biblioteca"].tap()
+        app.alerts.firstMatch.buttons["Quitar de la biblioteca"].tap()
         XCTAssertTrue(source.waitForNonExistence(timeout: 10))
         app.terminate()
     }
@@ -49,7 +49,7 @@ final class SourceFileDeletionUITests: XCTestCase {
             app.launchArguments = ["-appearance", theme]
             if theme == "papel" { app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"] }
             app.launch(); app.assertLibraryHome(); app.buttons["Fuentes"].tap()
-            reveal(app.buttons["Añadir carpeta"], in: app); app.buttons["Añadir carpeta"].tap()
+            app.beginLinkingFolder()
             app.selectSyntheticFolder(["Sonora Borrado QA", name])
             let source = app.buttons["source:" + name]
             XCTAssertTrue(source.waitForExistence(timeout: 15)); reveal(source, in: app)
@@ -85,8 +85,8 @@ final class SourceFileDeletionUITests: XCTestCase {
             capture("source-files-after-deletion-" + theme, app)
             app.navigationBars[name].buttons.element(boundBy: 0).tap()
             if theme == "noche" { app.navigationBars[name].buttons.element(boundBy: 0).tap() }
-            app.buttons["source-options:" + name].tap(); app.buttons["Quitar fuente"].tap()
-            app.alerts.firstMatch.buttons["Quitar fuente"].tap()
+            app.buttons["source-options:" + name].tap(); app.buttons["Quitar de la biblioteca"].tap()
+            app.alerts.firstMatch.buttons["Quitar de la biblioteca"].tap()
             XCTAssertTrue(source.waitForNonExistence(timeout: 10))
             app.terminate()
         }
@@ -95,7 +95,7 @@ final class SourceFileDeletionUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["-appearance", "noche"]
-        app.launch(); app.assertLibraryHome(); reveal(app.buttons["Copias locales"], in: app); app.buttons["Copias locales"].tap()
+        app.launch(); app.assertLibraryHome(); reveal(app.buttons["Disponible sin conexión"], in: app); app.buttons["Disponible sin conexión"].tap()
         app.buttons["importLocalFolder"].tap()
         app.selectSyntheticFolder(["Sonora Borrado QA", "Descarga Borrado QA"])
         XCTAssertTrue(app.staticTexts["localImportCompleted"].waitForExistence(timeout: 20))
@@ -123,12 +123,12 @@ final class SourceFileDeletionUITests: XCTestCase {
         app.buttons["Fuentes"].tap()
         let source = app.buttons["source:Descarga Borrado QA · Local"]
         reveal(source, in: app)
-        app.buttons["source-options:Descarga Borrado QA · Local"].tap(); app.buttons["Eliminar copia local"].tap()
+        app.buttons["source-options:Descarga Borrado QA · Local"].tap(); app.buttons["Eliminar copia de Sonora"].tap()
         XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 5))
         capture("delete-copy-from-sources", app)
         app.alerts.firstMatch.buttons["Cancelar"].tap()
         XCTAssertTrue(source.exists)
-        app.buttons["source-options:Descarga Borrado QA · Local"].tap(); app.buttons["Eliminar copia local"].tap()
+        app.buttons["source-options:Descarga Borrado QA · Local"].tap(); app.buttons["Eliminar copia de Sonora"].tap()
         app.alerts.firstMatch.buttons["Eliminar copia de Sonora"].tap()
         XCTAssertTrue(source.waitForNonExistence(timeout: 15))
         app.terminate()
