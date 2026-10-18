@@ -25,8 +25,8 @@ final class QueueMetadataUITests: XCTestCase {
         app.startDemoPlayback(); app.buttons["miniTransport"].tap()
         app.openMusicSource()
         app.buttons["Seleccionar"].tap(); app.buttons["Seleccionar todo"].tap()
-        XCTAssertTrue(app.buttons["3 seleccionadas"].exists, "The test must edit only the three synthetic demo songs")
-        app.buttons["3 seleccionadas"].tap(); app.buttons["Editar información"].tap()
+        XCTAssertTrue(app.staticTexts["3 seleccionadas"].exists, "The test must edit only the three synthetic demo songs")
+        app.buttons["editSelectedSongs"].tap()
         let toggle = app.switches["bulk-apply-artist"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
         for _ in 0..<4 where !toggle.isHittable { app.swipeUp() }
@@ -49,6 +49,7 @@ final class QueueMetadataUITests: XCTestCase {
         XCTAssertTrue(title.label.hasPrefix("Papel y tinta"), "Queue must keep embedded titles after editing another tag")
         capture("queue-after-batch-save-noche", app)
         app.buttons["Listo"].tap()
+        app.tabBars.buttons["Buscar"].tap()
         let search = app.searchFields.firstMatch
         search.tap(); search.typeText(artist)
         checkSearchResults(app)

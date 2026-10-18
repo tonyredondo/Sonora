@@ -58,9 +58,11 @@ public actor LyricsSynchronizationClient {
     private let connection: MetadataProxyConnection
     private let cache: MetadataLookupCache
     private let transport: any MetadataLookupTransport
+    private let diagnostics: MetadataDiagnostics
     private let lookup: MetadataLookupClient
-    public init(connection: MetadataProxyConnection, cache: MetadataLookupCache, transport: any MetadataLookupTransport = MetadataURLSessionTransport(requestTimeout: 180, resourceTimeout: 210)) {
+    public init(connection: MetadataProxyConnection, cache: MetadataLookupCache, transport: any MetadataLookupTransport = MetadataURLSessionTransport(requestTimeout: 180, resourceTimeout: 210), diagnostics: MetadataDiagnostics = .shared) {
         self.connection = connection; self.cache = cache; self.transport = transport
+        self.diagnostics = diagnostics
         lookup = MetadataLookupClient(connection: connection, cache: cache, transport: transport)
     }
     public func synchronize(query: MetadataSearch, duration: Double, lyrics: String, offline: Bool,
@@ -166,10 +168,13 @@ public actor LyricsSynchronizationClient {
         body.append(audio); body.append(Data("\r\n--\(boundary)--\r\n".utf8))
         request.httpMethod = "POST"; request.httpBody = body; request.timeoutInterval = 180
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        let data = try await sendAudioRequest(request)
-        let result = try decode(data)
+        let (response, result) = try await sendAudioRequest(request, decode: decode)
+        let data = response.data
         do { try await cache.store(data, key: key, status: 200) }
-        catch { return MetadataLookupResult(value: result, savedAt: nil, warning: "No se pudo guardar la sincronización para usarla sin conexión.") }
+        catch {
+            await diagnostics.recordFailure(error, stage: .cacheWrite, requestID: response.requestID)
+            return MetadataLookupResult(value: result, savedAt: nil, warning: "No se pudo guardar la sincronización para usarla sin conexión.")
+        }
         return MetadataLookupResult(value: result, savedAt: nil, warning: nil)
     }
     private struct Transcription: Codable {
@@ -208,22 +213,28 @@ public actor LyricsSynchronizationClient {
         body.append(audio); body.append(Data("\r\n--\(boundary)--\r\n".utf8))
         request.httpMethod = "POST"; request.httpBody = body; request.timeoutInterval = 180
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        let data = try await sendAudioRequest(request, maximumBytes: 8_000_000)
-        let result = try decode(data)
+        let (response, result) = try await sendAudioRequest(request, maximumBytes: 8_000_000, decode: decode)
+        let data = response.data
         var warning: String?
         do { try await cache.store(data, key: key, status: 200) }
-        catch { warning = "No se pudo guardar la transcripción para usarla sin conexión." }
+        catch {
+            await diagnostics.recordFailure(error, stage: .cacheWrite, requestID: response.requestID)
+            warning = "No se pudo guardar la transcripción para usarla sin conexión."
+        }
         guard let result else { throw warning == nil ? LyricsSynchronizationError.noSpeech : LyricsSynchronizationError.noSpeechNotCached }
         return MetadataLookupResult(value: result, savedAt: nil, warning: warning)
     }
-    private func sendAudioRequest(_ request: URLRequest, maximumBytes: Int = 1_000_000) async throws -> Data {
+    private func sendAudioRequest<Value>(_ request: URLRequest, maximumBytes: Int = 1_000_000, decode: (Data) throws -> Value) async throws -> (MetadataHTTPResponse, Value) {
         let response = try await transport.send(request)
-        try Task.checkCancellation()
-        if response.status == 401 || response.status == 403 { throw MetadataLookupError.unauthorized }
-        if response.status == 503 { throw LyricsSynchronizationError.providerUnavailable }
-        guard response.status == 200 else { throw MetadataLookupError.unavailable }
-        guard response.data.count <= maximumBytes else { throw MetadataLookupError.tooLarge }
-        return response.data
+        do {
+            try Task.checkCancellation()
+            guard response.status == 200 else { throw MetadataServiceFailure(response: response) }
+            guard response.data.count <= maximumBytes else { throw MetadataLookupError.tooLarge }
+            return (response, try decode(response.data))
+        } catch {
+            await diagnostics.recordFailure(error, stage: .responseValidation, requestID: response.requestID, httpStatus: response.status)
+            throw error
+        }
     }
     private static func pcmDuration(_ audio: Data) throws -> Double {
         guard (32_044...19_200_044).contains(audio.count), (audio.count - 44).isMultiple(of: 2) else { throw MetadataLookupError.tooLarge }

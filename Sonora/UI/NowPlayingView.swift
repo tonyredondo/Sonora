@@ -8,20 +8,25 @@ struct NowPlayingView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("showArtworkLyrics") private var showArtworkLyrics = true
     @State private var showQueue = false
     @State private var showLyrics = false
     @State private var lyricsScrollRequest = 0
     @State private var showListening = false
-    @State private var editingTrack: AudioTrack?
-    @State private var volumeSelection: VolumeAnalysisSelection?
+    @State private var showTimer = false
+    @State private var songAction: SongActionRequest?
+    @GestureState private var downwardDrag: CGFloat = 0
+    @State private var completedDrag: CGFloat?
     private var theme: PlayerTheme { PlayerTheme(scheme) }
+    private var artworkHasScrollableLyrics: Bool { showArtworkLyrics && player.currentDetails?.lyrics.lines.isEmpty == false }
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
                 let compact = geometry.size.height < 700 || dynamicTypeSize.isAccessibilitySize
                 VStack(spacing: compact ? 12 : 20) {
-                    header.fixedSize(horizontal: false, vertical: true)
+                    header.contentShape(.rect).simultaneousGesture(minimizeGesture)
+                        .fixedSize(horizontal: false, vertical: true)
                     // Artwork yields its height before text or touch targets are compressed.
                     NowPlayingArtwork(player: player, showsLyrics: showArtworkLyrics, scrollRequest: lyricsScrollRequest) {
                         showLyrics = true
@@ -30,6 +35,9 @@ struct NowPlayingView: View {
                         .aspectRatio(1, contentMode: .fit)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .layoutPriority(-1)
+                        .contentShape(.rect)
+                        .simultaneousGesture(minimizeGesture,including:artworkHasScrollableLyrics ? .subviews : .all)
+                        .accessibilityElement(children:.contain).accessibilityLabel("Carátula").accessibilityIdentifier("playerArtwork")
                     trackInformation(compact: compact).fixedSize(horizontal: false, vertical: true)
                     PlaybackTimeline(player: player, tint: theme.accent).fixedSize(horizontal: false, vertical: true)
                     transport.fixedSize(horizontal: false, vertical: true)
@@ -38,13 +46,32 @@ struct NowPlayingView: View {
                 .padding(.horizontal, compact ? 20 : 28)
                 .padding(.vertical, compact ? 8 : 12)
                 .frame(width: geometry.size.width, height: geometry.size.height)
+                .offset(y:completedDrag ?? downwardDrag)
+                .animation(downwardDrag == 0 && completedDrag == nil && !reduceMotion ? .spring(response:0.3,dampingFraction:0.85) : nil,value:downwardDrag)
             }.background(theme.background).toolbar(.hidden, for: .navigationBar)
         }.tint(theme.accent).sheet(isPresented: $showQueue) { QueueView(player: player) }
             .sheet(isPresented: $showLyrics, onDismiss: { lyricsScrollRequest += 1 }) { LyricsView(player: player) }
-            .sheet(item: $editingTrack) { MetadataEditorView(player: player, track: $0) }
-            .sheet(item: $volumeSelection) { VolumeAnalysisView(player: player, selection: $0) }
+            .sheet(item: $songAction) { SongActionSheet(player: player, request: $0) }
             .sheet(isPresented: $showListening) {
-                NavigationStack { ListeningSettingsView(player: player).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { showListening = false } } } }
+                NavigationStack { SoundSettingsView(player: player).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { showListening = false } } } }
+            }
+            .sheet(isPresented: $showTimer) {
+                NavigationStack { SleepTimerView(player: player).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { showTimer = false } } } }
+            }
+    }
+    private var minimizeGesture: some Gesture {
+        DragGesture(minimumDistance:18,coordinateSpace:.global)
+            .updating($downwardDrag) { value,offset,_ in
+                let distance = value.translation.height
+                offset = distance > abs(value.translation.width) * 1.25 ? max(0,distance) : 0
+            }
+            .onEnded { value in
+                let distance = value.translation.height
+                guard distance > abs(value.translation.width) * 1.25,
+                      distance > 120 || distance > 45 && value.predictedEndTranslation.height > 240 else { return }
+                // Keep the released position while the full-screen cover dismisses.
+                completedDrag = max(0,distance)
+                dismiss()
             }
     }
     private var header: some View {
@@ -63,10 +90,10 @@ struct NowPlayingView: View {
             .accessibilityAddTraits(showArtworkLyrics ? .isSelected : [])
             .accessibilityIdentifier("toggleArtworkLyrics")
             Menu {
-                if let track = player.current { Button(player.isFavorite(track) ? "Quitar de favoritos" : "Marcar como favorita", systemImage: "heart") { player.toggleFavorite(track) } }
-                Button("Editar información", systemImage: "info.circle") { editingTrack = player.current }
-                if let track = player.current { Button("Analizar volumen", systemImage: "waveform") { volumeSelection = .init(tracks: [track]) } }
-                Button("Temporizador y escucha", systemImage: "moon.zzz") { showListening = true }
+                Button("Sonido", systemImage: "slider.horizontal.3") { showListening = true }
+                Button("Temporizador", systemImage: "moon.zzz") { showTimer = true }
+                Divider()
+                if let track = player.current { SongActions(player: player, track: track) { songAction = $0 } }
             } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }.accessibilityLabel("Opciones de canción")
             Button { showQueue = true } label: { Image(systemName: "list.bullet").frame(width: 44, height: 44) }.accessibilityLabel("Cola").accessibilityIdentifier("playerQueue")
         }.font(.system(size: 18, weight: .medium))
@@ -143,7 +170,7 @@ struct MiniPlayer: View {
     let openQueue: () -> Void
     @Environment(\.colorScheme) private var scheme
     var body: some View {
-        HStack(spacing: 10) {
+        ZStack(alignment: .trailing) {
             Button(action: openPlayer) {
                 HStack(spacing: 12) {
                     ArtworkView(image: player.currentDetails?.artwork, cornerRadius: 6).frame(width: 46, height: 46)
@@ -153,13 +180,19 @@ struct MiniPlayer: View {
                     }
                     Spacer(minLength: 0)
                 }
+                .padding(.trailing, 108) // Two 44-point controls and their 10-point gaps.
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
             }.buttonStyle(.plain).accessibilityHint("Abrir reproductor").accessibilityIdentifier("openNowPlaying")
-            Button { player.togglePlayback() } label: {
-                if player.isPreparing { ProgressView().frame(width: 44, height: 44) }
-                else { Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.title3).frame(width: 44, height: 44) }
-            }.accessibilityLabel(player.isPlaying ? "Pausar" : "Reproducir").accessibilityIdentifier("miniTransport")
-            Button(action: openQueue) { Image(systemName: "list.bullet").frame(width: 44, height: 44) }.accessibilityLabel("Cola").accessibilityIdentifier("miniQueue")
-        }.padding(12).background(PlayerTheme(scheme).surface).clipShape(.rect(cornerRadius: 14)).padding(.horizontal, 12).padding(.bottom, 6)
+            HStack(spacing: 10) {
+                Button { player.togglePlayback() } label: {
+                    if player.isPreparing { ProgressView().frame(width: 44, height: 44) }
+                    else { Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.title3).frame(width: 44, height: 44) }
+                }.accessibilityLabel(player.isPlaying ? "Pausar" : "Reproducir").accessibilityIdentifier("miniTransport")
+                Button(action: openQueue) { Image(systemName: "list.bullet").frame(width: 44, height: 44) }.accessibilityLabel("Cola").accessibilityIdentifier("miniQueue")
+            }.padding(.trailing, 12)
+        }.background(PlayerTheme(scheme).surface).clipShape(.rect(cornerRadius: 14)).padding(.horizontal, 12).padding(.bottom, 6)
     }
 }
 

@@ -16,12 +16,11 @@ struct SettingsView: View {
                     .labelsHidden()
                 }
                 Section("Reproducción") {
-                    NavigationLink("Ecualizador") { EqualizerView(player: player) }
-                    NavigationLink("Entre canciones") { TransitionSettingsView(player: player) }
-                    NavigationLink("Escucha") { ListeningSettingsView(player: player) }
+                    NavigationLink("Sonido") { SoundSettingsView(player: player) }
+                    NavigationLink("Temporizador") { SleepTimerView(player: player) }
                 }
                 Section("Tu música") {
-                    NavigationLink("Asistente de información") { MetadataConnectionView() }
+                    NavigationLink("Servicios online y copias de información") { MetadataConnectionView() }
                         .accessibilityIdentifier("metadataAssistantSettings")
                 }
                 Section {

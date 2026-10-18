@@ -8,11 +8,13 @@ import XCTest
 private actor RepairAudioFixture: MetadataLookupTransport {
     private(set) var calls = 0
     let synced: String
+    let words: [LyricsTranscript.Word]?
     init(missingVerse: Bool = true, boundaryAddition: Bool = false) {
         let first = boundaryAddition ? "Bright road again" : "Bright road", last = boundaryAddition ? "Now return" : "We return"
         synced = "[00:00.10]" + first + (missingVerse ? "\n[00:01.40]Walk beside me" : "") + "\n[00:03.10]" + last
+        words = nil
     }
-    init(synced: String) { self.synced = synced }
+    init(synced: String, words: [LyricsTranscript.Word]? = nil) { self.synced = synced; self.words = words }
     func send(_ request: URLRequest) async throws -> MetadataHTTPResponse {
         calls += 1
         XCTAssertEqual(request.url?.path,"/v1/lyrics/transcribe")
@@ -21,7 +23,8 @@ private actor RepairAudioFixture: MetadataLookupTransport {
         let audio = Data(body[start..<(start + 44 + count)])
         let hash = SHA256.hash(data:audio).map { String(format:"%02x",$0) }.joined()
         let plain = LyricsDocument(text:synced).lines.map(\.text).joined(separator:"\n")
-        let value: [String:Any] = ["plain_lyrics":plain,"synced_lyrics":synced,"audio_sha256":hash,"duration":Double(count) / 32000,"model_id":"scribe_v2"]
+        var value: [String:Any] = ["plain_lyrics":plain,"synced_lyrics":synced,"audio_sha256":hash,"duration":Double(count) / 32000,"model_id":"scribe_v2"]
+        if let words { value["words"] = words.map { ["text":$0.text,"start":$0.start,"end":$0.end] } }
         return MetadataHTTPResponse(data:try JSONSerialization.data(withJSONObject:["sources":[],"data":value]),status:200,contentType:"application/json")
     }
 }
@@ -37,6 +40,97 @@ private actor CancelledRepairFixture: MetadataLookupTransport {
 }
 
 final class LyricsRepairSessionTests: XCTestCase {
+    @MainActor func testTimingAudioPreviewsSeekSwitchStopAndPreserveTheReview() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+        defer { try? FileManager.default.removeItem(at:root) }
+        let format = try XCTUnwrap(AVAudioFormat(commonFormat:.pcmFormatInt16,sampleRate:16000,channels:1,interleaved:false))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat:format,frameCapacity:160000)); buffer.frameLength = 160000
+        buffer.int16ChannelData![0].initialize(repeating:0,count:160000)
+        try AVAudioFile(forWriting:root.appendingPathComponent("repair.wav"),settings:format.settings,commonFormat:.pcmFormatInt16,interleaved:false).write(from:buffer)
+        let suite = "SonoraTests.RepairAudioPreview.\(UUID().uuidString)", defaults = try XCTUnwrap(UserDefaults(suiteName:suite))
+        defer { defaults.removePersistentDomain(forName:suite) }
+        let tokens = MetadataTokenStore(service:suite); defer { try? tokens.remove() }
+        let settings = MetadataAssistantSettings(defaults:defaults,tokens:tokens,cache:MetadataLookupCache(directory:root.appendingPathComponent("cache")))
+        try settings.save(endpoint:"http://127.0.0.1:18444",token:"synthetic-repair-token")
+        let transport = RepairAudioFixture(synced:"[00:03.00]Bright road\n[00:07.00]We return",words:[
+            .init(text:"Bright",start:3,end:3.2),.init(text:"road",start:3.5,end:3.8),.init(text:"We",start:7,end:7.2),.init(text:"return",start:7.5,end:7.8)
+        ])
+        let player = PlaybackController(defaults:defaults); defer { player.stop() }
+        await player.loadFolder(root,autoPlay:false)
+        let track = try XCTUnwrap(AudioTrack(relativePath:"repair.wav")), initial = try await player.readMetadata(for:track)
+        let original = "[00:02.00]Bright road\n[00:07.00]We return"
+        try await player.saveMetadata(for:track,expected:initial.fingerprint,patch:MetadataPatch(values:[.lyrics:original]))
+        let session = LyricsRepairSession(player:player,track:track,settings:settings,transport:transport)
+        await session.load(); await session.analyze()
+        let change = try XCTUnwrap(session.visibleProposals.first { $0.kind == .timing })
+        session.listen(change,reference:.current,at:2)
+        XCTAssertEqual(player.currentTime,1.5,accuracy:0.001)
+        XCTAssertEqual(try XCTUnwrap(session.previewEnd),5.5,accuracy:0.001)
+        for _ in 0..<60 {
+            if player.isPlaying && player.currentTime > 1.6 { break }
+            try await Task.sleep(for:.milliseconds(50))
+        }
+        XCTAssertTrue(player.isPlaying); XCTAssertGreaterThan(player.currentTime,1.6,"The real playback engine must advance")
+        session.listen(change,reference:.proposed,at:3)
+        XCTAssertEqual(player.currentTime,2.5,accuracy:0.001)
+        XCTAssertFalse(session.isPreviewing(change,reference:.current,at:2))
+        XCTAssertTrue(session.isPreviewing(change,reference:.proposed,at:3))
+        XCTAssertEqual(try XCTUnwrap(session.previewEnd),6.5,accuracy:0.001)
+        player.seek(to:6.6); session.checkPreview()
+        XCTAssertNil(session.previewEnd); XCTAssertFalse(player.isPlaying)
+        session.listen(change,reference:.proposed,at:0)
+        XCTAssertEqual(player.currentTime,0,accuracy:0.001); XCTAssertEqual(session.previewEnd,4)
+        session.listen(change,reference:.proposed,at:0)
+        XCTAssertNil(session.previewEnd,"The same control must stop the active snippet")
+        session.listen(change,reference:.proposed,at:9.8)
+        XCTAssertEqual(player.currentTime,9.3,accuracy:0.001); XCTAssertEqual(try XCTUnwrap(session.previewEnd),10,accuracy:0.001)
+        session.cancel(); XCTAssertNil(session.previewEnd)
+        for invalid in [-1,10,Double.nan,Double.infinity] { XCTAssertFalse(session.canPreview(at:invalid)) }
+        XCTAssertEqual(session.selectedCount,0); XCTAssertTrue(session.kept.isEmpty)
+        let after = try await player.readMetadata(for:track)
+        XCTAssertEqual(after.values[.lyrics],original)
+        let calls = await transport.calls; XCTAssertEqual(calls,1,"Audio previews must reuse the loaded song and analysis")
+    }
+    @MainActor func testTimingConflictCanBeResolvedAndSavedWithoutAnotherAnalysis() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+        defer { try? FileManager.default.removeItem(at:root) }
+        try FileManager.default.copyItem(at:XCTUnwrap(Bundle(for:Self.self).url(forResource:"lyrics-repair-vbr",withExtension:"mp3")),to:root.appendingPathComponent("repair.mp3"))
+        let suite = "SonoraTests.RepairTiming.\(UUID().uuidString)", defaults = try XCTUnwrap(UserDefaults(suiteName:suite))
+        defer { defaults.removePersistentDomain(forName:suite) }
+        let tokens = MetadataTokenStore(service:suite); defer { try? tokens.remove() }
+        let settings = MetadataAssistantSettings(defaults:defaults,tokens:tokens,cache:MetadataLookupCache(directory:root.appendingPathComponent("cache")))
+        try settings.save(endpoint:"http://127.0.0.1:18444",token:"synthetic-repair-token")
+        let source = "[00:00.10]Bright road\n[00:03.00]We return"
+        let transport = RepairAudioFixture(synced:source,words:[.init(text:"Bright",start:0.1,end:0.3),.init(text:"road",start:0.5,end:0.7),.init(text:"We",start:3,end:3.2),.init(text:"return",start:3.3,end:3.5)])
+        let player = PlaybackController(defaults:defaults); defer { player.stop() }
+        await player.loadFolder(root,autoPlay:false)
+        let track = try XCTUnwrap(AudioTrack(relativePath:"repair.mp3")), initial = try await player.readMetadata(for:track)
+        try await player.saveMetadata(for:track,expected:initial.fingerprint,patch:MetadataPatch(values:[.lyrics:"[00:00.20]Bright road\n[00:03.00]We return"]))
+        let session = LyricsRepairSession(player:player,track:track,settings:settings,transport:transport)
+        await session.load(); await session.analyze(); XCTAssertNil(session.issue)
+        let change = try XCTUnwrap(session.visibleProposals.first { $0.kind == .timing })
+        session.setEdit(change,text:change.suggested,startTime:change.originalStart)
+        XCTAssertEqual(session.selectedCount,0)
+        session.setEdit(change,text:change.suggested,startTime:3.5)
+        XCTAssertThrowsError(try session.draft())
+        XCTAssertEqual(session.timingProblemProposals.map(\.id),[change.id])
+        XCTAssertTrue(session.issue?.contains("Bright road") == true)
+        XCTAssertEqual(session.timingIssue?.maximum,3)
+        session.onlyCompletions = true
+        XCTAssertNil(session.issue); XCTAssertNil(session.timingIssue)
+        session.onlyCompletions = false
+        session.setEdit(change,text:change.suggested,startTime:0.15)
+        XCTAssertNil(session.issue); XCTAssertNil(session.timingIssue)
+        let draft = try session.draft(); await session.save(draft)
+        XCTAssertTrue(session.saved); XCTAssertNil(session.issue)
+        let written = try await player.readMetadata(for:track)
+        let lyrics = LyricsDocument(text:written.values[.lyrics] ?? "")
+        XCTAssertEqual(lyrics.lines.map(\.text),["Bright road","We return"])
+        XCTAssertEqual(lyrics.lines.map(\.time),[0.15,3])
+        let calls = await transport.calls; XCTAssertEqual(calls,1)
+    }
     @MainActor func testBoundaryWordRepairsRetainLineTimesThroughPartialSaveAndCachedReview() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
@@ -208,6 +302,10 @@ final class LyricsRepairSessionTests: XCTestCase {
         XCTAssertEqual(session.review?.proposals.first { $0.original == "cant" }?.suggested,"can’t")
         let calls = await transport.calls; XCTAssertEqual(calls,1)
         let omitted = try XCTUnwrap(session.review?.proposals.first { $0.kind == .unrecognized })
+        XCTAssertEqual(session.visibleProposals.map(\.kind), [.correction])
+        session.onlyCompletions = true
+        XCTAssertTrue(session.visibleProposals.isEmpty)
+        session.onlyCompletions = false
         XCTAssertTrue(session.canListen)
         session.listen(omitted)
         XCTAssertEqual(try XCTUnwrap(session.previewEnd),3.4,accuracy:0.001,"Snippet must use the full original block and decoded song duration")
@@ -224,6 +322,8 @@ final class LyricsRepairSessionTests: XCTestCase {
         let reopened = LyricsRepairSession(player:player,track:track,settings:settings,transport:transport)
         await reopened.load(); await reopened.analyze()
         XCTAssertNil(reopened.issue); XCTAssertTrue(reopened.isCached)
+        XCTAssertTrue(reopened.visibleProposals.isEmpty, "Unrecognized original lyrics are preserved without asking for a decision")
+        XCTAssertEqual(reopened.selectedCount, 0)
         let finalCalls = await transport.calls; XCTAssertEqual(finalCalls,1)
     }
     @MainActor func testReviewCancelOfflineReuseSaveAndConflictUseTheRealFilePath() async throws {

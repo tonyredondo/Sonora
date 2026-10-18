@@ -7,6 +7,7 @@ import SonoraCore
     private(set) var isImporting = false
     private(set) var progress: LocalMusicImportProgress?
     private(set) var completedName: String?
+    private(set) var completedCopyID: String?
     var issue: String?
     @ObservationIgnored private var work: Task<Void, Never>?
     @ObservationIgnored private var generation = UUID()
@@ -20,7 +21,7 @@ import SonoraCore
     func start(_ url: URL, library: MusicLibrary) {
         guard !isImporting, !library.isDeletingFiles else { return }
         guard !library.needsReset else { issue = "Restablece la biblioteca antes de importar música."; return }
-        isImporting = true; issue = nil; progress = nil; completedName = nil
+        isImporting = true; issue = nil; progress = nil; completedName = nil; completedCopyID = nil
         let token = UUID(); generation = token
         work = Task { [weak self] in
             guard let self else { return }
@@ -41,7 +42,7 @@ import SonoraCore
         let tracks = try await Task.detached(priority: .utility) { try FolderScanner.scan(access.url) }.value
         try library.register(access, tracks: tracks, name: record.name + " · Local")
         copies.removeAll { $0.id == record.id }; copies.insert(record, at: 0)
-        completedName = record.name
+        completedName = record.name; completedCopyID = record.id
     }
     func cancel() { work?.cancel() }
     func musicURL(_ record: ImportedMusicRecord) -> URL { LocalMusicImport.musicURL(record, storage: storage) }

@@ -21,26 +21,28 @@ final class CollectionUITests: XCTestCase {
             app.buttons["Quitar de favoritos"].tap(); options.tap()
         }
         app.buttons["Marcar como favorita"].tap()
-        options.tap(); app.buttons["Nueva playlist con esta canción…"].tap()
+        options.tap(); app.buttons["Añadir a lista"].tap(); app.buttons["Nueva lista"].tap()
         let name = app.textFields["playlistName"]
         XCTAssertTrue(name.waitForExistence(timeout: 5)); name.tap(); name.typeText(playlistName)
         XCTAssertTrue(app.buttons["Crear"].isEnabled); app.buttons["Crear"].tap()
         XCTAssertTrue(name.waitForNonExistence(timeout: 5))
         capture("collection-songs-noche", app)
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.buttons["Playlists"].tap()
+        app.tabBars.buttons["Listas"].tap()
         XCTAssertTrue(app.staticTexts[playlistName].waitForExistence(timeout: 5))
         app.buttons.matching(NSPredicate(format: "label CONTAINS %@", playlistName)).firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Luz de madrugada"].exists)
         capture("collection-playlist-noche", app)
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.buttons["Favoritos"].tap()
+        app.tabBars.buttons["Biblioteca"].tap()
+        let favorites = app.buttons["Favoritos"]
+        for _ in 0..<5 where !favorites.isHittable { app.swipeUp() }
+        favorites.tap()
         XCTAssertTrue(app.staticTexts["Luz de madrugada"].exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.openMusicSource()
         app.buttons["Seleccionar"].tap(); app.buttons["Seleccionar todo"].tap()
-        app.buttons["3 seleccionadas"].tap(); app.buttons["Editar información"].tap()
+        app.buttons["editSelectedSongs"].tap()
         let albumToggle = app.switches["bulk-apply-album"]
         for _ in 0..<5 where !albumToggle.isHittable { app.swipeUp() }
         XCTAssertTrue(albumToggle.waitForExistence(timeout: 10))
@@ -62,7 +64,7 @@ final class CollectionUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Álbum editado QA"].waitForExistence(timeout: 10))
         capture("collection-albums-noche", app)
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.searchFields.firstMatch.tap(); app.searchFields.firstMatch.typeText("Sonora Tests")
+        app.tabBars.buttons["Buscar"].tap(); app.searchFields.firstMatch.tap(); app.searchFields.firstMatch.typeText("Sonora Tests")
         XCTAssertTrue(app.staticTexts["Papel y tinta"].waitForExistence(timeout: 5))
         capture("collection-search-noche", app)
     }

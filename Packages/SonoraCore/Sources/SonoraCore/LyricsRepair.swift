@@ -16,7 +16,7 @@ public enum LyricsRepairError: LocalizedError {
 /// Immutable comparison. Decisions are applied to its original snapshot, never to
 /// an already modified draft. Unrecognized original text is retained by default.
 public struct LyricsRepair: Sendable {
-    public enum Kind: String, Sendable { case correction, completion, unrecognized }
+    public enum Kind: String, Sendable { case correction, completion, timing, unrecognized }
     public struct Proposal: Identifiable, Sendable {
         public let id: Int
         public let kind: Kind
@@ -24,8 +24,10 @@ public struct LyricsRepair: Sendable {
         public let suggested: String
         public let context: String
         public let start: Double?
+        public let originalStart: Double?
         public let end: Double?
         public let insertsLines: Bool
+        public var allowsTimingEdit: Bool { kind == .timing || insertsLines }
         fileprivate let anchor: Anchor
         fileprivate let times: [Double]
     }
@@ -34,11 +36,29 @@ public struct LyricsRepair: Sendable {
         public let startTime: Double?
         public init(text: String, startTime: Double? = nil) { self.text = text; self.startTime = startTime }
     }
+    /// A draft conflict tied to the selections that introduced its timestamps.
+    public struct TimingIssue: LocalizedError, Sendable {
+        public let proposalIDs: [Int]
+        public let fragment: String
+        public let start: Double?
+        public let minimum: Double
+        public let maximum: Double
+        public var errorDescription: String? {
+            let excerpt = String(fragment.prefix(120))
+            return "El fragmento «\(excerpt)» empieza en \(Self.timestamp(start)). Debe quedar entre \(Self.timestamp(minimum)) y \(Self.timestamp(maximum)). Revisa el fragmento marcado antes de guardar."
+        }
+        private static func timestamp(_ time: Double?) -> String {
+            guard let time, time.isFinite else { return "un tiempo no válido" }
+            guard abs(time) < 86_400 else { return String(format:"%.3g s",time) }
+            let sign = time < 0 ? "−" : ""
+            return sign + String(format:"%d:%05.2f",Int(abs(time)) / 60,abs(time).truncatingRemainder(dividingBy:60))
+        }
+    }
     fileprivate struct Anchor: Sendable {
         let first: Int, start: Int, last: Int, end: Int
         let insert: Bool, separate: Bool
     }
-    private struct Line: Sendable, Equatable { var text: String; var time: Double? }
+    private struct Line: Sendable, Equatable { var text: String; var time: Double?; var timingSource: Int? = nil }
     private struct Original { let lines: [Line]; let headers: [String]; let isTimed: Bool }
     private struct Token { let text: String, key: String; let line: Int, start: Int, end: Int; var time: Double?; var finish: Double? }
     private static let wordPattern = try! NSRegularExpression(pattern: #"[\p{L}\p{M}\p{N}]+(?:['’][\p{L}\p{M}\p{N}]+)*"#)
@@ -104,7 +124,9 @@ public struct LyricsRepair: Sendable {
         let sourceCounts = Dictionary(grouping:source,by:\.line).mapValues(\.count)
         for (a,b) in matches { sourceOwners[source[b].line,default:[]].insert(base[a].line); matchedLines.insert(base[a].line) }
         var result: [Proposal] = []
-        func add(_ kind:Kind, _ anchor:Anchor, _ text:String, _ suggested:String, _ targets:[Int]) {
+        func add(_ kind:Kind, _ anchor:Anchor, _ text:String, _ suggested:String, _ targets:[Int], startOverride:Double? = nil) {
+            // Timing constrains matching, but timing drift alone is not a text correction.
+            if kind == .correction, text.trimmingCharacters(in:.whitespacesAndNewlines) == suggested.trimmingCharacters(in:.whitespacesAndNewlines) { return }
             let first = targets.first.map { source[$0] }, last = targets.last.map { source[$0] }
             let context = anchor.first < parsed.count ? parsed[anchor.first...min(anchor.last,parsed.count-1)].map(\.text).joined(separator:"\n") : "Final de la letra"
             let times = targets.reduce(into:[(Int,Double)]()) { values,index in
@@ -115,7 +137,7 @@ public struct LyricsRepair: Sendable {
             let end = kind == .unrecognized && timed
                 ? parsed.dropFirst(anchor.last + 1).first(where:{ $0.time != nil })?.time ?? transcript.duration
                 : last?.finish ?? first?.time.map { min(transcript.duration,$0 + 4) }
-            result.append(Proposal(id:result.count,kind:kind,original:text,suggested:suggested,context:context,start:first?.time ?? parsed[safe:anchor.first]?.time,end:end,insertsLines:anchor.separate,anchor:anchor,times:times))
+            result.append(Proposal(id:result.count,kind:kind,original:text,suggested:suggested,context:context,start:startOverride ?? first?.time ?? parsed[safe:anchor.first]?.time,originalStart:parsed[safe:anchor.first]?.time,end:end,insertsLines:anchor.separate,anchor:anchor,times:times))
         }
         let boundaries = [(-1,-1)] + matches + [(base.count,source.count)]
         for index in 1..<boundaries.count {
@@ -209,6 +231,48 @@ public struct LyricsRepair: Sendable {
                 add(rest.isEmpty ? .unrecognized : .correction,anchor,text,rest.isEmpty ? text : Self.fragment(source,indices:rest,lines:sourceLines),rest)
             }
         }
+        // Phrase timing needs word details. A legacy phrase-level cache cannot
+        // locate the first word of an original line inside a merged phrase.
+        if timed, transcript.words != nil {
+            let wordKeys = source.map(comparisonKey)
+            let sourceStarts = Dictionary(grouping:source.indices,by:{ wordKeys[$0] })
+            let groups = Dictionary(grouping:base.indices,by:{ base[$0].line })
+            let matchedSource = Dictionary(uniqueKeysWithValues:matches.map { ($0.0,$0.1) })
+            let matchedOwner = Dictionary(uniqueKeysWithValues:matches.map { ($0.1,base[$0.0].line) })
+            let originalKeys = groups.mapValues { $0.map { comparisonKey(base[$0]) } }
+            let occurrences = Dictionary(grouping:originalKeys.keys,by:{ originalKeys[$0]!.joined(separator:"\0") })
+            for lineIndex in groups.keys.sorted() {
+                let indices = groups[lineIndex]!, keys = originalKeys[lineIndex]!
+                guard let firstKey = keys.first, let originalTime = parsed[lineIndex].time else { continue }
+                // A leading text edit can introduce an earlier first word. Its
+                // phrase must not also move to the first retained word's time.
+                guard !result.contains(where:{ proposal in
+                    (proposal.kind == .correction || proposal.kind == .completion) && !proposal.anchor.separate &&
+                    proposal.anchor.first <= lineIndex && proposal.anchor.last >= lineIndex &&
+                    (proposal.anchor.first < lineIndex || proposal.anchor.start == 0)
+                }) else { continue }
+                let anchors = indices.enumerated().compactMap { offset,index in matchedSource[index].map { (offset,$0) } }
+                let candidates = (sourceStarts[firstKey] ?? []).filter { start in
+                    guard start + keys.count <= source.count,
+                          zip(keys,wordKeys[start..<(start + keys.count)]).allSatisfy({ $0 == $1 }),
+                          anchors.allSatisfy({ start + $0.0 == $0.1 }) else { return false }
+                    return (start..<(start + keys.count)).allSatisfy { matchedOwner[$0].map { $0 == lineIndex } ?? true }
+                }
+                // Repeated choruses require an anchor to their own occurrence.
+                guard candidates.count == 1, let startIndex = candidates.first,
+                      !anchors.isEmpty || occurrences[keys.joined(separator:"\0")]?.count == 1,
+                      let wordTime = source[startIndex].time else { continue }
+                // Match the proxy's LRC precision without placing a rounded cue past the audio.
+                let scaled = wordTime * 100, nearest = scaled.rounded()
+                // Exact centiseconds can land one floating-point step below an integer.
+                let ticks = abs(scaled - nearest) <= scaled.ulp * 2 ? nearest : scaled.rounded(.down)
+                let proposedTime = ticks / 100
+                guard (originalTime * 100).rounded() != (proposedTime * 100).rounded() else { continue }
+                let line = parsed[lineIndex]
+                let anchor = Anchor(first:lineIndex,start:0,last:lineIndex,end:line.text.utf16.count,insert:false,separate:false)
+                add(.timing,anchor,line.text,line.text,Array(startIndex..<(startIndex + keys.count)),startOverride:proposedTime)
+            }
+        }
         proposals = result
     }
 
@@ -227,13 +291,27 @@ public struct LyricsRepair: Sendable {
             let edit = edits[proposal.id]!, a = proposal.anchor
             let text = edit.text.trimmingCharacters(in:.whitespacesAndNewlines)
             guard text.utf8.count <= 65_536, !text.contains("\0"), Self.controls.firstMatch(in:text,range:NSRange(text.startIndex...,in:text)) == nil else { throw LyricsRepairError.invalidSelection }
+            if proposal.kind == .timing {
+                guard text == proposal.original.trimmingCharacters(in:.whitespacesAndNewlines) else { throw LyricsRepairError.invalidSelection }
+                let start = edit.startTime ?? proposal.start
+                guard let start, start.isFinite, (0...duration).contains(start) else {
+                    throw TimingIssue(proposalIDs:[proposal.id],fragment:proposal.original,start:start,minimum:0,maximum:duration)
+                }
+                if output[a.first].time.map({ ($0 * 100).rounded() }) == (start * 100).rounded() { continue }
+                output[a.first].time = start; output[a.first].timingSource = proposal.id
+                changed = true
+                continue
+            }
             if text == proposal.original.trimmingCharacters(in:.whitespacesAndNewlines) { continue }
             if a.separate {
                 guard !text.isEmpty else { continue }
                 let start = edit.startTime ?? proposal.start
-                guard !isTimed || start.map({ $0.isFinite && (0...duration).contains($0) }) == true else { throw LyricsRepairError.invalidTiming }
+                guard !isTimed || start.map({ $0.isFinite && (0...duration).contains($0) }) == true else {
+                    throw TimingIssue(proposalIDs:[proposal.id],fragment:text,start:start,minimum:0,maximum:duration)
+                }
                 let delta = (start ?? 0) - (proposal.start ?? 0)
-                let added = editedLines(text,firstTime:start,times:proposal.times.map { $0 + delta })
+                var added = editedLines(text,firstTime:start,times:proposal.times.map { $0 + delta })
+                for index in added.indices { added[index].timingSource = proposal.id }
                 output.insert(contentsOf:added,at:a.first)
             } else {
                 let first = output[a.first], last = output[a.last]
@@ -246,6 +324,10 @@ public struct LyricsRepair: Sendable {
                 }
                 let times = proposal.kind == .unrecognized ? originalRange.filter { !$0.text.trimmingCharacters(in:.whitespaces).isEmpty }.compactMap(\.time) : proposal.times
                 var added = editedLines(prefix + replacement + suffix,firstTime:first.time,times:times)
+                for index in added.indices {
+                    // The first cue is retained; later cues may come from this edit.
+                    added[index].timingSource = index == 0 ? first.timingSource : proposal.id
+                }
                 // Pause cues have no tokens, so a word-level replacement can span
                 // them without showing a separate proposal. Preserve those cues.
                 for pause in originalRange where pause.text.isEmpty {
@@ -258,12 +340,23 @@ public struct LyricsRepair: Sendable {
             changed = true
         }
         guard changed else { return original }
-        var previous = 0.0
         if isTimed {
             output = Self.orderingCues(output)
-            for line in output where line.time != nil || !line.text.trimmingCharacters(in:.whitespaces).isEmpty {
-                guard let time = line.time, time.isFinite, time >= previous, time <= duration else { throw LyricsRepairError.invalidTiming }
-                previous = time
+            let timed = output.filter { $0.time != nil || !$0.text.trimmingCharacters(in:.whitespaces).isEmpty }
+            for (index,line) in timed.enumerated() {
+                guard let time = line.time, time.isFinite, (0...duration).contains(time) else {
+                    throw TimingIssue(proposalIDs:line.timingSource.map { [$0] } ?? [],fragment:line.text,start:line.time,minimum:0,maximum:duration)
+                }
+                guard index > 0, let previous = timed[index-1].time, time < previous else { continue }
+                let prior = timed[index-1]
+                let priorMinimum = timed[safe:index-2]?.time ?? 0
+                let usePrior = prior.timingSource != nil && (line.timingSource == nil || priorMinimum <= time)
+                let culprit = usePrior ? prior : line
+                let minimum = usePrior ? priorMinimum : previous
+                let maximum = usePrior ? time : timed[safe:index+1]?.time ?? duration
+                let sources = [culprit.timingSource, usePrior ? line.timingSource : prior.timingSource].compactMap { $0 }
+                let ids = sources.reduce(into:[Int]()) { if !$0.contains($1) { $0.append($1) } }
+                throw TimingIssue(proposalIDs:ids,fragment:culprit.text,start:culprit.time,minimum:minimum,maximum:maximum)
             }
         }
         let rendered = output.map { line -> String in

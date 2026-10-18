@@ -48,6 +48,8 @@ struct CollectionGroupsView: View {
 struct ArtistCollectionView: View {
     let player: PlaybackController
     let artist: CollectionGroup
+    @State private var editing = false
+    private var artistTitle: String { artist.songIDs.first.flatMap { player.library.state.songs[$0]?.artist } ?? artist.title }
     private var albums: [CollectionGroup] {
         let ids = Set(artist.songIDs)
         return player.library.albums.filter { !$0.songIDs.allSatisfy { !ids.contains($0) } }
@@ -56,7 +58,8 @@ struct ArtistCollectionView: View {
         List {
             Section {
                 Button("Reproducir", systemImage: "play.fill") { player.playSongs(artist.songIDs) }
-                NavigationLink("Todas las canciones") { CollectionSongList(player: player, title: artist.title, ids: artist.songIDs) }
+                Button("Editar artista", systemImage: "pencil") { editing = true }.accessibilityIdentifier("editArtist")
+                NavigationLink("Todas las canciones") { CollectionSongList(player: player, title: artistTitle, ids: artist.songIDs) }
             }
             Section("Discografía local") {
                 ForEach(albums) { album in
@@ -69,7 +72,10 @@ struct ArtistCollectionView: View {
                 }
             }
         }
-        .navigationTitle(artist.title)
+        .navigationTitle(artistTitle)
+        .sheet(isPresented: $editing) {
+            BulkMetadataEditorView(player: player, tracks: artist.songIDs.compactMap { player.library.state.songs[$0]?.audioTrack })
+        }
         .toolbar { Button { player.library.toggleArtist(artist.id) } label: { Image(systemName: player.library.state.favoriteArtists.contains(artist.id) ? "heart.fill" : "heart") }.accessibilityLabel("Artista favorito") }
     }
 }
@@ -117,12 +123,12 @@ struct PlaylistsView: View {
                 let ids = offsets.compactMap { player.library.state.playlists.indices.contains($0) ? player.library.state.playlists[$0].id : nil }
                 ids.forEach(player.library.deletePlaylist)
             }
-            if player.library.state.playlists.isEmpty { ContentUnavailableView("Tus playlists", systemImage: "music.note.list", description: Text("Crea una lista y añade canciones desde la biblioteca o la cola.")) }
+            if player.library.state.playlists.isEmpty { ContentUnavailableView("Tus listas", systemImage: "music.note.list", description: Text("Crea una lista y añade canciones desde la biblioteca o la cola.")) }
         }
-        .navigationTitle("Playlists")
+        .navigationTitle("Listas")
         .toolbar {
             Button("Importar playlist", systemImage: "square.and.arrow.down") { importing = true }
-            Button("Nueva playlist", systemImage: "plus") { editedID = nil; name = ""; editingName = true }
+            Button("Nueva lista", systemImage: "plus") { editedID = nil; name = ""; editingName = true }
         }
         .sheet(isPresented: $importing) { PlaylistImportView(player: player) }
         .sheet(item: $exporting) { PlaylistExportView(player: player, playlist: $0) }

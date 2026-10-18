@@ -18,6 +18,7 @@ use tokio::{
     task::JoinHandle,
     time::Instant,
 };
+use tracing::Instrument;
 
 #[derive(Clone)]
 pub(crate) struct RequestSpec {
@@ -66,6 +67,7 @@ struct Work {
     key: String,
     spec: RequestSpec,
     result: watch::Sender<FlightResult>,
+    span: tracing::Span,
 }
 
 #[derive(Default)]
@@ -222,6 +224,7 @@ impl Scheduler {
                     key,
                     spec,
                     result: tx,
+                    span: tracing::Span::current(),
                 };
                 match priority {
                     Priority::Interactive => state.interactive.push_back(work),
@@ -289,13 +292,14 @@ async fn worker(
                     &work.spec,
                     &mut next_start,
                 )
+                .instrument(work.span.clone())
                 .await,
             )
         } else {
             tokio::select! {
                 biased;
                 _=work.result.closed()=>None,
-                result=fetch_remote(&client,&storage,&config,&work.key,&work.spec,&mut next_start)=>Some(result),
+                result=fetch_remote(&client,&storage,&config,&work.key,&work.spec,&mut next_start).instrument(work.span.clone())=>Some(result),
             }
         };
         drop(storage);
@@ -309,6 +313,10 @@ async fn worker(
             state.flights.remove(&work.key);
         }
         if let Some(result) = result {
+            if let Err(error) = &result {
+                let (provider, upstream_status, reason) = error.diagnostic();
+                tracing::warn!(parent: &work.span, provider, upstream_status, reason, error = %error, "queued provider operation failed");
+            }
             work.result.send_replace(Some(result));
         }
         tracing::debug!(provider = provider.name(), "provider work finished");
@@ -384,12 +392,21 @@ async fn fetch_remote(
         }
         let response = match request.send().await {
             Ok(response) => response,
-            Err(_) => {
+            Err(error) => {
                 // reqwest errors can include URLs and form data. Do not propagate them.
+                let reason = network_reason(&error);
+                tracing::warn!(
+                    provider = spec.provider.name(),
+                    attempt = retries + 1,
+                    reason,
+                    will_retry = retries < max_retries,
+                    "provider transport failed"
+                );
                 if retries >= max_retries {
                     return Err(Error::Upstream {
                         provider: spec.provider,
                         status: None,
+                        reason,
                     });
                 }
                 *next_start = (*next_start).max(Instant::now() + backoff(retries));
@@ -426,11 +443,19 @@ async fn fetch_remote(
                 .unwrap_or_else(|| backoff(retries));
             *next_start = (*next_start).max(Instant::now() + delay);
             if retries >= max_retries {
+                let reason = provider_error_reason(response).await;
                 return Err(Error::Upstream {
                     provider: spec.provider,
                     status: Some(status.as_u16()),
+                    reason,
                 });
             }
+            tracing::warn!(
+                provider = spec.provider.name(),
+                http_status = status.as_u16(),
+                attempt = retries + 1,
+                "retryable provider response"
+            );
             retries += 1;
             continue;
         }
@@ -443,19 +468,29 @@ async fn fetch_remote(
             (entry, "revalidated")
         } else {
             if !spec.accepts_status(status.as_u16()) {
+                let reason = provider_error_reason(response).await;
                 return Err(Error::Upstream {
                     provider: spec.provider,
                     status: Some(status.as_u16()),
+                    reason,
                 });
             }
             let mut body = match read_body(response, config.network.max_response_bytes).await {
                 Ok(body) => body,
                 Err(BodyError::Large) => return Err(Error::TooLarge),
-                Err(BodyError::Network) => {
+                Err(BodyError::Network(reason)) => {
+                    tracing::warn!(
+                        provider = spec.provider.name(),
+                        attempt = retries + 1,
+                        reason,
+                        will_retry = retries < max_retries,
+                        "provider body read failed"
+                    );
                     if retries >= max_retries {
                         return Err(Error::Upstream {
                             provider: spec.provider,
                             status: None,
+                            reason,
                         });
                     }
                     *next_start = (*next_start).max(Instant::now() + backoff(retries));
@@ -478,11 +513,24 @@ async fn fetch_remote(
                         return Err(Error::InvalidResponse(spec.provider));
                     }
                 } else {
-                    let value: serde_json::Value = serde_json::from_slice(&body)
-                        .map_err(|_| Error::InvalidResponse(spec.provider))?;
-                    crate::providers::validate_payload(spec.provider, spec.url.path(), &value)?;
+                    let value: serde_json::Value =
+                        serde_json::from_slice(&body).map_err(|error| {
+                            tracing::warn!(
+                                provider = spec.provider.name(),
+                                stage = "decode_json",
+                                line = error.line(),
+                                column = error.column(),
+                                "invalid provider JSON"
+                            );
+                            Error::InvalidResponse(spec.provider)
+                        })?;
+                    crate::providers::validate_payload(spec.provider, spec.url.path(), &value).inspect_err(|error| {
+                        tracing::warn!(provider = spec.provider.name(), stage = "validate_payload", error = %error, "invalid provider payload");
+                    })?;
                     if let Some(input) = &spec.audio_job {
-                        body = input.derive(&value)?;
+                        body = input.derive(&value).inspect_err(|error| {
+                            tracing::warn!(provider = spec.provider.name(), stage = "validate_audio_analysis", error = %error, "invalid audio analysis");
+                        })?;
                     }
                 }
             }
@@ -561,20 +609,62 @@ fn allowed_redirect(spec: &RequestSpec, target: &Url) -> bool {
 }
 enum BodyError {
     Large,
-    Network,
+    Network(&'static str),
 }
 async fn read_body(mut response: reqwest::Response, limit: usize) -> Result<Bytes, BodyError> {
     if response.content_length().is_some_and(|n| n > limit as u64) {
         return Err(BodyError::Large);
     }
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| BodyError::Network)? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| BodyError::Network(network_reason(&error)))?
+    {
         if chunk.len() > limit.saturating_sub(body.len()) {
             return Err(BodyError::Large);
         }
         body.extend_from_slice(&chunk);
     }
     Ok(Bytes::from(body))
+}
+
+fn network_reason(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "upstream_timeout"
+    } else if error.is_connect() {
+        "upstream_connect"
+    } else if error.is_body() {
+        "upstream_body"
+    } else if error.is_decode() {
+        "upstream_decode"
+    } else {
+        "upstream_transport"
+    }
+}
+
+async fn provider_error_reason(response: reqwest::Response) -> &'static str {
+    // Only known symbolic codes are retained. Provider messages can echo credentials or lyrics.
+    let Ok(Ok(body)) =
+        tokio::time::timeout(Duration::from_secs(1), read_body(response, 4096)).await
+    else {
+        return "http_status";
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return "http_status";
+    };
+    match value
+        .pointer("/detail/status")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("quota_exceeded") => "quota_exceeded",
+        Some("invalid_api_key") => "invalid_api_key",
+        Some("missing_permissions") => "missing_permissions",
+        Some("rate_limit_exceeded") => "rate_limit_exceeded",
+        Some("concurrent_limit_exceeded") => "concurrent_limit_exceeded",
+        Some("system_busy") => "system_busy",
+        _ => "http_status",
+    }
 }
 
 impl ResponseHeaders {

@@ -65,23 +65,42 @@ impl AlignmentInput {
             words: Vec<Word>,
         }
         let invalid = || Error::InvalidResponse(Provider::Elevenlabs);
-        let out: Output = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
+        let out: Output = serde_json::from_value(value.clone()).map_err(|error| {
+            tracing::warn!(validation_reason = "alignment_schema", category = ?error.classify(), "audio analysis rejected");
+            invalid()
+        })?;
         let mut transcript = String::new();
         let mut offsets = Vec::new();
         let mut previous = 0.0;
-        for word in out.words {
+        for (index, word) in out.words.into_iter().enumerate() {
             if !word.start.is_finite()
                 || !word.end.is_finite()
                 || word.start < previous
                 || word.end < word.start
                 || word.end > self.duration + 0.05
             {
+                tracing::warn!(
+                    validation_reason = "alignment_word_timing",
+                    word_index = index,
+                    start = word.start,
+                    end = word.end,
+                    previous_start = previous,
+                    duration = self.duration,
+                    "audio analysis rejected"
+                );
                 return Err(invalid());
             }
             previous = word.start;
             let token = normalized(&word.text);
             if !token.is_empty() {
                 if word.end <= word.start {
+                    tracing::warn!(
+                        validation_reason = "alignment_word_duration",
+                        word_index = index,
+                        start = word.start,
+                        end = word.end,
+                        "audio analysis rejected"
+                    );
                     return Err(invalid());
                 }
                 offsets.push((transcript.len(), word.start));
@@ -89,6 +108,13 @@ impl AlignmentInput {
             }
         }
         if transcript != normalized(&self.text) || offsets.is_empty() {
+            tracing::warn!(
+                validation_reason = "alignment_word_text_mismatch",
+                words = offsets.len(),
+                normalized_word_bytes = transcript.len(),
+                normalized_text_bytes = normalized(&self.text).len(),
+                "audio analysis rejected"
+            );
             return Err(invalid());
         }
         let mut position = 0;

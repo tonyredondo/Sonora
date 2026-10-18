@@ -10,9 +10,7 @@ final class LyricsSynchronizationUITests: XCTestCase {
         app.launch(); app.assertLibraryHome(); app.buttons["Fuentes"].tap()
         let source = app.buttons["source:Sonora Sync QA"]
         if !source.exists {
-            let add = app.buttons["Añadir carpeta"]
-            for _ in 0..<8 where !add.isHittable { app.swipeUp() }
-            add.tap(); app.selectSyntheticFolder(["Sonora Sync QA"])
+            app.beginLinkingFolder(); app.selectSyntheticFolder(["Sonora Sync QA"])
         }
         for _ in 0..<8 where !source.isHittable { app.swipeUp() }
         XCTAssertTrue(source.waitForExistence(timeout: 15))
@@ -56,7 +54,7 @@ final class LyricsSynchronizationUITests: XCTestCase {
         let editor = app.textViews["metadata-lyrics"]
         XCTAssertTrue(editor.waitForExistence(timeout: 5)); XCTAssertTrue((editor.value as? String ?? "").contains("[00:01.00]Primera línea de Sonora"))
         capture("synchronization-draft-before-save", app)
-        app.buttons["BackButton"].tap(); app.buttons["Cancelar"].tap()
+        app.buttons["BackButton"].tap(); app.buttons["Cancelar"].tap(); app.buttons["Descartar cambios"].tap()
         app.buttons["Opciones de canción"].tap(); app.buttons["Editar información"].tap()
         let edit = app.buttons["editLyrics"]
         for _ in 0..<10 where !edit.isHittable { app.swipeUp() }
@@ -72,7 +70,7 @@ final class LyricsSynchronizationUITests: XCTestCase {
         let onlineCounts = try await counts()
         XCTAssertEqual(onlineCounts["alignment"], 1, "The real Rust proxy must reach the synthetic alignment provider exactly once")
         capture("synchronization-aligned-preview-papel", app)
-        app.navigationBars["Sincronizar letra"].buttons["Cancelar"].tap(); app.navigationBars["Información"].buttons["Cancelar"].tap()
+        (app.navigationBars["Buscar letra"].exists ? app.navigationBars["Buscar letra"] : app.navigationBars["Sincronizar letra"]).buttons["Cancelar"].tap(); (app.navigationBars["Editar texto"].exists ? app.navigationBars["Editar texto"] : app.navigationBars["Información"]).buttons["Cancelar"].tap()
         app.buttons["Cerrar reproductor"].tap(); app.terminate()
         // Relaunch in offline mode, preserving the original untimed lyrics and local analysis cache.
         app.launchArguments = ["-appearance", "papel", "-metadata.offline", "YES", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
@@ -118,8 +116,8 @@ final class LyricsSynchronizationUITests: XCTestCase {
         let online = try await counts()
         XCTAssertEqual(online["transcription"], (before["transcription"] ?? 0) + 1)
         XCTAssertEqual(online["alignment"], before["alignment"])
-        app.navigationBars["Sincronizar letra"].buttons["Cancelar"].tap()
-        app.navigationBars["Información"].buttons["Cancelar"].tap()
+        (app.navigationBars["Buscar letra"].exists ? app.navigationBars["Buscar letra"] : app.navigationBars["Sincronizar letra"]).buttons["Cancelar"].tap()
+        (app.navigationBars["Editar texto"].exists ? app.navigationBars["Editar texto"] : app.navigationBars["Información"]).buttons["Cancelar"].tap()
         XCTAssertTrue(app.buttons["findMissingLyrics"].waitForExistence(timeout: 10), "Cancelling must leave the original without lyrics")
         app.buttons["Listo"].tap(); app.buttons["Cerrar reproductor"].tap(); app.terminate()
         app.launchArguments = ["-appearance", "papel", "-metadata.offline", "YES", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
@@ -156,8 +154,8 @@ final class LyricsSynchronizationUITests: XCTestCase {
         let app = XCUIApplication(); open(app, filename: "01 - Catálogo sincronizado QA.flac", theme: "noche", fromLyrics: true)
         app.buttons["synchronizeLyrics"].tap()
         XCTAssertTrue(app.staticTexts["lyricsSynchronizationSource"].waitForExistence(timeout: 15))
-        app.navigationBars["Sincronizar letra"].buttons["Cancelar"].tap()
-        app.navigationBars["Información"].buttons["Cancelar"].tap()
+        (app.navigationBars["Buscar letra"].exists ? app.navigationBars["Buscar letra"] : app.navigationBars["Sincronizar letra"]).buttons["Cancelar"].tap()
+        (app.navigationBars["Editar texto"].exists ? app.navigationBars["Editar texto"] : app.navigationBars["Información"]).buttons["Cancelar"].tap()
         XCTAssertTrue(app.buttons["synchronizeUntimedLyrics"].waitForExistence(timeout: 5))
         app.buttons["Listo"].tap(); app.buttons["Cerrar reproductor"].tap()
     }

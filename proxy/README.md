@@ -109,6 +109,16 @@ Job states are `queued`, `running`, `completed`, `cancelled` and `failed`. At mo
 
 Errors use JSON `error` and `message`: invalid input is 400, oversized audio uploads are 413, no provider result is 404, full queues are 429 with a retry hint, deadlines are 504, unavailable configuration/cache/providers are 503 and other upstream failures are 502. Transport success does not guarantee a matching recording, available lyrics or a cover.
 
+## Error diagnostics
+
+Every response includes `X-Sonora-Request-ID`. A valid client UUID is echoed; missing or malformed references receive a new UUID. Errors retain the existing `error` and `message` fields and add nullable `provider`/`upstream_status` and a symbolic `reason`. Older clients can ignore these additions. Transport failures distinguish connection, timeout, body and decoding errors; known provider codes such as `quota_exceeded` are preserved.
+
+Failed requests are logged to standard output with their reference, method, route template, HTTP status and elapsed milliseconds. Provider failures and payload-validation stages use the same request span, including paid work that finishes after a caller disconnects. The launcher controls log retention; the existing macOS launch agent collects this output in `~/Library/Logs/SonoraProxy/stdout.log`.
+
+Background metadata jobs retain the reference of the request that created them, so provider failures can be traced after the initial response has returned.
+
+Logs exclude credentials, query strings, music tags, audio and lyrics. Provider error bodies are bounded and inspected only for allowlisted symbolic codes; their raw messages are discarded. The cache identity and paid retry policy remain unchanged.
+
 ## Verify
 
 ```sh

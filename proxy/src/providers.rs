@@ -27,10 +27,11 @@ pub enum Error {
     Unavailable,
     #[error("no result from provider: {0:?}")]
     NotFound(Provider),
-    #[error("provider request failed: {provider:?}, HTTP {status:?}")]
+    #[error("provider request failed: {provider:?}, HTTP {status:?}, reason: {reason}")]
     Upstream {
         provider: Provider,
         status: Option<u16>,
+        reason: &'static str,
     },
     #[error("provider returned an invalid response: {0:?}")]
     InvalidResponse(Provider),
@@ -38,6 +39,34 @@ pub enum Error {
     UploadTooLarge,
     #[error("provider response exceeds the configured size limit")]
     TooLarge,
+}
+
+impl Error {
+    pub(crate) fn diagnostic(&self) -> (Option<&'static str>, Option<u16>, &'static str) {
+        match self {
+            Self::Upstream {
+                provider,
+                status,
+                reason,
+            } => (Some(provider.name()), *status, reason),
+            Self::InvalidResponse(provider) => {
+                (Some(provider.name()), None, "invalid_provider_response")
+            }
+            Self::Disabled(provider) => (Some(provider.name()), None, "provider_disabled"),
+            Self::NotConfigured(provider) => {
+                (Some(provider.name()), None, "provider_not_configured")
+            }
+            Self::NotFound(provider) => (Some(provider.name()), None, "not_found"),
+            Self::Deadline => (None, None, "proxy_deadline"),
+            Self::Cache => (None, None, "cache_io"),
+            Self::Configuration => (None, None, "configuration"),
+            Self::QueueFull => (None, None, "queue_full"),
+            Self::Unavailable => (None, None, "worker_unavailable"),
+            Self::InvalidInput(_) => (None, None, "invalid_input"),
+            Self::UploadTooLarge => (None, None, "upload_too_large"),
+            Self::TooLarge => (None, None, "response_too_large"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -36,7 +36,7 @@ struct LyricsSynchronizationView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     if loading { ProgressView(phase).accessibilityIdentifier("lyricsSynchronizationProgress") }
-                    if let issue { Text(issue).foregroundStyle(.red).accessibilityIdentifier("lyricsSynchronizationError") }
+                    if let issue { ServiceIssueView(message: issue).accessibilityIdentifier("lyricsSynchronizationError") }
                 }
                 if let result {
                     Section("Vista previa") {
@@ -58,14 +58,14 @@ struct LyricsSynchronizationView: View {
                         }
                     }
                     Section {
-                        Button("Usar esta letra") { apply(result.value.text); dismiss() }
+                        Button("Revisar y guardar") { apply(result.value.text); dismiss() }
                             .accessibilityIdentifier("applySynchronizedLyrics")
-                        Text("Se añadirá al borrador. Puedes ajustar los tiempos en Editar letra y guardar después la información del archivo.")
+                        Text("Abre el borrador para revisar la letra y pulsar Guardar. El archivo no cambia hasta que confirmes el guardado.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
             }
-            .navigationTitle("Sincronizar letra").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(LyricsDocument(text: lyrics).lines.isEmpty ? "Buscar letra" : "Sincronizar letra").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancelar") { operation?.cancel(); dismiss() } } }
             .onChange(of: settings.configurationRevision) { cancel() }
             .onChange(of: settings.effectiveOffline) { cancel() }

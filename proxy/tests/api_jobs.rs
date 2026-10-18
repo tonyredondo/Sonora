@@ -158,8 +158,29 @@ async fn invalid_batches_and_provider_parameters_are_rejected_before_jobs_start(
     );
 }
 
+#[derive(Clone)]
+struct DiagnosticCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+impl std::io::Write for DiagnosticCapture {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn batch_returns_progress_and_partial_provider_results_without_writing_files() {
+    let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer = DiagnosticCapture(bytes.clone());
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_env_filter("sonora_proxy=info")
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).unwrap();
     let directory = TempDir::new().unwrap();
     let hits = Arc::new(AtomicUsize::new(0));
     let count = hits.clone();
@@ -178,14 +199,15 @@ async fn batch_returns_progress_and_partial_provider_results_without_writing_fil
     config.lrclib.base_url = Some(base);
     config.network.max_retries = 0;
     let router = api::router(config).unwrap();
-    let (status, created) = request(
-        &router,
-        "POST",
-        "/v1/jobs",
-        json!({"tracks":[{"title":"Fixture","artist":"Artist","album":"Album","duration":123}]}),
-        None,
-    )
-    .await;
+    let reference = "1cc38b47-6f1e-4bed-ad68-1bcac97bc0ab";
+    let response = router.clone().oneshot(axum::http::Request::post("/v1/jobs")
+        .header("content-type", "application/json")
+        .header("x-sonora-request-id", reference)
+        .body(Body::from(json!({"tracks":[{"title":"Fixture","artist":"Artist","album":"Album","duration":123}]}).to_string())).unwrap()).await.unwrap();
+    let status = response.status();
+    assert_eq!(response.headers()["x-sonora-request-id"], reference);
+    let created: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(status, StatusCode::ACCEPTED);
     let uri = format!("/v1/jobs/{}", created["id"].as_str().unwrap());
     let snapshot = tokio::time::timeout(Duration::from_secs(5), async {
@@ -209,6 +231,17 @@ async fn batch_returns_progress_and_partial_provider_results_without_writing_fil
         "musicbrainz"
     );
     assert_eq!(hits.load(Ordering::SeqCst), 2);
+    let log = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+    assert!(
+        log.lines()
+            .any(|line| line.contains("queued provider operation failed")
+                && line.contains(reference)),
+        "{log}"
+    );
+    assert!(
+        !log.contains("Synthetic lyric") && !log.contains("Fixture"),
+        "{log}"
+    );
     assert!(directory.path().read_dir().unwrap().all(|e| {
         let filename = e.unwrap().file_name();
         let filename = filename.to_str().unwrap();

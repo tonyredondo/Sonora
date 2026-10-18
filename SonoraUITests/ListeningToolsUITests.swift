@@ -12,7 +12,7 @@ final class ListeningToolsUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-transitionSettings", ""]
         app.launch(); app.buttons["Ajustes"].tap(); app.buttons["Noche"].tap()
-        app.buttons["Entre canciones"].tap()
+        app.openSoundTool("Transiciones entre canciones")
         let duration = app.sliders["crossfadeDuration"]
         XCTAssertTrue(duration.waitForExistence(timeout: 5))
         XCTAssertFalse(duration.isEnabled, "Continuous is the default mode")
@@ -23,18 +23,18 @@ final class ListeningToolsUITests: XCTestCase {
         XCTAssertNotEqual(saved, "5 segundos")
         capture("crossfade-noche", app: app)
         app.terminate(); app.launchArguments = []; app.launch()
-        app.buttons["Ajustes"].tap(); app.buttons["Entre canciones"].tap()
+        app.buttons["Ajustes"].tap(); app.openSoundTool("Transiciones entre canciones")
         XCTAssertTrue(app.sliders["crossfadeDuration"].isEnabled)
         XCTAssertEqual(app.sliders["crossfadeDuration"].value as? String, saved)
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.buttons["Papel"].tap(); app.buttons["Entre canciones"].tap()
+        app.returnToSettings()
+        app.buttons["Papel"].tap(); app.openSoundTool("Transiciones entre canciones")
         capture("crossfade-papel", app: app)
         app.buttons["Continua"].tap()
         XCTAssertFalse(app.sliders["crossfadeDuration"].isEnabled)
         capture("continuous-papel", app: app)
         app.terminate()
         app.launchArguments = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
-        app.launch(); app.buttons["Ajustes"].tap(); app.buttons["Entre canciones"].tap()
+        app.launch(); app.buttons["Ajustes"].tap(); app.openSoundTool("Transiciones entre canciones")
         app.buttons["Crossfade"].tap()
         let largeSlider = app.sliders["crossfadeDuration"]
         for _ in 0..<6 where !largeSlider.isHittable { app.swipeUp() }
@@ -50,8 +50,8 @@ final class ListeningToolsUITests: XCTestCase {
         app.launch()
         app.buttons["Ajustes"].tap()
         app.buttons["Noche"].tap()
-        XCTAssertTrue(app.buttons["Ecualizador"].waitForExistence(timeout: 5))
-        app.buttons["Ecualizador"].tap()
+        XCTAssertTrue(app.buttons["Sonido"].waitForExistence(timeout: 5))
+        app.openSoundTool("Ecualizador")
         let enabled = app.switches["equalizerEnabled"]
         XCTAssertTrue(enabled.waitForExistence(timeout: 5))
         XCTAssertEqual(enabled.value as? String, "0")
@@ -72,15 +72,15 @@ final class ListeningToolsUITests: XCTestCase {
         let manualValue = mid.value as? String
         capture("eq-noche-manual", app: app)
         app.terminate(); app.launchArguments = []; app.launch()
-        app.buttons["Ajustes"].tap(); app.buttons["Ecualizador"].tap()
+        app.buttons["Ajustes"].tap(); app.openSoundTool("Ecualizador")
         XCTAssertEqual(app.switches["equalizerEnabled"].value as? String, "1")
         XCTAssertEqual(app.sliders["eqBand5"].value as? String, manualValue)
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.buttons["Papel"].tap(); app.buttons["Ecualizador"].tap()
+        app.returnToSettings()
+        app.buttons["Papel"].tap(); app.openSoundTool("Ecualizador")
         capture("eq-papel-manual", app: app)
         app.terminate()
         app.launchArguments = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
-        app.launch(); app.buttons["Ajustes"].tap(); app.buttons["Ecualizador"].tap()
+        app.launch(); app.buttons["Ajustes"].tap(); app.openSoundTool("Ecualizador")
         XCTAssertTrue(app.switches["equalizerEnabled"].isHittable)
         let band = app.sliders["eqBand9"]
         // Drag the scroll gutter slowly. A full-screen fling can skip the target

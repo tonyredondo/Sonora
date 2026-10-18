@@ -1,5 +1,17 @@
 # Metadata assistant
 
+## Debugging a failed analysis
+
+The analysis error notice includes the HTTP status, available provider status/reason and a request reference. Its text can be selected and copied. Use that reference to find the corresponding proxy log entry; diagnosis does not require automatically repeating a paid request.
+
+The app retains JSONL error records inside its private container at `Library/Application Support/Sonora/Diagnostics/errors.jsonl`, with the preceding file at `errors.previous.jsonl`. Each file is capped at 1 MiB. Records survive relaunch and include the operation or repair stage, elapsed network time, typed error domain/code, validation context and request reference when available. They can be retrieved through Xcode's app-container tools or `devicectl device copy from`.
+
+Known audio and operating-system error domains include numeric codes for up to three underlying causes. Unknown domain names and error descriptions are omitted because they can contain private data.
+
+These records exclude tokens, provider keys, audio, lyrics, filenames, URL queries and raw provider messages. Logging failure leaves the original request result intact. The app does not send these log files to providers. The proxy emits matching references and technical causes to its standard output.
+
+## Completing metadata
+
 Open **Editar información → Completar información** for an editable song. Search by title, artist and optionally album, or choose **Reconocer por el audio**. Choose the recording and the release edition, then review each proposed field, artwork and lyrics. **Solo completar campos vacíos** is enabled initially. Disable it to select replacements for existing information.
 
 **Aplicar al editor** updates the unsaved form. The existing **Guardar → Guardar en archivo** action validates and writes the tags with file-conflict detection. Cancelling the editor leaves the original file unchanged. Read-only formats and virtual CUE songs retain their existing editing restrictions.

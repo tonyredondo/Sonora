@@ -12,9 +12,11 @@ private actor LyricsFallbackFixture: MetadataLookupTransport {
     let wrongAudio: Bool
     let wordTimes: Bool
     let wrongWords: Bool
-    init(catalogStatus: Int = 404, plain: String? = nil, timed: String? = nil, empty: Bool = false, wrongAudio: Bool = false, wordTimes: Bool = false, wrongWords: Bool = false) {
+    let lastWordEnd: Double
+    init(catalogStatus: Int = 404, plain: String? = nil, timed: String? = nil, empty: Bool = false, wrongAudio: Bool = false, wordTimes: Bool = false, wrongWords: Bool = false, lastWordEnd: Double = 1.5) {
         self.catalogStatus = catalogStatus; self.plain = plain; self.timed = timed; self.empty = empty; self.wrongAudio = wrongAudio
         self.wordTimes = wordTimes; self.wrongWords = wrongWords
+        self.lastWordEnd = lastWordEnd
     }
     func send(_ request: URLRequest) async throws -> MetadataHTTPResponse {
         let path = request.url!.path; paths.append(path)
@@ -39,7 +41,7 @@ private actor LyricsFallbackFixture: MetadataLookupTransport {
                      "duration":2,"audio_sha256":hash(wrongAudio ? Data([9]) : pcmFixture()),"model_id":"scribe_v2"]
             if wordTimes {
                 value["words"] = [["text": wrongWords ? "Different" : "Hello", "start":0.1,"end":0.5],
-                                  ["text":"Again","start":1.1,"end":1.5]]
+                                  ["text":"Again","start":1.1,"end":lastWordEnd]]
             }
         }
         return MetadataHTTPResponse(data: try JSONSerialization.data(withJSONObject: ["sources":[],"data":value]), status: 200, contentType: "application/json")
@@ -76,6 +78,26 @@ final class LyricsTranscriptionTests: XCTestCase {
         XCTAssertEqual(repair.value.plainText,"Hello\nAgain")
         let paths = await http.requests(); XCTAssertEqual(paths,["/v1/lyrics/transcribe"])
     }
+    func testZeroDurationWordIsPreservedAndReusedFromTheRepairCache() async throws {
+        let root = root(); defer { try? FileManager.default.removeItem(at:root) }
+        let http = LyricsFallbackFixture(wordTimes:true,lastWordEnd:1.1)
+        let first = try await client(root,http).transcription(duration:2,offline:false) { pcmFixture() }
+        let word = try XCTUnwrap(first.value.words?.last)
+        XCTAssertEqual(word.text,"Again")
+        XCTAssertEqual(word.start,1.1); XCTAssertEqual(word.end,1.1)
+        let cached = try await client(root,http).transcription(duration:2,offline:true) { pcmFixture() }
+        XCTAssertTrue(cached.isCached)
+        XCTAssertEqual(cached.value,first.value)
+        let paths = await http.requests(); XCTAssertEqual(paths,["/v1/lyrics/transcribe"])
+    }
+    func testReversedWordCannotEnterTheRepairCache() async throws {
+        let root = root(); defer { try? FileManager.default.removeItem(at:root) }
+        let http = LyricsFallbackFixture(wordTimes:true,lastWordEnd:1.0)
+        do { _ = try await client(root,http).transcription(duration:2,offline:false) { pcmFixture() }; XCTFail("Reversed words must be rejected") }
+        catch { XCTAssertEqual(error as? LyricsSynchronizationError,.invalidAlignment) }
+        do { _ = try await client(root,http).transcription(duration:2,offline:true) { pcmFixture() }; XCTFail("Rejected words must not be cached") }
+        catch { XCTAssertEqual(error as? MetadataLookupError,.notCached) }
+    }
     func testInconsistentWordTimesCannotEnterTheRepairCache() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }
         let http = LyricsFallbackFixture(wordTimes:true,wrongWords:true)
@@ -87,7 +109,7 @@ final class LyricsTranscriptionTests: XCTestCase {
     private let query = MetadataSearch(title: "Song", artist: "Artist", album: "Album")
     private func root() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString) }
     private func client(_ root: URL, _ http: LyricsFallbackFixture, endpoint: String = "http://127.0.0.1:8089") throws -> LyricsSynchronizationClient {
-        LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: endpoint, token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http)
+        LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: endpoint, token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http, diagnostics: MetadataDiagnostics(directory: root.appendingPathComponent("Diagnostics")))
     }
     func testCatalogPlainLyricsAreAlignedAndReusedOfflineWithoutEmbeddedText() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }

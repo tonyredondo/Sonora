@@ -14,7 +14,7 @@ struct LocalMusicView: View {
     var body: some View {
         List {
             Section {
-                Button("Importar carpeta", systemImage: "square.and.arrow.down") { chooseFolder = true }
+                Button("Copiar carpeta a Sonora", systemImage: "square.and.arrow.down") { chooseFolder = true }
                     .disabled(imports.isImporting || removing || player.isDeletingFiles).accessibilityIdentifier("importLocalFolder")
                 Text("Guarda una carpeta con su música, carátulas y letras para escucharla sin conexión. El original se conserva.").font(.footnote).foregroundStyle(.secondary)
             }
@@ -50,7 +50,7 @@ struct LocalMusicView: View {
                             Button("Reproducir", systemImage: "play.fill") { player.chooseFolder(imports.musicURL(copy), name: copy.name + " · Local") }
                                 .accessibilityIdentifier("playLocalCopy:" + copy.id)
                             if !textSize.isAccessibilitySize { Spacer() }
-                            Button("Eliminar copia local", systemImage: "trash", role: .destructive) { deleting = copy }
+                            Button("Eliminar copia de Sonora", systemImage: "trash", role: .destructive) { deleting = copy }
                                 .accessibilityIdentifier("deleteLocalCopy:" + copy.id)
                         }.buttonStyle(.borderless).disabled(imports.isImporting || removing || player.isDeletingFiles)
                     }.padding(.vertical, 6)
@@ -79,6 +79,5 @@ struct LocalMusicView: View {
         } message: { Text("Se quitarán esta copia y sus referencias de Sonora. La carpeta original de Archivos o iCloud Drive se conservará.") }
         .navigationDestination(isPresented: $showFiles) { if let browsingSource { SourceFolderView(player: player, sourceID: browsingSource) } }
         .onChange(of: phase) { if phase == .background { imports.cancel() } }
-        .onDisappear { imports.cancel() }
     }
 }

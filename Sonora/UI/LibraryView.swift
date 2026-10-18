@@ -4,108 +4,178 @@ import SwiftUI
 struct LibraryView: View {
     let player: PlaybackController
     @Environment(\.colorScheme) private var scheme
-    @State private var query = ""
+    @Environment(\.scenePhase) private var phase
+    @Environment(\.dynamicTypeSize) private var textSize
     @State private var sheet: LibrarySheet?
     @State private var showPlayer = false
     @State private var reset = false
+    @State private var categoryDestination: LibraryCategory?
+    @State private var selectedAlbum: CollectionGroup?
+    @State private var showAlbum = false
+    private enum LibraryCategory: Hashable { case artists, albums, songs }
     private var library: MusicLibrary { player.library }
     private var theme: PlayerTheme { PlayerTheme(scheme) }
     private enum LibrarySheet: String, Identifiable {
-        case sources, settings, queue
+        case sources, addMusic, settings, queue
         var id: Self { self }
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            NavigationStack {
-                List {
-                    if !query.isEmpty {
-                        let songs = library.allSongs.filter { $0.matches(query) }
-                        if songs.isEmpty {
-                            ContentUnavailableView.search(text: query)
-                        } else {
-                            CollectionRows(player: player, songs: songs)
-                        }
-                    } else {
-                        Section {
-                            if library.state.sources.isEmpty {
-                                VStack(alignment: .leading, spacing: 12) {
-                                    Label("Tu biblioteca", systemImage: "music.note.house").font(.headline)
-                                    Text("Añade carpetas de Archivos o iCloud Drive para reunir tus canciones, álbumes y artistas.")
-                                        .font(.subheadline).foregroundStyle(.secondary)
-                                    Button("Añadir fuente", systemImage: "folder.badge.plus") { sheet = .sources }
-                                        .buttonStyle(.bordered).frame(minHeight: 44)
-                                }.padding(.vertical, 8)
-                            } else {
-                                Text("\(library.state.songs.count) \(library.state.songs.count == 1 ? "canción" : "canciones") · \(library.state.sources.count) \(library.state.sources.count == 1 ? "fuente" : "fuentes")")
-                                    .font(.subheadline).foregroundStyle(.secondary)
-                                    .accessibilityIdentifier("librarySummary")
-                            }
-                        }.listRowBackground(theme.surface)
-                        Section {
-                            NavigationLink { CollectionGroupsView(player: player, albums: false) } label: { Label("Artistas", systemImage: "music.mic") }
-                            NavigationLink { CollectionGroupsView(player: player, albums: true) } label: { Label("Álbumes", systemImage: "square.stack") }
-                            NavigationLink { CollectionSongList(player: player, title: "Canciones", ids: library.allSongs.map(\.id)) } label: { Label("Canciones", systemImage: "music.note") }
-                        }.listRowBackground(theme.surface)
-                        Section {
-                            NavigationLink { CollectionFavoritesView(player: player) } label: { Label("Favoritos", systemImage: "heart") }
-                            NavigationLink { PlaylistsView(player: player) } label: { Label("Playlists", systemImage: "music.note.list") }
-                            NavigationLink { ListeningHistoryView(player: player) } label: { Label("Historial", systemImage: "clock") }
-                            NavigationLink { LocalMusicView(player: player) } label: { Label("Copias locales", systemImage: "arrow.down.circle") }
-                        }.listRowBackground(theme.surface)
-                    }
-                    if player.isLoading {
-                        Section {
-                            HStack {
-                                ProgressView("Preparando fuente…")
-                                Spacer()
-                                Button("Cancelar") { player.cancelLoading() }
-                            }
+        TabView {
+            playerTab {
+                home
+                    .navigationTitle("Biblioteca")
+                    .navigationDestination(item: $categoryDestination) { category in
+                        switch category {
+                        case .artists: CollectionGroupsView(player: player, albums: false)
+                        case .albums: CollectionGroupsView(player: player, albums: true)
+                        case .songs: CollectionSongList(player: player, title: "Canciones", ids: library.allSongs.map(\.id))
                         }
                     }
-                    if library.isIndexing { Section { ProgressView("Leyendo información · \(library.progress)") } }
-                    else if !library.progress.isEmpty { Text(library.progress).font(.footnote).foregroundStyle(.secondary) }
-                    if let issue = library.issue {
-                        Section {
-                            Text(issue).foregroundStyle(.secondary)
-                            if library.needsReset { Button("Restablecer biblioteca", role: .destructive) { reset = true } }
-                            else { Button("Cerrar aviso") { library.issue = nil } }
+                    .navigationDestination(isPresented: $showAlbum) {
+                        if let album = selectedAlbum {
+                            CollectionSongList(player: player, title: album.title, ids: album.songIDs, group: album, albumGroup: true)
                         }
                     }
-                    if let issue = player.issue {
-                        Section { Text(issue); Button("Cerrar aviso de reproducción") { player.issue = nil } }
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Fuentes") { sheet = .sources }.accessibilityIdentifier("librarySources")
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Ajustes", systemImage: "gearshape") { sheet = .settings }
+                        }
                     }
-                }
-                .accessibilityIdentifier("libraryHome")
-                .scrollContentBackground(.hidden).background(theme.background)
-                .navigationTitle("Biblioteca")
-                .searchable(text: $query, prompt: "Canciones, artistas, álbumes o etiquetas")
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("Fuentes", systemImage: "folder.badge.gearshape") { sheet = .sources }
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button { sheet = .settings } label: { Image(systemName: "gearshape").frame(minWidth: 44, minHeight: 44) }
-                            .accessibilityLabel("Ajustes")
-                    }
-                }
-                .confirmationDialog("¿Restablecer la biblioteca?", isPresented: $reset, titleVisibility: .visible) {
-                    Button("Restablecer biblioteca", role: .destructive) { library.reset() }
-                } message: { Text("Se eliminarán las referencias, las playlists, los favoritos y el historial guardados. Tus archivos de música se conservarán.") }
             }
-            if player.current != nil {
-                MiniPlayer(player: player, openPlayer: { showPlayer = true }, openQueue: { sheet = .queue })
-            }
+            .tabItem { Label("Biblioteca", systemImage: "music.note.house") }
+            playerTab { PlaylistsView(player: player) }
+                .tabItem { Label("Listas", systemImage: "music.note.list") }
+            playerTab { LibrarySearchView(player: player) }
+                .tabItem { Label("Buscar", systemImage: "magnifyingglass") }
         }
         .sheet(item: $sheet) { destination in
             switch destination {
             case .sources: LibrarySourcesView(player: player)
+            case .addMusic: AddMusicView(player: player)
             case .settings: SettingsView(player: player)
             case .queue: QueueView(player: player)
             }
         }
         .fullScreenCover(isPresented: $showPlayer) { NowPlayingView(player: player) }
         .tint(theme.accent)
+        .onChange(of: phase) { if phase == .background { player.localImports.cancel() } }
+    }
+
+    private func playerTab<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        // Reserve the player's actual height for the whole stack, including pushed lists.
+        // An inset outside NavigationStack can leave its scroll content behind the player.
+        VStack(spacing: 0) {
+            NavigationStack { content() }
+            miniPlayer
+        }
+        .background(theme.background)
+    }
+
+    private var home: some View {
+        List {
+            Section {
+                Button { sheet = .addMusic } label: {
+                    Label("Añadir música", systemImage: "plus.circle.fill")
+                        .font(.headline).foregroundStyle(theme.isDark ? Color.black : Color.white).frame(maxWidth: .infinity, minHeight: 44)
+                }.buttonStyle(.borderedProminent).accessibilityIdentifier("addMusic")
+                if library.state.sources.isEmpty {
+                    Text("Tu biblioteca empieza aquí. Añade una carpeta de Archivos, una copia local o un enlace.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("\(library.state.songs.count) canciones · \(library.state.sources.count) fuentes")
+                        .font(.subheadline).foregroundStyle(.secondary).accessibilityIdentifier("librarySummary")
+                }
+            }.listRowBackground(Color.clear).listRowSeparator(.hidden)
+            LibraryImportProgress(player: player)
+            if player.isLoading {
+                Section {
+                    HStack { ProgressView("Preparando fuente…"); Spacer(); Button("Cancelar") { player.cancelLoading() } }
+                }
+            }
+            if library.isIndexing { Section { ProgressView("Leyendo información · \(library.progress)") } }
+            if let issue = library.issue {
+                Section {
+                    Text(issue).foregroundStyle(.secondary)
+                    if library.needsReset { Button("Restablecer biblioteca", role: .destructive) { reset = true } }
+                    else { Button("Cerrar aviso") { library.issue = nil } }
+                }
+            }
+            if let issue = player.issue { Section { Text(issue); Button("Cerrar aviso de reproducción") { player.issue = nil } } }
+            Section {
+                let layout = textSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 10)) : AnyLayout(HStackLayout(spacing: 10))
+                layout {
+                    category("Artistas", icon: "music.mic", destination: .artists)
+                    category("Álbumes", icon: "square.stack", destination: .albums)
+                    category("Canciones", icon: "music.note", destination: .songs)
+                }.buttonStyle(.plain)
+            }.listRowBackground(Color.clear).listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+            LibraryAlbumShelf(player: player) { selectedAlbum = $0; showAlbum = true }
+            Section {
+                NavigationLink { CollectionFavoritesView(player: player) } label: { Label("Favoritos", systemImage: "heart") }
+                NavigationLink { ListeningHistoryView(player: player) } label: { Label("Historial", systemImage: "clock") }
+                NavigationLink { LocalMusicView(player: player) } label: { Label("Disponible sin conexión", systemImage: "arrow.down.circle") }
+            }.listRowBackground(theme.surface)
+        }
+        .listSectionSpacing(16)
+        .accessibilityIdentifier("libraryHome")
+        .scrollContentBackground(.hidden).background(theme.background)
+        .confirmationDialog("¿Restablecer la biblioteca?", isPresented: $reset, titleVisibility: .visible) {
+            Button("Restablecer biblioteca", role: .destructive) { library.reset() }
+        } message: { Text("Se eliminarán las referencias, las listas, los favoritos y el historial guardados. Tus archivos de música se conservarán.") }
+    }
+    private func category(_ title: String, icon: String, destination: LibraryCategory) -> some View {
+        Button { categoryDestination = destination } label: {
+            VStack(spacing: 8) {
+                Image(systemName: icon).font(.title3).foregroundStyle(theme.accent)
+                Text(title).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+            }.frame(maxWidth: .infinity, minHeight: 70).padding(.vertical, 4)
+                .background(theme.surface, in: .rect(cornerRadius: 12))
+        }
+    }
+    @ViewBuilder private var miniPlayer: some View {
+        if player.current != nil {
+            MiniPlayer(player: player, openPlayer: { showPlayer = true }, openQueue: { sheet = .queue })
+                .background(theme.background)
+        }
+    }
+}
+
+private struct LibraryAlbumShelf: View {
+    let player: PlaybackController
+    let openAlbum: (CollectionGroup) -> Void
+    private var recent: [CollectionGroup] {
+        let albums = Dictionary(uniqueKeysWithValues: player.library.albums.map { ($0.id, $0) })
+        var seen: Set<String> = []
+        return player.library.state.history.compactMap { event in
+            guard let id = player.library.state.songs[event.songID]?.albumID, seen.insert(id).inserted else { return nil }
+            return albums[id]
+        }
+    }
+    var body: some View {
+        let recentAlbums = recent
+        let displayed = Array((recentAlbums.isEmpty ? player.library.albums : recentAlbums).prefix(6))
+        if !displayed.isEmpty {
+            Section(recentAlbums.isEmpty ? "Tus álbumes" : "Escuchado recientemente") {
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: 16) {
+                        ForEach(displayed) { album in
+                            Button { openAlbum(album) } label: {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    CachedCollectionArtwork(library: player.library, song: album.songIDs.first.flatMap { player.library.state.songs[$0] })
+                                        .frame(width: 150, height: 150)
+                                    Text(album.title).font(.headline).lineLimit(2)
+                                    Text(album.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                }.frame(width: 150, alignment: .leading)
+                            }.buttonStyle(.plain)
+                        }
+                    }.padding(.vertical, 4)
+                }
+            }.listRowBackground(Color.clear)
+        }
     }
 }
 
