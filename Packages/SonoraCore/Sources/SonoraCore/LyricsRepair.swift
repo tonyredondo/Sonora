@@ -174,6 +174,21 @@ public struct LyricsRepair: Sendable {
                     rest.removeAll { source[$0].line == lineIndex }
                 }
             }
+            // Equal-length substitutions between anchored timed lines retain
+            // the original layout even when the provider groups phrases differently.
+            if timed, affected.count > 1, affected.isSubset(of:matchedLines), a.count == rest.count {
+                var offset = 0
+                for line in affected.sorted() {
+                    let group = a.filter { base[$0].line == line }
+                    let targets = Array(rest[offset..<(offset + group.count)])
+                    let first = base[group[0]], last = base[group[group.count - 1]]
+                    let anchor = Anchor(first:line,start:first.start,last:line,end:last.end,insert:false,separate:false)
+                    let suggested = Self.fragment(source,indices:targets,lines:sourceLines).replacingOccurrences(of:"\n",with:" ")
+                    add(.correction,anchor,Self.fragment(base,indices:group,lines:parsed),suggested,targets)
+                    offset += group.count
+                }
+                continue
+            }
             var originalRest = Array(a)
             let anchored = affected.intersection(matchedLines)
             if anchored.count == 1, let owner = anchored.first, !rest.isEmpty,

@@ -284,6 +284,25 @@ final class LyricsRepairTests: XCTestCase {
         XCTAssertEqual(splitResult.lines.map(\.text),["Bright road Walk with you We return"])
         XCTAssertEqual(splitResult.lines.map(\.time),[1])
     }
+    func testBoundaryWordCorrectionsPreserveBothOriginalTimedLines() throws {
+        let original = "[00:01.00]Under the pale moom\n[00:04.50]\n[00:05.00]wi sing our song\n[00:09.00]We return"
+        let synced = "[00:01.00]Under the pale\n[00:04.00]moon we sing\n[00:07.00]our song\n[00:09.00]We return"
+        let plain = LyricsDocument(text:synced).lines.map(\.text).joined(separator:"\n")
+        let words = "Under the pale moon we sing our song We return".split(separator:" ").enumerated().map { LyricsTranscript.Word(text:String($0.element),start:Double($0.offset+1),end:Double($0.offset+1)+0.5) }
+        for detailed in [false,true] {
+            let review = try LyricsRepair(original:original,transcript:.init(plainText:plain,syncedText:synced,duration:12,words:detailed ? words : nil))
+            XCTAssertEqual(review.proposals.count,2)
+            let first = try XCTUnwrap(review.proposals.first { $0.original == "moom" })
+            let second = try XCTUnwrap(review.proposals.first { $0.original == "wi" })
+            for selected in [[first],[second],[first,second]] {
+                let edits = Dictionary(uniqueKeysWithValues:selected.map { ($0.id,LyricsRepair.Edit(text:$0.suggested)) })
+                let written = LyricsDocument(text:try review.applying(edits))
+                XCTAssertEqual(written.lines.map(\.text),["Under the pale " + (edits[first.id] == nil ? "moom" : "moon"),"",(edits[second.id] == nil ? "wi" : "we") + " sing our song","We return"])
+                XCTAssertEqual(written.lines.map(\.time),[1,4.5,5,9])
+                XCTAssertEqual(try review.applying(edits,onlyCompletions:true),original)
+            }
+        }
+    }
     func testOffsetsCannotChangeLegacyPhraseMatching() throws {
         let source = "[00:01.10]We sing brightly\n[00:01.60]home come home\n[00:02.10]Come back\n[00:03.10]Come back"
         let originals = [

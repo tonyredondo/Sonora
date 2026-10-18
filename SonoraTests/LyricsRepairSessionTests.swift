@@ -37,6 +37,54 @@ private actor CancelledRepairFixture: MetadataLookupTransport {
 }
 
 final class LyricsRepairSessionTests: XCTestCase {
+    @MainActor func testBoundaryWordRepairsRetainLineTimesThroughPartialSaveAndCachedReview() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+        defer { try? FileManager.default.removeItem(at:root) }
+        let url = root.appendingPathComponent("repair.mp3")
+        try FileManager.default.copyItem(at:XCTUnwrap(Bundle(for:Self.self).url(forResource:"lyrics-repair-vbr",withExtension:"mp3")),to:url)
+        let suite = "SonoraTests.RepairLineTimes.\(UUID().uuidString)", defaults = try XCTUnwrap(UserDefaults(suiteName:suite))
+        defer { defaults.removePersistentDomain(forName:suite) }
+        let tokens = MetadataTokenStore(service:suite); defer { try? tokens.remove() }
+        let settings = MetadataAssistantSettings(defaults:defaults,tokens:tokens,cache:MetadataLookupCache(directory:root.appendingPathComponent("cache")))
+        try settings.save(endpoint:"http://127.0.0.1:18444",token:"synthetic-repair-token")
+        let source = "[00:00.10]Under the pale\n[00:00.70]moon we sing\n[00:01.80]our song\n[00:03.10]We return"
+        let player = PlaybackController(defaults:defaults), transport = RepairAudioFixture(synced:source)
+        defer { player.stop() }
+        await player.loadFolder(root,autoPlay:false)
+        let track = try XCTUnwrap(AudioTrack(relativePath:"repair.mp3")), initial = try await player.readMetadata(for:track)
+        try await player.saveMetadata(for:track,expected:initial.fingerprint,patch:MetadataPatch(values:[.lyrics:"[00:00.10]Under the pale moom\n[00:01.40]wi sing our song\n[00:03.10]We return"]))
+        let before = try await player.readMetadata(for:track)
+        let identity = try await AudioContentIdentity.read(track:track,folder:player.folderAccess(for:track),expected:before.fingerprint)
+        let session = LyricsRepairSession(player:player,track:track,settings:settings,transport:transport)
+        await session.load(); await session.analyze()
+        XCTAssertNil(session.issue)
+        let first = try XCTUnwrap(session.review?.proposals.first { $0.original == "moom" })
+        let second = try XCTUnwrap(session.review?.proposals.first { $0.original == "wi" })
+        session.accept(first); session.keep(second)
+        let draft = try session.draft()
+        XCTAssertEqual(LyricsDocument(text:draft).lines.map(\.text),["Under the pale moon","wi sing our song","We return"])
+        XCTAssertEqual(LyricsDocument(text:draft).lines.map(\.time),[0.1,1.4,3.1])
+        await session.save(draft)
+        XCTAssertTrue(session.saved); XCTAssertNil(session.issue)
+        let partial = try await player.readMetadata(for:track)
+        XCTAssertEqual(LyricsDocument(text:partial.values[.lyrics] ?? "").lines.map(\.time),[0.1,1.4,3.1])
+        settings.offline = true
+        let reopened = LyricsRepairSession(player:player,track:track,settings:settings,transport:transport)
+        await reopened.load(); await reopened.analyze()
+        XCTAssertNil(reopened.issue); XCTAssertTrue(reopened.isCached)
+        XCTAssertEqual(reopened.review?.proposals.count,1)
+        let remaining = try XCTUnwrap(reopened.review?.proposals.first)
+        XCTAssertEqual(remaining.original,"wi"); reopened.accept(remaining)
+        await reopened.save(try reopened.draft())
+        XCTAssertTrue(reopened.saved); XCTAssertNil(reopened.issue)
+        let written = try await player.readMetadata(for:track)
+        XCTAssertEqual(LyricsDocument(text:written.values[.lyrics] ?? "").lines.map(\.text),["Under the pale moon","we sing our song","We return"])
+        XCTAssertEqual(LyricsDocument(text:written.values[.lyrics] ?? "").lines.map(\.time),[0.1,1.4,3.1])
+        let after = try await AudioContentIdentity.read(track:track,folder:player.folderAccess(for:track),expected:written.fingerprint)
+        XCTAssertEqual(identity,after)
+        let calls = await transport.calls; XCTAssertEqual(calls,1)
+    }
     @MainActor func testLegacyCachedChorusesAndOffsetsSurviveOfflineRepairAndSave() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
