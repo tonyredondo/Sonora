@@ -142,12 +142,12 @@ final class LyricsRepairSessionTests: XCTestCase {
         let tokens = MetadataTokenStore(service:suite); defer { try? tokens.remove() }
         let settings = MetadataAssistantSettings(defaults:defaults,tokens:tokens,cache:MetadataLookupCache(directory:root.appendingPathComponent("cache")))
         try settings.save(endpoint:"http://127.0.0.1:18444",token:"synthetic-repair-token")
-        let player = PlaybackController(defaults:defaults), transport = RepairAudioFixture(missingVerse:false)
+        let player = PlaybackController(defaults:defaults), transport = RepairAudioFixture(synced:"[00:00.10]We can’t go home\n[00:03.10]We return")
         defer { player.stop() }
         await player.loadFolder(root,autoPlay:false)
         let track = try XCTUnwrap(AudioTrack(relativePath:"repair.mp3"))
         let initial = try await player.readMetadata(for:track)
-        try await player.saveMetadata(for:track,expected:initial.fingerprint,patch:MetadataPatch(values:[.lyrics:"[00:00.10]Bright roan\n[00:01.40]Keep this verse\n[00:02.20]And this line\n[00:03.10]We return"]))
+        try await player.saveMetadata(for:track,expected:initial.fingerprint,patch:MetadataPatch(values:[.lyrics:"[00:00.10]We cant go home\n[00:01.40]Keep this verse\n[00:02.20]And this line\n[00:03.10]We return"]))
         let before = try await player.readMetadata(for:track)
         let pcm = try await LyricsAudioPreparation.prepare(track:track,folder:player.folderAccess(for:track),expected:before.fingerprint)
         let decodedDuration = Double(pcm.count - 44) / 32000
@@ -157,6 +157,7 @@ final class LyricsRepairSessionTests: XCTestCase {
         await session.load(); await session.analyze()
         XCTAssertNil(session.issue,"Decoded duration \(decodedDuration), metadata duration \(before.duration)")
         XCTAssertNotNil(session.review)
+        XCTAssertEqual(session.review?.proposals.first { $0.original == "cant" }?.suggested,"can’t")
         let calls = await transport.calls; XCTAssertEqual(calls,1)
         let omitted = try XCTUnwrap(session.review?.proposals.first { $0.kind == .unrecognized })
         XCTAssertTrue(session.canListen)
@@ -168,7 +169,7 @@ final class LyricsRepairSessionTests: XCTestCase {
         await session.save(try session.draft())
         XCTAssertTrue(session.saved); XCTAssertNil(session.issue)
         let written = try await player.readMetadata(for:track)
-        XCTAssertEqual(LyricsDocument(text:written.values[.lyrics] ?? "").lines.map(\.text),["Bright road","Keep this verse","And this line","We return"])
+        XCTAssertEqual(LyricsDocument(text:written.values[.lyrics] ?? "").lines.map(\.text),["We can’t go home","Keep this verse","And this line","We return"])
         let after = try await AudioContentIdentity.read(track:track,folder:player.folderAccess(for:track),expected:written.fingerprint)
         XCTAssertEqual(identity,after)
         settings.offline = true

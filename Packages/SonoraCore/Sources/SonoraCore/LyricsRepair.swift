@@ -89,8 +89,11 @@ public struct LyricsRepair: Sendable {
         let sharedPhraseTimes = timed && transcript.words == nil
             ? Set(timedLines.map { phraseTick($0.1) }).intersection(sourceLines.compactMap(\.time).map(phraseTick)).sorted() : []
         func phraseWindow(_ token: Token) -> Int { sharedPhraseTimes.lastIndex { $0 <= phraseTick(token.time ?? 0) } ?? -1 }
-        let baseKeys = base.map { $0.key + (timed ? "\0\(useClock ? $0.line : phraseWindow($0))" : "") }
-        let sourceKeys = source.map { $0.key + (timed ? "\0\(useClock ? sourceOwner($0) : phraseWindow($0))" : "") }
+        // Internal apostrophes distinguish words such as "its" and "it's".
+        // Keep provider-normalized scalar offsets above for precise word timing.
+        func comparisonKey(_ token: Token) -> String { token.text.replacingOccurrences(of:"’",with:"'").lowercased() }
+        let baseKeys = base.map { comparisonKey($0) + (timed ? "\0\(useClock ? $0.line : phraseWindow($0))" : "") }
+        let sourceKeys = source.map { comparisonKey($0) + (timed ? "\0\(useClock ? sourceOwner($0) : phraseWindow($0))" : "") }
         // The standard library diff avoids retaining a quadratic alignment matrix.
         let difference = sourceKeys.difference(from:baseKeys)
         let removed = Set(difference.removals.map { change -> Int in if case .remove(let offset,_,_) = change { return offset }; return -1 })

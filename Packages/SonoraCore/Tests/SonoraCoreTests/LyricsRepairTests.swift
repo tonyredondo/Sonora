@@ -184,6 +184,34 @@ final class LyricsRepairTests: XCTestCase {
         XCTAssertTrue(review.proposals.isEmpty)
         XCTAssertEqual(try review.applying([:]),original)
     }
+    func testInternalApostrophesDistinguishWordsWithoutChangingProviderTiming() throws {
+        for (originalWord,suggestedWord) in [("cant","can't"),("can't","cant"),("its","it's"),("lhomme","l’homme")] {
+          for timed in [false,true] {
+            for detailed in [false,true] {
+                let original = (timed ? "[00:01.00]" : "") + "We \(originalWord) go hume"
+                let plain = "We \(suggestedWord) go home"
+                let words = plain.split(separator:" ").enumerated().map { LyricsTranscript.Word(text:String($0.element),start:1 + Double($0.offset) * 0.4,end:1.3 + Double($0.offset) * 0.4) }
+                let review = try LyricsRepair(original:original,transcript:.init(plainText:plain,syncedText:"[00:01.00]" + plain,duration:4,words:detailed ? words : nil))
+                XCTAssertEqual(review.proposals.filter { $0.kind == .correction }.count,2)
+                let contraction = try XCTUnwrap(review.proposals.first { $0.original == originalWord })
+                XCTAssertEqual(contraction.suggested,suggestedWord)
+                if detailed {
+                    XCTAssertEqual(try XCTUnwrap(contraction.start),1.4,accuracy:0.001)
+                    XCTAssertEqual(try XCTUnwrap(contraction.end),1.7,accuracy:0.001)
+                }
+                let edits = Dictionary(uniqueKeysWithValues:review.proposals.map { ($0.id,LyricsRepair.Edit(text:$0.suggested)) })
+                let written = LyricsDocument(text:try review.applying(edits))
+                XCTAssertEqual(written.lines.map(\.text),[plain])
+                XCTAssertEqual(written.lines.map(\.time),[timed ? 1 : nil])
+                XCTAssertEqual(try review.applying(edits,onlyCompletions:true),original)
+            }
+          }
+        }
+        let original = "[00:01.00]¡We don't go home!"
+        let unchanged = try LyricsRepair(original:original,transcript:transcript("[00:01.00]we don’t go home"))
+        XCTAssertTrue(unchanged.proposals.isEmpty)
+        XCTAssertEqual(try unchanged.applying([:]),original)
+    }
     func testOffsetAndUnaffectedTimesSurviveAWordCorrection() throws {
         let original = "[offset:500]\n[00:01.00]Bright roan\n[00:03.00]We return"
         let review = try LyricsRepair(original:original,transcript:transcript("[00:00.50]Bright road\n[00:02.50]We return"))
