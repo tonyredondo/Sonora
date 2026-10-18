@@ -203,7 +203,13 @@ fn contains_lrc_control(text: &str) -> bool {
             let Some((prefix, value)) = text[begin..byte].split_once(':') else {
                 continue;
             };
-            if prefix.eq_ignore_ascii_case("offset") {
+            // Foundation's case-insensitive offset regex also folds long s and
+            // ligatures. Expand Unicode uppercase mappings to match that behavior.
+            if prefix
+                .chars()
+                .flat_map(char::to_uppercase)
+                .eq("OFFSET".chars())
+            {
                 if digits(value.strip_prefix(['+', '-']).unwrap_or(value)) {
                     return true;
                 }
@@ -343,13 +349,29 @@ mod review_tests {
             "Hello [99:90] Again",
             "Hello [٠٠:٠١] Again",
             "Hello [offset:-3000] Again",
+            "Hello [offſet:-3000] Again",
+            "Hello [oﬀset:-3000] Again",
+            "Hello [oﬀſet:-3000] Again",
         ] {
             assert!(
                 input()
                     .transcribed(&serde_json::json!({"text":text,"words":[
                 {"text":text,"type":"word","start":0.1,"end":1.5}]}))
-                    .is_err()
+                    .is_err(),
+                "accepted LRC control in {text:?}"
             );
         }
+    }
+    #[test]
+    fn bracketed_lyrics_without_lrc_controls_are_preserved() {
+        let text = "Hello [Chorus] [off-set:-3000] Again";
+        let result = input()
+            .transcribed(&serde_json::json!({"text":text,"words":[
+            {"text":text,"type":"word","start":0.1,"end":1.5}]}))
+            .unwrap();
+        assert_eq!(
+            result.synced_lyrics,
+            "[00:00.10]Hello [Chorus] [off-set:-3000] Again"
+        );
     }
 }
