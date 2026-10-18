@@ -23,6 +23,17 @@ pub struct Transcription {
     pub duration: f64,
     pub model_id: String,
     pub language_code: Option<String>,
+    /// Older cached analyses contain phrase timing only and remain reusable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<TranscriptionWord>,
+}
+
+/// Validated provider words retained for reviewing individual lyric repairs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TranscriptionWord {
+    pub text: String,
+    pub start: f64,
+    pub end: f64,
 }
 impl TranscriptionInput {
     pub fn new(audio: Bytes) -> Result<Self, Error> {
@@ -178,6 +189,16 @@ impl TranscriptionInput {
             duration: self.duration,
             model_id: MODEL_ID.into(),
             language_code: out.language_code,
+            words: out
+                .words
+                .into_iter()
+                .filter(|word| word.kind == "word" && !normalized(&word.text).is_empty())
+                .map(|word| TranscriptionWord {
+                    text: word.text,
+                    start: word.start,
+                    end: word.end,
+                })
+                .collect(),
         })
     }
 }
@@ -265,6 +286,24 @@ impl Client {
 #[cfg(test)]
 mod review_tests {
     use super::*;
+    #[test]
+    fn derived_transcription_retains_word_times_for_cached_lyric_repairs() {
+        let words = serde_json::json!([
+            {"text":"Hello","type":"word","start":0.1,"end":0.5},
+            {"text":"again","type":"word","start":1.1,"end":1.5}
+        ]);
+        let result = input()
+            .transcribed(&serde_json::json!({"text":"Hello again", "words":words}))
+            .unwrap();
+        let cached = serde_json::to_value(result).unwrap();
+        assert_eq!(
+            cached["words"],
+            serde_json::json!([
+                {"text":"Hello","start":0.1,"end":0.5},
+                {"text":"again","start":1.1,"end":1.5}
+            ])
+        );
+    }
     fn input() -> TranscriptionInput {
         TranscriptionInput {
             audio: Bytes::new(),

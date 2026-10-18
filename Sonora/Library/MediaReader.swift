@@ -64,7 +64,9 @@ private final class CoordinatedRead: @unchecked Sendable {
                     title: tags[.title]?.nonempty ?? track.displayName,
                     artist: tags[.artist]?.nonempty ?? "Artista desconocido",
                     album: tags[.album]?.nonempty ?? (track.folder.isEmpty ? folder.url.lastPathComponent : track.folder),
-                    duration: track.cue == nil ? file?.properties.duration ?? Double(max(0, decoder.length)) / decoder.processingFormat.sampleRate : Double(decoder.length) / decoder.processingFormat.sampleRate,
+                    // VBR metadata can be an estimate; seeking and fragment
+                    // playback must use the decoder's known sample interval.
+                    duration: decoder.length > 0 ? Double(decoder.length) / decoder.processingFormat.sampleRate : file?.properties.duration ?? 0,
                     format: localURL.pathExtension.uppercased() + bits + String(format: " / %.1f kHz", decoder.processingFormat.sampleRate / 1000),
                     sampleRate: decoder.processingFormat.sampleRate,
                     artwork: (metadata?.attachedPictures(ofType: .frontCover).first?.imageData ?? data).flatMap(Self.thumbnail) ?? Self.sidecarArtwork(in: localURL.deletingLastPathComponent()),

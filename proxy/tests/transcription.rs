@@ -161,6 +161,7 @@ async fn transcription_is_deduplicated_persisted_and_reused_after_proxy_restart(
         "[00:00.10]Hello.\n[00:01.10]Again!"
     );
     assert_eq!(a["data"]["model_id"], "scribe_v2");
+    assert_eq!(a["data"]["words"][0]["start"], 0.1);
     assert_eq!(state.hits.load(Ordering::SeqCst), 1);
     drop(app);
     server.abort();
@@ -175,6 +176,39 @@ async fn transcription_is_deduplicated_persisted_and_reused_after_proxy_restart(
         !bytes.windows(44).any(|w| w == &wav(0)[..44]),
         "Raw audio must not be persisted"
     );
+}
+#[tokio::test]
+async fn a_positive_legacy_transcription_cache_is_reused_without_word_details_or_payment() {
+    let root = TempDir::new().unwrap();
+    let (app, config, state, server) = setup(&root, "normal").await;
+    assert_eq!(
+        app.clone().oneshot(upload(&wav(0))).await.unwrap().status(),
+        StatusCode::OK
+    );
+    drop(app);
+    {
+        let db = rusqlite::Connection::open(&config.cache.path).unwrap();
+        let body: Vec<u8> = db
+            .query_row("SELECT body FROM responses", [], |r| r.get(0))
+            .unwrap();
+        let mut legacy: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        legacy.as_object_mut().unwrap().remove("words");
+        let encoded = serde_json::to_vec(&legacy).unwrap();
+        assert_eq!(
+            db.execute(
+                "UPDATE responses SET body=?1, size=?2",
+                rusqlite::params![encoded, encoded.len()]
+            )
+            .unwrap(),
+            1
+        );
+    }
+    let app = sonora_proxy::api::router(config).unwrap();
+    let response = json(app.oneshot(upload(&wav(0))).await.unwrap()).await;
+    assert_eq!(response["cache"], "hit");
+    assert!(response["data"]["words"].is_null());
+    assert_eq!(state.hits.load(Ordering::SeqCst), 1);
+    server.abort();
 }
 #[tokio::test]
 async fn silent_audio_result_is_cached_and_changed_audio_has_an_independent_key() {
