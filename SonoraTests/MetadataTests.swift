@@ -6,6 +6,30 @@ import XCTest
 @testable import Sonora
 
 final class MetadataTests: XCTestCase {
+    func testAITranscriptionAttributionSurvivesTagSaveAndPlaybackReload() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = try ScopedFolder(root)
+        let lyrics = LyricsDocument.aiTranscriptionMarker + "\n[00:00.10]Una canción\n[00:00.20]Otra línea"
+        // ID3, Vorbis comments and MP4 atoms must all retain the provenance header.
+        for name in ["fixture.mp3", "fixture.flac", "fixture.m4a"] {
+            let source = try XCTUnwrap(Bundle(for: Self.self).url(forResource: (name as NSString).deletingPathExtension, withExtension: (name as NSString).pathExtension))
+            let url = root.appendingPathComponent(name); try FileManager.default.copyItem(at: source, to: url)
+            let hash = try audioHash(url)
+            let snapshot = try await MetadataService.read(url: url, folder: folder)
+            _ = try await MetadataService.save(url: url, folder: folder, expected: snapshot.fingerprint, patch: MetadataPatch(values: [.lyrics: lyrics]))
+            let saved = try await MetadataService.read(url: url, folder: folder)
+            XCTAssertEqual(saved.values[.lyrics], lyrics)
+            let prepared = try await MediaReader.prepare(XCTUnwrap(AudioTrack(relativePath: name)), folder: folder)
+            XCTAssertEqual(prepared.details.lyrics.attribution, "Transcrita por IA · ElevenLabs")
+            XCTAssertEqual(prepared.details.lyricsSource, "Transcrita por IA · ElevenLabs")
+            XCTAssertEqual(prepared.details.lyrics.lines.map(\.text), ["Una canción", "Otra línea"])
+            try prepared.decoder.close()
+            XCTAssertEqual(try audioHash(url), hash, "Lyrics must not alter audio: \(name)")
+        }
+    }
+
     @MainActor
     func testBatchSaveReportsConflictsAndPreservesPausedPosition() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

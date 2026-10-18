@@ -57,6 +57,12 @@ pub fn router(config: Config) -> Result<Router, Error> {
                 crate::alignment::MAX_AUDIO_BYTES + crate::alignment::MAX_TEXT_BYTES + 4096,
             )),
         )
+        .route(
+            "/v1/lyrics/transcribe",
+            post(transcribe).layer(DefaultBodyLimit::max(
+                crate::alignment::MAX_AUDIO_BYTES + 4096,
+            )),
+        )
         .route("/v1/identify", post(identify))
         .route("/v1/artwork/{id}", get(artwork))
         .route("/v1/jobs", post(create_job))
@@ -237,9 +243,34 @@ async fn cancel_job(State(app): State<App>, Path(id): Path<Uuid>) -> Result<Resp
 /// Authentication runs before extraction; limit concurrent buffered audio uploads as well as the provider queue.
 async fn align(
     State(app): State<App>,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Result<impl IntoResponse, ApiError> {
     let _permit = app.uploads.try_acquire().map_err(|_| Error::QueueFull)?;
+    let (audio, text) = read_audio_upload(multipart, true).await?;
+    Ok(Json(
+        app.client
+            .align(
+                audio,
+                text.ok_or(Error::InvalidInput("text is required"))?,
+                Priority::Interactive,
+            )
+            .await?,
+    ))
+}
+async fn transcribe(
+    State(app): State<App>,
+    multipart: Multipart,
+) -> Result<impl IntoResponse, ApiError> {
+    let _permit = app.uploads.try_acquire().map_err(|_| Error::QueueFull)?;
+    let (audio, _) = read_audio_upload(multipart, false).await?;
+    Ok(Json(
+        app.client.transcribe(audio, Priority::Interactive).await?,
+    ))
+}
+async fn read_audio_upload(
+    mut multipart: Multipart,
+    require_text: bool,
+) -> Result<(bytes::Bytes, Option<String>), ApiError> {
     let mut audio = None;
     let mut text = None;
     while let Some(field) = multipart
@@ -250,8 +281,8 @@ async fn align(
         let name = field.name().unwrap_or("").to_owned();
         let limit = match name.as_str() {
             "file" if audio.is_none() => crate::alignment::MAX_AUDIO_BYTES,
-            "text" if text.is_none() => crate::alignment::MAX_TEXT_BYTES,
-            _ => return Err(Error::InvalidInput("expected one file and one text field").into()),
+            "text" if require_text && text.is_none() => crate::alignment::MAX_TEXT_BYTES,
+            _ => return Err(Error::InvalidInput("unexpected or duplicate multipart field").into()),
         };
         let data = field.bytes().await.map_err(|_| Error::UploadTooLarge)?;
         if data.len() > limit {
@@ -266,13 +297,5 @@ async fn align(
             );
         }
     }
-    Ok(Json(
-        app.client
-            .align(
-                audio.ok_or(Error::InvalidInput("file is required"))?,
-                text.ok_or(Error::InvalidInput("text is required"))?,
-                Priority::Interactive,
-            )
-            .await?,
-    ))
+    Ok((audio.ok_or(Error::InvalidInput("file is required"))?, text))
 }

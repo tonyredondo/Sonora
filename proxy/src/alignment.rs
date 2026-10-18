@@ -1,5 +1,6 @@
 //! Opt-in forced alignment. Only canonical bounded PCM is accepted; source audio is never persisted.
 use crate::{
+    audio_job::{AudioJob, pcm_duration},
     config::Provider,
     providers::{Client, Error, Priority, Reply},
 };
@@ -45,28 +46,8 @@ impl AlignmentInput {
         {
             return Err(bad());
         }
-        if audio.len() < 44
-            || audio.len() > MAX_AUDIO_BYTES
-            || &audio[..4] != b"RIFF"
-            || &audio[8..16] != b"WAVEfmt "
-            || audio[16..36]
-                != [
-                    16, 0, 0, 0, 1, 0, 1, 0, 128, 62, 0, 0, 0, 125, 0, 0, 2, 0, 16, 0,
-                ]
-            || &audio[36..40] != b"data"
-        {
-            return Err(bad());
-        }
-        let size = audio.len() - 44;
-        if size < 32000
-            || size % 2 != 0
-            || audio[4..8] != ((size + 36) as u32).to_le_bytes()
-            || audio[40..44] != (size as u32).to_le_bytes()
-        {
-            return Err(bad());
-        }
         Ok(Self {
-            duration: size as f64 / 32000.0,
+            duration: pcm_duration(&audio)?,
             audio,
             text,
         })
@@ -143,7 +124,7 @@ impl AlignmentInput {
         })
     }
 }
-fn normalized(text: &str) -> String {
+pub(crate) fn normalized(text: &str) -> String {
     text.chars()
         .filter(|c| c.is_alphanumeric())
         .flat_map(char::to_lowercase)
@@ -164,7 +145,7 @@ impl Client {
         }
         let mut spec = self.request(Provider::Elevenlabs, "/v1/forced-alignment", &[])?;
         let source = spec.url.to_string();
-        spec.alignment = Some(input);
+        spec.audio_job = Some(AudioJob::Alignment(input));
         let result = self.scheduler.fetch(spec, priority).await?;
         let data = serde_json::from_slice(&result.entry.body)
             .map_err(|_| Error::InvalidResponse(Provider::Elevenlabs))?;

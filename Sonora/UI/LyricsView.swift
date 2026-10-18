@@ -24,8 +24,12 @@ struct LyricsView: View {
                     ContentUnavailableView {
                         Label("Sin letra", systemImage: "quote.bubble")
                     } description: {
-                        Text("Añade una letra en la información de la canción o coloca un archivo .lrc junto al audio.")
-                    } actions: { Button("Añadir letra") { edit() } }
+                        Text("Busca la letra o genera una transcripción con IA. También puedes añadirla tú o colocar un archivo .lrc junto al audio.")
+                    } actions: {
+                        Button("Buscar o transcribir letra") { edit(synchronize: true) }
+                            .accessibilityIdentifier("findMissingLyrics")
+                        Button("Añadir letra") { edit() }
+                    }
                 } else {
                     if !lyrics.isTimed {
                         Button { edit(synchronize: true) } label: {
@@ -60,7 +64,10 @@ struct LyricsView: View {
                         .onChange(of: active, initial: true) { if autoScroll, let active { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { reader.scrollTo(active, anchor: .center) } } }
                         .onChange(of: autoScroll) { if autoScroll, let active { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { reader.scrollTo(active, anchor: .center) } } }
                     }
-                    if let source = player.currentDetails?.lyricsSource { Text(source).font(.caption).foregroundStyle(.secondary).padding(8) }
+                    if let source = player.currentDetails?.lyricsSource {
+                        Text(source).font(.caption).foregroundStyle(.secondary).padding(8)
+                            .accessibilityIdentifier("lyricsSource")
+                    }
                 }
             }
             .background(PlayerTheme(scheme).background)

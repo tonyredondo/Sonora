@@ -5,7 +5,7 @@ final class LyricsSynchronizationUITests: XCTestCase {
     @MainActor private func capture(_ name: String, _ app: XCUIApplication) {
         let attachment = XCTAttachment(screenshot: app.screenshot()); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
-    @MainActor private func open(_ app: XCUIApplication, filename: String, theme: String, fromLyrics: Bool = false) {
+    @MainActor private func open(_ app: XCUIApplication, filename: String, theme: String, fromLyrics: Bool = false, missingLyrics: Bool = false) {
         app.launchArguments = ["-appearance", theme, "-metadata.offline", "NO", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryL"]
         app.launch(); app.assertLibraryHome(); app.buttons["Fuentes"].tap()
         let source = app.buttons["source:Sonora Sync QA"]
@@ -15,7 +15,9 @@ final class LyricsSynchronizationUITests: XCTestCase {
             add.tap(); app.selectSyntheticFolder(["Sonora Sync QA"])
         }
         for _ in 0..<8 where !source.isHittable { app.swipeUp() }
-        XCTAssertTrue(source.waitForExistence(timeout: 15)); source.tap()
+        XCTAssertTrue(source.waitForExistence(timeout: 15))
+        app.buttons["source-options:Sonora Sync QA"].tap(); app.buttons["Actualizar fuente"].tap()
+        source.tap()
         let song = app.buttons["library-song:" + filename]
         XCTAssertTrue(song.waitForExistence(timeout: 10)); song.tap()
         app.closeMusicSource("Sonora Sync QA")
@@ -26,7 +28,7 @@ final class LyricsSynchronizationUITests: XCTestCase {
             let toggle = app.buttons["toggleArtworkLyrics"]
             if toggle.value as? String == "Ocultas" { toggle.tap() }
             app.buttons["expandLyrics"].tap()
-            let synchronize = app.buttons["synchronizeUntimedLyrics"]
+            let synchronize = app.buttons[missingLyrics ? "findMissingLyrics" : "synchronizeUntimedLyrics"]
             XCTAssertTrue(synchronize.waitForExistence(timeout: 5)); capture("synchronization-entry-noche", app); synchronize.tap()
             XCTAssertTrue(app.buttons["synchronizeLyrics"].waitForExistence(timeout: 10)); return
         }
@@ -99,6 +101,55 @@ final class LyricsSynchronizationUITests: XCTestCase {
     @MainActor private func counts() async throws -> [String: Int] {
         let (data, _) = try await URLSession.shared.data(from: XCTUnwrap(URL(string: "http://127.0.0.1:18092/__stats")))
         return try JSONDecoder().decode([String: Int].self, from: data)
+    }
+    @MainActor func testMissingLyricsTranscriptionPreviewOfflineSaveAndPersistentAttribution() async throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        open(app, filename: "03 - Sin letra IA QA.flac", theme: "noche", fromLyrics: true, missingLyrics: true)
+        XCTAssertEqual(app.buttons["synchronizeLyrics"].label, "Buscar o transcribir", "LRC information headers are not lyric text")
+        let before = try await counts()
+        app.buttons["synchronizeLyrics"].tap()
+        let source = app.staticTexts["lyricsSynchronizationSource"]
+        XCTAssertTrue(source.waitForExistence(timeout: 20)); XCTAssertEqual(source.label, "ElevenLabs · Scribe v2")
+        let attribution = app.staticTexts["transcriptionAttribution"]
+        for _ in 0..<8 where !attribution.isHittable { app.swipeUp() }
+        XCTAssertEqual(attribution.label, "Transcrita por IA · ElevenLabs")
+        capture("transcription-preview-noche", app)
+        let online = try await counts()
+        XCTAssertEqual(online["transcription"], (before["transcription"] ?? 0) + 1)
+        XCTAssertEqual(online["alignment"], before["alignment"])
+        app.navigationBars["Sincronizar letra"].buttons["Cancelar"].tap()
+        app.navigationBars["Información"].buttons["Cancelar"].tap()
+        XCTAssertTrue(app.buttons["findMissingLyrics"].waitForExistence(timeout: 10), "Cancelling must leave the original without lyrics")
+        app.buttons["Listo"].tap(); app.buttons["Cerrar reproductor"].tap(); app.terminate()
+        app.launchArguments = ["-appearance", "papel", "-metadata.offline", "YES", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch(); XCTAssertTrue(app.buttons["openNowPlaying"].waitForExistence(timeout: 15)); app.buttons["openNowPlaying"].tap()
+        app.buttons["Opciones de canción"].tap(); app.buttons["Editar información"].tap()
+        let sync = app.buttons["openLyricsSynchronization"]
+        for _ in 0..<15 where !sync.isHittable { app.swipeUp() }
+        sync.tap()
+        let search = app.buttons["synchronizeLyrics"]
+        for _ in 0..<15 where !search.isHittable { app.swipeUp() }
+        search.tap()
+        for _ in 0..<15 where !source.isHittable { app.swipeUp() }
+        XCTAssertTrue(source.waitForExistence(timeout: 20)); XCTAssertEqual(source.label, "ElevenLabs · Scribe v2")
+        for _ in 0..<15 where !attribution.isHittable { app.swipeUp() }
+        capture("transcription-offline-preview-papel-large-text", app)
+        let apply = app.buttons["applySynchronizedLyrics"]
+        for _ in 0..<15 where !apply.isHittable { app.swipeUp() }
+        apply.tap(); app.buttons["metadataSave"].tap(); app.buttons["Guardar en archivo"].tap()
+        XCTAssertTrue(app.buttons["Opciones de canción"].waitForExistence(timeout: 15))
+        app.terminate()
+        app.launchArguments = ["-appearance", "noche", "-metadata.offline", "YES", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryL"]
+        app.launch(); XCTAssertTrue(app.buttons["openNowPlaying"].waitForExistence(timeout: 15)); app.buttons["openNowPlaying"].tap()
+        XCTAssertTrue(app.staticTexts["playerLyricsAttribution"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.staticTexts["playerLyricsAttribution"].label, "Transcrita por IA · ElevenLabs")
+        capture("transcription-player-noche-after-relaunch", app)
+        app.buttons["expandLyrics"].tap()
+        XCTAssertTrue(app.buttons["lyricLine0"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.staticTexts["lyricsSource"].label, "Transcrita por IA · ElevenLabs")
+        capture("transcription-expanded-noche", app)
+        let after = try await counts(); XCTAssertEqual(after, online, "Offline preview/save/relaunch must not call either provider")
     }
     @MainActor func testUntimedLyricsScreenOpensSynchronizationForTheFixedTrack() {
         continueAfterFailure = false

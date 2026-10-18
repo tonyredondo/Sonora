@@ -24,15 +24,15 @@ struct LyricsSynchronizationView: View {
                     Text(current[.title].flatMap { $0.isEmpty ? nil : $0 } ?? track.displayName).font(.headline)
                     Text(current[.artist] ?? "").foregroundStyle(.secondary)
                     if settings.effectiveOffline { Label("Modo desconectado · Solo información guardada", systemImage: "wifi.slash") }
-                    Button(settings.effectiveOffline ? "Buscar en caché" : "Buscar y sincronizar") { start() }
+                    Button(settings.effectiveOffline ? "Buscar en caché" : (LyricsDocument(text: lyrics).lines.isEmpty ? "Buscar o transcribir" : "Buscar y sincronizar")) { start() }
                         .disabled(loading || settings.endpoint.isEmpty || LyricsDocument(text: lyrics).isTimed).accessibilityIdentifier("synchronizeLyrics")
                     NavigationLink("Configurar asistente") { MetadataConnectionView() }.disabled(loading)
-                    Text("Primero buscamos una letra compatible en LRCLIB, gratis. Si faltan los tiempos, enviamos el audio y tu letra a ElevenLabs para sincronizarlos. Ese paso consume créditos de tu cuenta. Admite canciones de hasta 10 minutos.")
+                    Text("Buscamos gratis en LRCLIB. Si hay letra, ElevenLabs sincroniza los tiempos; si no, Scribe v2 la transcribe. La IA envía el audio y consume créditos de tu cuenta. Reutilizamos la caché. Máximo: 10 minutos.")
                         .font(.footnote).foregroundStyle(.secondary)
                     if LyricsDocument(text: lyrics).isTimed {
                         Text("Esta letra ya tiene tiempos. Puedes ajustarlos en Editar letra.").font(.footnote).foregroundStyle(.secondary)
                     } else if [current[.artist], current[.album]].contains(where: { ($0 ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
-                        Text("Faltan artista o álbum para buscar una edición en LRCLIB. Puedes completarlos en Información o sincronizar directamente tu letra con ElevenLabs.")
+                        Text("Faltan artista o álbum para buscar una edición en LRCLIB. Puedes completarlos en Información o usar ElevenLabs directamente.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     if loading { ProgressView(phase).accessibilityIdentifier("lyricsSynchronizationProgress") }
@@ -40,8 +40,14 @@ struct LyricsSynchronizationView: View {
                 }
                 if let result {
                     Section("Vista previa") {
-                        Label(result.value.source == .lrclib ? "LRCLIB" : "ElevenLabs", systemImage: "quote.bubble")
+                        Label(sourceName(result.value.source), systemImage: "quote.bubble")
                             .accessibilityIdentifier("lyricsSynchronizationSource")
+                        if let attribution = LyricsDocument(text: result.value.text).attribution {
+                            Text(attribution).font(.subheadline.weight(.semibold))
+                                .accessibilityIdentifier("transcriptionAttribution")
+                            Text("La IA puede confundir palabras cantadas. Revisa la letra y los tiempos antes de guardarlos.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
                         if result.isCached { Label("Guardada para usar sin conexión", systemImage: "internaldrive") }
                         if let warning = result.warning { Text(warning).font(.footnote).foregroundStyle(.secondary) }
                         ForEach(LyricsDocument(text: result.value.text).lines) { line in
@@ -66,6 +72,13 @@ struct LyricsSynchronizationView: View {
             .onDisappear { operation?.cancel() }
         }
     }
+    private func sourceName(_ source: LyricsSynchronizationResult.Source) -> String {
+        switch source {
+        case .lrclib: "LRCLIB"
+        case .elevenlabs: "ElevenLabs"
+        case .elevenlabsTranscription: "ElevenLabs · Scribe v2"
+        }
+    }
     private func cancel() {
         operation?.cancel(); operation = nil; operationID = nil; loading = false; result = nil; issue = nil
     }
@@ -80,7 +93,7 @@ struct LyricsSynchronizationView: View {
                 let folder = try player.folderAccess(for: track)
                 let query = MetadataSearch(title: current[.title].flatMap { $0.isEmpty ? nil : $0 } ?? track.displayName, artist: (current[.artist] ?? "").trimmingCharacters(in: .whitespacesAndNewlines), album: (current[.album] ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
                 let value = try await client.synchronize(query: query, duration: snapshot.duration, lyrics: lyrics, offline: settings.effectiveOffline) {
-                    await MainActor.run { phase = "Preparando audio y sincronizando…" }
+                    await MainActor.run { phase = "Preparando audio y analizando…" }
                     return try await LyricsAudioPreparation.prepare(track: track, folder: folder, expected: snapshot.fingerprint)
                 }
                 try Task.checkCancellation()

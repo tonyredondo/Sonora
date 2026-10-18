@@ -25,9 +25,13 @@ pub(crate) struct RequestSpec {
     pub url: Url,
     pub form: Option<Vec<(String, String)>>,
     pub image: bool,
-    pub alignment: Option<crate::alignment::AlignmentInput>,
+    pub audio_job: Option<crate::audio_job::AudioJob>,
 }
 impl RequestSpec {
+    fn accepts_status(&self, status: u16) -> bool {
+        // A catalog miss is reusable; a paid-provider error is never an analysis.
+        status == 200 || (status == 404 && self.audio_job.is_none())
+    }
     fn key(&self, user_agent: &str) -> String {
         let mut hash = Sha256::new();
         hash.update(b"sonora-http-v1\0");
@@ -45,10 +49,8 @@ impl RequestSpec {
                 hash.update(value);
             }
         }
-        if let Some(input) = &self.alignment {
-            hash.update(b"\0alignment-v1\0");
-            hash.update(crate::alignment::digest(&input.audio));
-            hash.update(crate::alignment::digest(input.text.as_bytes()));
+        if let Some(input) = &self.audio_job {
+            input.update_key(&mut hash);
         }
         format!("{:x}", hash.finalize())
     }
@@ -155,7 +157,7 @@ impl Scheduler {
         })))
     }
     pub async fn fetch(&self, spec: RequestSpec, priority: Priority) -> Result<FetchResult, Error> {
-        let deadline = Duration::from_secs(if spec.alignment.is_some() {
+        let deadline = Duration::from_secs(if spec.audio_job.is_some() {
             180
         } else {
             self.0.config.network.deadline_seconds
@@ -179,6 +181,7 @@ impl Scheduler {
             .get(&key)
             .await
             .map_err(|_| Error::Cache)?
+            .filter(|e| spec.accepts_status(e.status))
             .filter(|e| e.is_fresh(unix_time()))
         {
             return Ok(FetchResult {
@@ -205,7 +208,7 @@ impl Scheduler {
                 }
                 (rx, true)
             } else {
-                let capacity = if spec.alignment.is_some() {
+                let capacity = if spec.audio_job.is_some() {
                     self.0.config.network.queue_capacity.min(4)
                 } else {
                     self.0.config.network.queue_capacity
@@ -273,10 +276,10 @@ async fn worker(
         // Keep its flight registered so a reconnect shares the same request.
         let _paid_receiver = work
             .spec
-            .alignment
+            .audio_job
             .as_ref()
             .map(|_| work.result.subscribe());
-        let result = if work.spec.alignment.is_some() {
+        let result = if work.spec.audio_job.is_some() {
             Some(
                 fetch_remote(
                     &client,
@@ -320,7 +323,11 @@ async fn fetch_remote(
     spec: &RequestSpec,
     next_start: &mut Instant,
 ) -> Result<FetchResult, Error> {
-    let stale = cache.get(key).await.map_err(|_| Error::Cache)?;
+    let stale = cache
+        .get(key)
+        .await
+        .map_err(|_| Error::Cache)?
+        .filter(|e| spec.accepts_status(e.status));
     if let Some(entry) = stale.as_ref().filter(|e| e.is_fresh(unix_time())) {
         return Ok(FetchResult {
             entry: Arc::new(entry.clone()),
@@ -332,7 +339,7 @@ async fn fetch_remote(
         .min_interval_ms
         .map(Duration::from_millis)
         .unwrap_or_else(|| spec.provider.interval());
-    let max_retries = if spec.alignment.is_some() {
+    let max_retries = if spec.audio_job.is_some() {
         0
     } else {
         config.network.max_retries
@@ -343,14 +350,7 @@ async fn fetch_remote(
     loop {
         tokio::time::sleep_until(*next_start).await;
         *next_start = Instant::now() + interval;
-        let mut request = if let Some(input) = &spec.alignment {
-            let part = reqwest::multipart::Part::bytes(input.audio.to_vec())
-                .file_name("audio.wav")
-                .mime_str("audio/wav")
-                .map_err(|_| Error::Configuration)?;
-            let form = reqwest::multipart::Form::new()
-                .part("file", part)
-                .text("text", input.text.clone());
+        let mut request = if let Some(input) = &spec.audio_job {
             client
                 .post(url.clone())
                 .header(
@@ -360,7 +360,7 @@ async fn fetch_remote(
                         .as_deref()
                         .ok_or(Error::NotConfigured(spec.provider))?,
                 )
-                .multipart(form)
+                .multipart(input.form()?)
                 .timeout(Duration::from_secs(120))
         } else if let Some(form) = &spec.form {
             client.post(url.clone()).form(form)
@@ -399,7 +399,7 @@ async fn fetch_remote(
         };
         let status = response.status();
         if status.is_redirection() && status != StatusCode::NOT_MODIFIED {
-            if spec.form.is_some() || spec.alignment.is_some() || redirects >= 4 {
+            if spec.form.is_some() || spec.audio_job.is_some() || redirects >= 4 {
                 return Err(Error::InvalidResponse(spec.provider));
             }
             let location = response
@@ -442,7 +442,7 @@ async fn fetch_remote(
             entry.stored_at = now;
             (entry, "revalidated")
         } else {
-            if status != StatusCode::OK && status != StatusCode::NOT_FOUND {
+            if !spec.accepts_status(status.as_u16()) {
                 return Err(Error::Upstream {
                     provider: spec.provider,
                     status: Some(status.as_u16()),
@@ -481,11 +481,8 @@ async fn fetch_remote(
                     let value: serde_json::Value = serde_json::from_slice(&body)
                         .map_err(|_| Error::InvalidResponse(spec.provider))?;
                     crate::providers::validate_payload(spec.provider, spec.url.path(), &value)?;
-                    if let Some(input) = &spec.alignment {
-                        body = Bytes::from(
-                            serde_json::to_vec(&input.aligned(&value)?)
-                                .map_err(|_| Error::InvalidResponse(spec.provider))?,
-                        );
+                    if let Some(input) = &spec.audio_job {
+                        body = input.derive(&value)?;
                     }
                 }
             }
@@ -506,9 +503,9 @@ async fn fetch_remote(
             settings.ttl_seconds.unwrap_or_else(|| spec.provider.ttl())
         };
         let mut entry = entry;
-        // Alignment is our derived result, keyed by immutable PCM + exact text.
+        // Audio analysis is our derived result, keyed by immutable PCM + job parameters.
         // Do not inherit upstream HTTP caching directives for this representation.
-        let lifetime = if spec.alignment.is_some() {
+        let lifetime = if spec.audio_job.is_some() {
             Some(configured_ttl)
         } else {
             entry.headers.lifetime(now, configured_ttl)

@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlparse
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--port', type=int, default=18092)
 args = parser.parse_args()
-counts = {'catalog': 0, 'alignment': 0}
+counts = {'catalog': 0, 'alignment': 0, 'transcription': 0}
 text = 'Primera línea de Sonora\nSegunda línea de Sonora'
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
@@ -36,13 +36,23 @@ class Handler(BaseHTTPRequestHandler):
                         'albumName': 'Sincronización QA', 'duration': 30, 'instrumental': False,
                         'plainLyrics': text, 'syncedLyrics': '[00:01.00]Primera línea de Sonora\n[00:08.00]Segunda línea de Sonora'})
     def do_POST(self):
-        if self.path != '/v1/forced-alignment' or self.headers.get('xi-api-key') != 'synthetic-eleven-key':
+        if self.path not in ('/v1/forced-alignment', '/v1/speech-to-text') or self.headers.get('xi-api-key') != 'synthetic-eleven-key':
             return self.reply(401, {})
         size = int(self.headers.get('Content-Length', '0'))
         if not 0 < size <= 20_000_000:
             return self.reply(413, {})
         message = BytesParser(policy=default).parsebytes(('Content-Type: ' + self.headers['Content-Type'] + '\r\n\r\n').encode() + self.rfile.read(size))
         fields = {part.get_param('name', header='content-disposition'): part.get_payload(decode=True) for part in message.iter_parts()}
+        if self.path == '/v1/speech-to-text':
+            expected = {'model_id': b'scribe_v2', 'timestamps_granularity': b'word',
+                        'tag_audio_events': b'false', 'diarize': b'false'}
+            if set(fields) != {'file', *expected} or not fields['file'].startswith(b'RIFF') or any(fields[key] != value for key, value in expected.items()):
+                return self.reply(400, {})
+            counts['transcription'] += 1
+            transcript = 'Primera\u2028frase inventada. Segunda frase inventada.'
+            return self.reply(200, {'text': transcript, 'language_code': 'spa',
+                'words': [{'text': word, 'start': 1 + (index // 3) * 7 + (index % 3) * 0.3, 'end': 1.2 + (index // 3) * 7 + (index % 3) * 0.3, 'type': 'word'}
+                          for index, word in enumerate(transcript.split())]})
         if set(fields) != {'file', 'text'} or not fields['file'].startswith(b'RIFF'):
             return self.reply(400, {})
         counts['alignment'] += 1
