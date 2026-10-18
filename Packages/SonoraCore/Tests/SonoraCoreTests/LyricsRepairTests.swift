@@ -6,6 +6,18 @@ final class LyricsRepairTests: XCTestCase {
     private func transcript(_ lrc: String, duration: Double = 8) -> LyricsTranscript {
         LyricsTranscript(plainText: LyricsDocument(text:lrc).lines.map(\.text).joined(separator:"\n"),syncedText:lrc,duration:duration)
     }
+    func testZeroDurationWordCanBeReviewedAndAppliedWithoutLosingLyrics() throws {
+        let source = LyricsTranscript(plainText:"Bright road",syncedText:"[00:01.00]Bright road",duration:8,words:[
+            .init(text:"Bright",start:1,end:1.2),.init(text:"road",start:1.3,end:1.3)
+        ])
+        let review = try LyricsRepair(original:"[00:01.00]Bright roan",transcript:source)
+        let correction = try XCTUnwrap(review.proposals.first { $0.kind == .correction })
+        XCTAssertEqual(correction.suggested,"road")
+        XCTAssertEqual(correction.start,1.3); XCTAssertEqual(correction.end,1.3)
+        let result = LyricsDocument(text:try review.applying([correction.id:.init(text:correction.suggested)]))
+        XCTAssertEqual(result.lines.map(\.text),["Bright road"])
+        XCTAssertEqual(result.lines.map(\.time),[1])
+    }
     func testCorrectionAndMissingVerseCanBeReviewedIndependently() throws {
         let original = "[ar:Example]\n[00:00.10]Bright roan\n[00:03.10]We return"
         let review = try LyricsRepair(original:original,transcript:transcript("[00:00.10]Bright road\n[00:01.40]Walk beside me\n[00:03.10]We return"))

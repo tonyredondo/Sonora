@@ -3,6 +3,7 @@ import Foundation
 /// An independent audio analysis, shared by missing-lyrics and repair flows.
 /// `words == nil` denotes a reusable older analysis with phrase timing only.
 public struct LyricsTranscript: Equatable, Sendable {
+    /// Start and end may coincide when the provider resolves a word to one instant.
     public struct Word: Codable, Equatable, Sendable {
         public let text: String
         public let start: Double
@@ -26,7 +27,7 @@ public struct LyricsTranscript: Equatable, Sendable {
             bytes += word.text.utf8.count
             guard bytes <= 262_144, !word.text.contains("\0"), !LyricsSynchronizationResult.normalized(word.text).isEmpty,
                   word.start.isFinite, word.end.isFinite, word.start >= previous,
-                  word.start >= 0, word.start <= duration, word.end > word.start, word.end <= duration + 0.05 else {
+                  word.start >= 0, word.start <= duration, word.end >= word.start, word.end <= duration + 0.05 else {
                 throw LyricsSynchronizationError.invalidAlignment
             }
             previous = word.start

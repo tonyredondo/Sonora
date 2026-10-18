@@ -95,6 +95,14 @@ async fn upstream(
             StatusCode::OK,
             r#"{"text":"Hello","words":[{"text":"Hello","type":"word","start":2.01,"end":2.02}]}"#,
         ),
+        "reversed" => (
+            StatusCode::OK,
+            r#"{"text":"Hello","words":[{"text":"Hello","type":"word","start":0.5,"end":0.4}]}"#,
+        ),
+        "instant_words" => (
+            StatusCode::OK,
+            r#"{"text":"Hello. Again!","language_code":"en","words":[{"text":"Hello.","type":"word","start":0.1,"end":0.1},{"text":"Again!","type":"word","start":1.1,"end":1.1}]}"#,
+        ),
         "unicode" => (
             StatusCode::OK,
             r#"{"text":"Árbol, luz! Árbol, luz!","language_code":"es","words":[{"text":"Árbol,","type":"word","start":0.1,"end":0.3},{"text":" ","type":"spacing","start":0.3,"end":0.4},{"text":"luz!","type":"word","start":0.4,"end":0.6},{"text":"Árbol,","type":"word","start":1.1,"end":1.3},{"text":"luz!","type":"word","start":1.4,"end":1.6}]}"#,
@@ -180,6 +188,31 @@ async fn transcription_is_deduplicated_persisted_and_reused_after_proxy_restart(
         !bytes.windows(44).any(|w| w == &wav(0)[..44]),
         "Raw audio must not be persisted"
     );
+}
+#[tokio::test]
+async fn zero_duration_words_are_preserved_and_cached() {
+    let root = TempDir::new().unwrap();
+    let (app, _, state, server) = setup(&root, "instant_words").await;
+    let response = app.clone().oneshot(upload(&wav(0))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let first = json(response).await;
+    assert_eq!(first["data"]["plain_lyrics"], "Hello.\nAgain!");
+    assert_eq!(
+        first["data"]["synced_lyrics"],
+        "[00:00.10]Hello.\n[00:01.10]Again!"
+    );
+    assert_eq!(
+        first["data"]["words"],
+        serde_json::json!([
+            {"text":"Hello.","start":0.1,"end":0.1},
+            {"text":"Again!","start":1.1,"end":1.1}
+        ])
+    );
+    let cached = json(app.oneshot(upload(&wav(0))).await.unwrap()).await;
+    assert_eq!(cached["cache"], "hit");
+    assert_eq!(cached["data"], first["data"]);
+    assert_eq!(state.hits.load(Ordering::SeqCst), 1);
+    server.abort();
 }
 #[tokio::test]
 async fn a_positive_legacy_transcription_cache_is_reused_without_word_details_or_payment() {
@@ -435,6 +468,7 @@ async fn invalid_word_times_are_rejected_and_unicode_text_is_preserved() {
     for (mode, want) in [
         ("invalid", None),
         ("invalid_start", None),
+        ("reversed", None),
         (
             "unicode",
             Some("[00:00.10]Árbol, luz!\n[00:01.10]Árbol, luz!"),

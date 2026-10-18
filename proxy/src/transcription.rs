@@ -29,6 +29,7 @@ pub struct Transcription {
 }
 
 /// Validated provider words retained for reviewing individual lyric repairs.
+/// Start and end may coincide when the provider resolves a word to one instant.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TranscriptionWord {
     pub text: String,
@@ -108,16 +109,6 @@ impl TranscriptionInput {
             }
             let token = normalized(&word.text);
             if !token.is_empty() {
-                if word.end <= word.start {
-                    tracing::warn!(
-                        validation_reason = "transcription_word_duration",
-                        word_index = index,
-                        start = word.start,
-                        end = word.end,
-                        "audio analysis rejected"
-                    );
-                    return Err(invalid());
-                }
                 let prefix_end = word.text.find(char::is_alphanumeric).ok_or_else(invalid)?;
                 words.push((
                     transcript.len(),
