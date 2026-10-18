@@ -12,6 +12,7 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 use tokio::{sync::Semaphore, task::AbortHandle};
+use tracing::Instrument;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
@@ -146,7 +147,7 @@ impl Jobs {
         let weak = Arc::downgrade(&self.0);
         let client = self.0.client.clone();
         let slots = self.0.slots.clone();
-        let task = tokio::spawn(run(weak, client, slots, id, input));
+        let task = tokio::spawn(run(weak, client, slots, id, input).in_current_span());
         if let Some(job) = state.get_mut(&id) {
             job.task = Some(task.abort_handle());
         }

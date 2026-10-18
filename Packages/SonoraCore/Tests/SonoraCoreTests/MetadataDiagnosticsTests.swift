@@ -107,6 +107,20 @@ final class MetadataDiagnosticsTests: XCTestCase {
         let result = try await transport(path).send(URLRequest(url:URL(string:"http://127.0.0.1/v1/lyrics/transcribe")!))
         XCTAssertEqual(result.status, 502)
     }
+    func testAudioErrorRetainsDomainAndUnderlyingCodesWithoutUserInfo() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:root) }
+        let privateCause = NSError(domain:"private-lyrics secret-key",code:99)
+        let underlying = NSError(domain:NSOSStatusErrorDomain,code:-54,userInfo:[NSUnderlyingErrorKey:privateCause,NSFilePathErrorKey:"/private/song.flac",NSLocalizedDescriptionKey:"private-lyrics secret-key"])
+        let error = NSError(domain:"org.sbooth.AudioEngine.AudioDecoder",code:1,userInfo:[NSUnderlyingErrorKey:underlying,NSLocalizedDescriptionKey:"private-lyrics secret-key"])
+        await MetadataDiagnostics(directory:root).recordFailure(error,stage:.lyricsLoad)
+        let log = try XCTUnwrap(records(root).first)
+        XCTAssertEqual(log["error_domain"],"org.sbooth.AudioEngine.AudioDecoder")
+        XCTAssertEqual(log["underlying_1_domain"],NSOSStatusErrorDomain)
+        XCTAssertEqual(log["underlying_1_code"],"-54")
+        XCTAssertNil(log["underlying_2_domain"])
+        for privateValue in ["/private/song.flac","private-lyrics","secret-key"] { XCTAssertFalse(String(describing:log).contains(privateValue)) }
+    }
 
     func testAnalysisFailureShowsServerCauseAndReferenceWithoutRawProviderText() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

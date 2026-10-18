@@ -27,6 +27,16 @@ final class LyricsRepairTests: XCTestCase {
         XCTAssertTrue(omitted.original.contains("Keep this chorus"))
         XCTAssertEqual(try review.applying([omitted.id:.init(text:omitted.original)]),original)
     }
+    func testRepairRetainsAutomaticTranscriptionAttribution() throws {
+        let original = LyricsDocument.aiTranscriptionMarker + "\n[00:01.00]Bright roan"
+        let review = try LyricsRepair(original:original,transcript:transcript("[00:01.00]Bright road"))
+        let proposal = try XCTUnwrap(review.proposals.first { $0.kind == .correction })
+        let written = try review.applying([proposal.id:.init(text:proposal.suggested)])
+        let document = LyricsDocument(text:written)
+        XCTAssertTrue(document.isAITranscribed && document.isAIRepaired)
+        XCTAssertEqual(document.attribution,"Transcrita por IA · ElevenLabs")
+        XCTAssertEqual(document.sliced(from:0,duration:8).attribution,document.attribution)
+    }
     func testUnrecognizedBlockCanBeAuditionedThroughItsLastOriginalLine() throws {
         let original = "[00:01.00]Bright road\n[00:05.00]Listen to this verse\n[00:14.00]It carries on for longer\n[00:30.00]We return"
         let review = try LyricsRepair(original:original,transcript:transcript("[00:01.00]Bright road\n[00:30.00]We return",duration:40))

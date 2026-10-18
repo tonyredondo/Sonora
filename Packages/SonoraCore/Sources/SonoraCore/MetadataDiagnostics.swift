@@ -70,6 +70,15 @@ public actor MetadataDiagnostics {
     private let directory: URL
     private let maxBytes: Int
     private let logger = Logger(subsystem: "com.tonyredondo.Sonora", category: "diagnostics")
+    private static let errorDomains: Set<String> = [
+        NSURLErrorDomain, NSCocoaErrorDomain, NSPOSIXErrorDomain, NSOSStatusErrorDomain,
+        "kCFErrorDomainCFNetwork", "AVFoundationErrorDomain", "com.apple.coreaudio.avfaudio",
+        "org.sbooth.AudioEngine.AudioPlayer", "org.sbooth.AudioEngine.AudioFile",
+        "org.sbooth.AudioEngine.AudioDecoder", "org.sbooth.AudioEngine.DSDDecoder",
+        "org.sbooth.AudioEngine.AudioConverter", "org.sbooth.AudioEngine.AudioExporter",
+        "org.sbooth.AudioEngine.AudioEncoder", "org.sbooth.AudioEngine.InputSource",
+        "org.sbooth.AudioEngine.OutputTarget", "org.sbooth.AudioEngine.ReplayGainAnalyzer"
+    ]
     public init(directory: URL, maxBytes: Int = 1_048_576) {
         self.directory = directory
         self.maxBytes = max(512, min(1_048_576, maxBytes))
@@ -112,9 +121,15 @@ public actor MetadataDiagnostics {
         if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String { fields["app_build"] = String(build.prefix(32)) }
         if let error {
             fields["error_type"] = String(String(reflecting: type(of: error)).prefix(160))
-            fields["error_code"] = String((error as NSError).code)
-            let domain = (error as NSError).domain
-            if [NSURLErrorDomain, NSCocoaErrorDomain, NSPOSIXErrorDomain, "kCFErrorDomainCFNetwork"].contains(domain) { fields["error_domain"] = domain }
+            var cause = error as NSError
+            // Bound nested causes and retain only known domains/numeric codes, never userInfo text.
+            for depth in 0...3 {
+                let prefix = depth == 0 ? "error" : "underlying_\(depth)"
+                fields[prefix + "_code"] = String(cause.code)
+                if Self.errorDomains.contains(cause.domain) { fields[prefix + "_domain"] = cause.domain }
+                guard let underlying = cause.userInfo[NSUnderlyingErrorKey] as? NSError else { break }
+                cause = underlying
+            }
             if error is LyricsRepairError || error is LyricsSynchronizationError || error is MetadataLookupError {
                 fields["reason"] = String(describing: error)
             }

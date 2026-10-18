@@ -6,6 +6,8 @@ The analysis error notice includes the HTTP status, available provider status/re
 
 The app retains JSONL error records inside its private container at `Library/Application Support/Sonora/Diagnostics/errors.jsonl`, with the preceding file at `errors.previous.jsonl`. Each file is capped at 1 MiB. Records survive relaunch and include the operation or repair stage, elapsed network time, typed error domain/code, validation context and request reference when available. They can be retrieved through Xcode's app-container tools or `devicectl device copy from`.
 
+Known audio and operating-system error domains include numeric codes for up to three underlying causes. Unknown domain names and error descriptions are omitted because they can contain private data.
+
 These records exclude tokens, provider keys, audio, lyrics, filenames, URL queries and raw provider messages. Logging failure leaves the original request result intact. The app does not send these log files to providers. The proxy emits matching references and technical causes to its standard output.
 
 ## Completing metadata

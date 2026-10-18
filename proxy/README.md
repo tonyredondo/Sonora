@@ -115,6 +115,8 @@ Every response includes `X-Sonora-Request-ID`. A valid client UUID is echoed; mi
 
 Failed requests are logged to standard output with their reference, method, route template, HTTP status and elapsed milliseconds. Provider failures and payload-validation stages use the same request span, including paid work that finishes after a caller disconnects. The launcher controls log retention; the existing macOS launch agent collects this output in `~/Library/Logs/SonoraProxy/stdout.log`.
 
+Background metadata jobs retain the reference of the request that created them, so provider failures can be traced after the initial response has returned.
+
 Logs exclude credentials, query strings, music tags, audio and lyrics. Provider error bodies are bounded and inspected only for allowlisted symbolic codes; their raw messages are discarded. The cache identity and paid retry policy remain unchanged.
 
 ## Verify
