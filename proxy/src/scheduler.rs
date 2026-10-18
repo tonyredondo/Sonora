@@ -28,6 +28,10 @@ pub(crate) struct RequestSpec {
     pub audio_job: Option<crate::audio_job::AudioJob>,
 }
 impl RequestSpec {
+    fn accepts_status(&self, status: u16) -> bool {
+        // A catalog miss is reusable; a paid-provider error is never an analysis.
+        status == 200 || (status == 404 && self.audio_job.is_none())
+    }
     fn key(&self, user_agent: &str) -> String {
         let mut hash = Sha256::new();
         hash.update(b"sonora-http-v1\0");
@@ -177,6 +181,7 @@ impl Scheduler {
             .get(&key)
             .await
             .map_err(|_| Error::Cache)?
+            .filter(|e| spec.accepts_status(e.status))
             .filter(|e| e.is_fresh(unix_time()))
         {
             return Ok(FetchResult {
@@ -318,7 +323,11 @@ async fn fetch_remote(
     spec: &RequestSpec,
     next_start: &mut Instant,
 ) -> Result<FetchResult, Error> {
-    let stale = cache.get(key).await.map_err(|_| Error::Cache)?;
+    let stale = cache
+        .get(key)
+        .await
+        .map_err(|_| Error::Cache)?
+        .filter(|e| spec.accepts_status(e.status));
     if let Some(entry) = stale.as_ref().filter(|e| e.is_fresh(unix_time())) {
         return Ok(FetchResult {
             entry: Arc::new(entry.clone()),
@@ -433,7 +442,7 @@ async fn fetch_remote(
             entry.stored_at = now;
             (entry, "revalidated")
         } else {
-            if status != StatusCode::OK && status != StatusCode::NOT_FOUND {
+            if !spec.accepts_status(status.as_u16()) {
                 return Err(Error::Upstream {
                     provider: spec.provider,
                     status: Some(status.as_u16()),

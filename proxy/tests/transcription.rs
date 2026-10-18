@@ -51,7 +51,7 @@ async fn upstream(
     headers: axum::http::HeaderMap,
     mut body: Multipart,
 ) -> (StatusCode, &'static str) {
-    s.hits.fetch_add(1, Ordering::SeqCst);
+    let previous_hits = s.hits.fetch_add(1, Ordering::SeqCst);
     s.started.notify_one();
     assert_eq!(headers["xi-api-key"], "synthetic-eleven-key");
     let mut fields = std::collections::BTreeMap::new();
@@ -77,6 +77,7 @@ async fn upstream(
     );
     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     match s.mode {
+        "not_found_once" if previous_hits == 0 => (StatusCode::NOT_FOUND, "{}"),
         "failure" => (StatusCode::SERVICE_UNAVAILABLE, "{}"),
         "empty" => (
             StatusCode::OK,
@@ -183,6 +184,57 @@ async fn silent_audio_result_is_cached_and_changed_audio_has_an_independent_key(
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(json(response).await["data"]["synced_lyrics"], "");
     }
+    assert_eq!(state.hits.load(Ordering::SeqCst), 2);
+    server.abort();
+}
+#[tokio::test]
+async fn paid_not_found_is_not_cached_and_manual_retry_recovers() {
+    let root = TempDir::new().unwrap();
+    let (app, config, state, server) = setup(&root, "not_found_once").await;
+    let failed = app.clone().oneshot(upload(&wav(0))).await.unwrap();
+    assert_eq!(failed.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        state.hits.load(Ordering::SeqCst),
+        1,
+        "No automatic paid retry"
+    );
+    let db = rusqlite::Connection::open(&config.cache.path).unwrap();
+    let count: u64 = db
+        .query_row("SELECT COUNT(*) FROM responses", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "Only validated audio analyses may enter the cache"
+    );
+    let recovered = app.clone().oneshot(upload(&wav(0))).await.unwrap();
+    assert_eq!(recovered.status(), StatusCode::OK);
+    let cached = app.oneshot(upload(&wav(0))).await.unwrap();
+    assert_eq!(json(cached).await["cache"], "hit");
+    assert_eq!(state.hits.load(Ordering::SeqCst), 2);
+    server.abort();
+}
+#[tokio::test]
+async fn legacy_negative_audio_cache_is_ignored_after_restart() {
+    let root = TempDir::new().unwrap();
+    let (app, config, state, server) = setup(&root, "normal").await;
+    let first = app.clone().oneshot(upload(&wav(0))).await.unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    drop(app);
+    // Simulate a still-fresh negative record produced by the older scheduler,
+    // retaining its opaque key rather than duplicating the key algorithm in this test.
+    {
+        let db = rusqlite::Connection::open(&config.cache.path).unwrap();
+        assert_eq!(
+            db.execute("UPDATE responses SET status=404, body=X'7B7D', size=2", [])
+                .unwrap(),
+            1
+        );
+    }
+    let app = sonora_proxy::api::router(config).unwrap();
+    let recovered = app.clone().oneshot(upload(&wav(0))).await.unwrap();
+    assert_eq!(recovered.status(), StatusCode::OK);
+    let cached = app.oneshot(upload(&wav(0))).await.unwrap();
+    assert_eq!(json(cached).await["cache"], "hit");
     assert_eq!(state.hits.load(Ordering::SeqCst), 2);
     server.abort();
 }
