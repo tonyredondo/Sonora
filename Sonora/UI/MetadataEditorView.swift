@@ -61,23 +61,29 @@ struct MetadataEditorView: View {
             Form {
                 if let snapshot {
                     Section {
-                        Text(lyricsOnly ? values[.title].flatMap { $0.isEmpty ? nil : $0 } ?? track.displayName : track.filename).font(.headline)
-                        if !lyricsOnly { Text(snapshot.fileDescription).foregroundStyle(.secondary) }
-                        if track.cue != nil { Label("Esta pista comparte el audio con otros temas. La información se lee del CUE; la edición del archivo compartido está desactivada.", systemImage: "lock") }
-                        else if !snapshot.canWrite { Label("Este archivo es de solo lectura o su formato no admite edición.", systemImage: "lock") }
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(lyricsOnly ? values[.title].flatMap { $0.isEmpty ? nil : $0 } ?? track.displayName : track.filename).font(.headline)
+                            if !lyricsOnly { Text(snapshot.fileDescription).font(.subheadline).foregroundStyle(.secondary) }
+                            if track.cue != nil { Label("Esta pista comparte el audio con otros temas. La información se lee del CUE; la edición del archivo compartido está desactivada.", systemImage: "lock") }
+                            else if !snapshot.canWrite { Label("Este archivo es de solo lectura o su formato no admite edición.", systemImage: "lock") }
+                            if !lyricsOnly {
+                                CompactActionRow(layout: .inline) {
+                                    Button { showAssistant = true } label: {
+                                        CompactActionLabel(title: "Completar información", icon: "magnifyingglass", caption: "Completar")
+                                    }.accessibilityIdentifier("completeMetadata")
+                                    if player.metadataArchive != nil {
+                                        Button {
+                                            do { restoreRequest = RestoreRequest(folder:try player.folderAccess(for:track)) }
+                                            catch { issue = error.localizedDescription }
+                                        } label: {
+                                            CompactActionLabel(title: "Recuperar información guardada", icon: "clock.arrow.circlepath", caption: "Recuperar")
+                                        }.accessibilityIdentifier("restoreMetadata")
+                                    }
+                                }.disabled(!snapshot.canWrite || saving || importing)
+                            }
+                        }
                     }
                     if !lyricsOnly {
-                    Section {
-                        Button { showAssistant = true } label: { Label("Completar información", systemImage: "magnifyingglass") }
-                            .accessibilityIdentifier("completeMetadata")
-                        if player.metadataArchive != nil {
-                            Button("Recuperar información guardada",systemImage:"clock.arrow.circlepath") {
-                                do { restoreRequest = RestoreRequest(folder:try player.folderAccess(for:track)) }
-                                catch { issue = error.localizedDescription }
-                            }
-                                .accessibilityIdentifier("restoreMetadata")
-                        }
-                    }.disabled(!snapshot.canWrite || saving || importing)
                     Section("Información") {
                         ForEach(MetadataField.allCases.filter { ![.lyrics, .comment].contains($0) }) { field in
                             VStack(alignment: .leading, spacing: 6) {
@@ -90,13 +96,27 @@ struct MetadataEditorView: View {
                         TextField("Comentarios", text: binding(.comment), axis: .vertical).lineLimit(2...5)
                             .accessibilityIdentifier("metadata-comment")
                     }.disabled(!snapshot.canWrite || saving)
-                    Section("Carátula") {
-                        if let image = coverPreview {
-                            Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 180).frame(maxWidth: .infinity)
+                    Section {
+                        CompactActionHeader {
+                            HStack(spacing: 12) {
+                                if let image = coverPreview {
+                                    Image(uiImage: image).resizable().scaledToFit().frame(width: 64, height: 64)
+                                }
+                                Text("Carátula").font(.headline)
+                            }
+                        } actions: {
+                            CompactActionRow(layout: .inline) {
+                                PhotosPicker(selection: $photo, matching: .images) {
+                                    CompactActionLabel(title: "Elegir carátula", icon: "photo", caption: cover == nil ? "Elegir imagen" : "Cambiar")
+                                }
+                                if cover != nil {
+                                    Button(role: .destructive) { artwork = .remove; coverPreview = nil } label: {
+                                        CompactActionLabel(title: "Quitar carátulas", icon: "trash", caption: "Quitar", destructive: true)
+                                    }
+                                }
+                            }
                         }
-                        PhotosPicker(selection: $photo, matching: .images) { Label("Elegir carátula", systemImage: "photo") }
-                        if cover != nil { Button("Quitar carátulas", role: .destructive) { artwork = .remove; coverPreview = nil } }
-                    }.disabled(!snapshot.canWrite || saving || importing)
+                    }.compactActionListRow().disabled(!snapshot.canWrite || saving || importing)
                     }
                     Section("Letra") {
                         Button(LyricsDocument(text: existingLyrics).lines.isEmpty ? "Buscar o transcribir letra" : "Sincronizar letra", systemImage: "waveform") { showLyricsSynchronization = true }
@@ -122,6 +142,7 @@ struct MetadataEditorView: View {
                     ContentUnavailableView("No se pudo abrir la información", systemImage: "exclamationmark.circle", description: Text(issue))
                 } else if issue == nil { ProgressView("Leyendo información…") }
             }
+            .compactContentSpacing()
             .safeAreaInset(edge: .bottom) {
                 if lyricsOnly, let snapshot { LyricsEditingTransport(player: player, track: track, duration: snapshot.duration, preview: { previewRequest = PreviewRequest(draft: LyricsDraft(text: existingLyrics)) }).disabled(saving) }
             }

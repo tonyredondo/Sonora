@@ -38,28 +38,47 @@ struct LyricsView: View {
     }
     private var active: Int? { isCurrent ? lyrics.activeLine(at: player.currentTime, offset: offset) : nil }
 
+    private var trackHeading: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title.isEmpty ? selectedTrack?.displayName ?? "Letra" : title).font(.headline).lineLimit(2)
+            if !artist.isEmpty { Text(artist).font(.subheadline).foregroundStyle(.secondary) }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(title.isEmpty ? selectedTrack?.displayName ?? "Letra" : title).font(.headline).lineLimit(2)
-                    if !artist.isEmpty { Text(artist).font(.subheadline).foregroundStyle(.secondary) }
-                    let layout = textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading)) : AnyLayout(HStackLayout())
-                    layout {
-                        Button { edit() } label: { Label("Editar texto", systemImage: "pencil").fixedSize(horizontal: false, vertical: true).frame(minHeight: 44) }.accessibilityIdentifier("editLyricsText")
-                        if !lyrics.lines.isEmpty {
-                            Button { openRepair() } label: { Label("Reparar y completar", systemImage: "text.badge.checkmark").fixedSize(horizontal: false, vertical: true).frame(minHeight: 44) }
-                                .accessibilityIdentifier("repairLyrics")
+                    if lyrics.lines.isEmpty {
+                        CompactActionHeader {
+                            trackHeading
+                        } actions: {
+                            CompactActionRow(layout: .inline) {
+                                Button { edit() } label: { CompactActionLabel(title: "Editar texto", icon: "pencil", caption: "Editar") }
+                                    .accessibilityIdentifier("editLyricsText")
+                            }.disabled(selectedTrack == nil)
                         }
-                    }.buttonStyle(.bordered).disabled(selectedTrack == nil)
-                    if !lyrics.lines.isEmpty {
-                        Button(lyrics.isTimed ? "Sincronizar de nuevo" : "Sincronizar letra", systemImage: "waveform") { edit(synchronize: true) }
-                            .frame(minHeight: 44).accessibilityIdentifier("synchronizeUntimedLyrics")
-                    }
-                    if lyrics.isTimed {
-                        if isCurrent { Toggle("Seguir canción", isOn: $autoScroll) }
-                        Button("Ajustar tiempos", systemImage: "clock") { adjusting = true }.frame(minHeight: 44)
+                    } else {
+                        trackHeading
+                        CompactActionRow {
+                            Button { edit() } label: { CompactActionLabel(title: "Editar texto", icon: "pencil", caption: "Editar") }
+                                .accessibilityIdentifier("editLyricsText")
+                            Button { openRepair() } label: { CompactActionLabel(title: "Reparar y completar", icon: "text.badge.checkmark", caption: "Reparar") }
+                                .accessibilityIdentifier("repairLyrics")
+                            Button { edit(synchronize: true) } label: {
+                                CompactActionLabel(title: lyrics.isTimed ? "Sincronizar de nuevo" : "Sincronizar letra", icon: "waveform", caption: "Sincronizar")
+                            }.accessibilityIdentifier("synchronizeUntimedLyrics")
+                            if lyrics.isTimed {
+                                if isCurrent {
+                                    Toggle(isOn: $autoScroll) {
+                                        CompactActionLabel(title: "Seguir canción", icon: autoScroll ? "arrow.down.square.fill" : "arrow.down.square", caption: "Seguir", prominent: autoScroll)
+                                    }.toggleStyle(.button).accessibilityIdentifier("followLyrics")
+                                }
+                                Button { adjusting = true } label: { CompactActionLabel(title: "Ajustar tiempos", icon: "clock", caption: "Tiempos") }
+                                    .accessibilityIdentifier("adjustLyricsTiming")
+                            }
+                        }.disabled(selectedTrack == nil)
                     }
                 }.padding(.horizontal).padding(.vertical, 12)
                 }

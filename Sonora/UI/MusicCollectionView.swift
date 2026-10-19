@@ -60,12 +60,12 @@ struct ArtistCollectionView: View {
             Section {
                 CompactActionRow {
                     Button { player.playSongs(artist.songIDs) } label: { CompactActionLabel(title: "Reproducir", icon: "play.fill", prominent: true) }
-                    Button { editing = true } label: { CompactActionLabel(title: "Editar artista", icon: "pencil") }
+                    Button { editing = true } label: { CompactActionLabel(title: "Editar artista", icon: "pencil", caption: "Editar") }
                         .accessibilityIdentifier("editArtist")
-                    Button { showingSongs = true } label: { CompactActionLabel(title: "Todas las canciones", icon: "music.note.list") }
+                    Button { showingSongs = true } label: { CompactActionLabel(title: "Todas las canciones", icon: "music.note.list", caption: "Canciones") }
                         .accessibilityIdentifier("artistSongs")
                 }
-            }
+            }.compactActionListRow()
             Section("Discografía local") {
                 ForEach(albums) { album in
                     NavigationLink { CollectionSongList(player: player, title: album.title, ids: album.songIDs, group: album, albumGroup: true) } label: {
@@ -77,6 +77,7 @@ struct ArtistCollectionView: View {
                 }
             }
         }
+        .compactContentSpacing()
         .navigationTitle(artistTitle)
         .navigationDestination(isPresented: $showingSongs) { CollectionSongList(player: player, title: artistTitle, ids: artist.songIDs) }
         .sheet(isPresented: $editing) {

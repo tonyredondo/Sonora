@@ -16,6 +16,7 @@ struct CollectionSongList: View {
     var group: CollectionGroup? = nil
     var albumGroup = false
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var scheme
     @State private var query = ""
     @State private var selection: Set<String> = []
     @State private var editMode: EditMode = .inactive
@@ -54,7 +55,7 @@ struct CollectionSongList: View {
                     } else if !songs.isEmpty || sourceID != nil {
                         collectionActions
                     }
-                }
+                }.compactActionListRow()
             }
             ForEach(songs) { song in
                 Group {
@@ -69,6 +70,7 @@ struct CollectionSongList: View {
             if songs.isEmpty { ContentUnavailableView("Sin canciones", systemImage: "music.note", description: Text(query.isEmpty ? (playlistID != nil ? "Pulsa + para elegir música de tu biblioteca." : "Esta colección todavía no tiene canciones.") : "No hay resultados para esta búsqueda.")) }
             if editMode.isEditing { Text("Selecciona canciones para añadirlas a una playlist, ponerlas en cola o editar su información en conjunto.").font(.footnote).foregroundStyle(.secondary) }
         }
+        .compactContentSpacing()
         .accessibilityIdentifier("collectionSongs")
         .environment(\.editMode, $editMode)
         .navigationTitle(playlistID.flatMap { id in library.state.playlists.first { $0.id == id }?.name } ?? displayedTitle)
@@ -98,7 +100,11 @@ struct CollectionSongList: View {
                         Button("Seleccionar todo") { selection = Set(songs.map(\.id)) }
                     }
                     CompactActionRow { selectionActions }
-                }.padding().background(.bar)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 20)
+                .background(PlayerTheme(scheme).background)
             }
         }
         .sheet(item: $metadataSelection) { selected in
@@ -131,16 +137,16 @@ struct CollectionSongList: View {
         }
     }
     private var collectionActions: some View {
-        CompactActionRow {
+        CompactActionRow(layout: songs.isEmpty ? .inline : .icons) {
             if !songs.isEmpty { playbackActions }
             if albumGroup, !songs.isEmpty {
                 Button {
                     metadataSelection = MetadataSelection(tracks: activeIDs.compactMap { library.state.songs[$0]?.audioTrack }, context: .album(displayedTitle))
-                } label: { CompactActionLabel(title: "Editar álbum", icon: "pencil") }
+                } label: { CompactActionLabel(title: "Editar álbum", icon: "pencil", caption: "Editar") }
                     .accessibilityIdentifier("editAlbum")
             }
             if sourceID != nil {
-                Button { browsingFiles = true } label: { CompactActionLabel(title: "Explorar archivos", icon: "folder") }
+                Button { browsingFiles = true } label: { CompactActionLabel(title: "Explorar archivos", icon: "folder", caption: "Archivos") }
                     .accessibilityIdentifier("browseSourceFiles")
             }
             if !songs.isEmpty {
@@ -150,9 +156,9 @@ struct CollectionSongList: View {
         }
     }
     private var playlistActions: some View {
-        CompactActionRow {
+        CompactActionRow(layout: songs.isEmpty ? .inline : .icons) {
             if !songs.isEmpty { playbackActions }
-            Button { pickingSongs = true } label: { CompactActionLabel(title: "Añadir canciones", icon: "plus") }
+            Button { pickingSongs = true } label: { CompactActionLabel(title: "Añadir canciones", icon: "plus", caption: "Añadir") }
                 .accessibilityIdentifier("addPlaylistSongs")
             Menu {
                 if !songs.isEmpty {
@@ -166,7 +172,7 @@ struct CollectionSongList: View {
                 }
                 Divider()
                 Button("Eliminar playlist", role: .destructive) { deletingPlaylist = true }
-            } label: { CompactActionLabel(title: "Gestionar lista", icon: "ellipsis") }
+            } label: { CompactActionLabel(title: "Gestionar lista", icon: "ellipsis", caption: "Más") }
                 .accessibilityIdentifier("managePlaylist")
         }
     }
@@ -189,9 +195,9 @@ struct CollectionSongList: View {
         Group {
             Button {
                 metadataSelection = MetadataSelection(tracks: selectedIDs.compactMap { library.state.songs[$0]?.audioTrack })
-            } label: { CompactActionLabel(title: "Editar información", icon: "pencil") }
+            } label: { CompactActionLabel(title: "Editar información", icon: "pencil", caption: "Editar") }
                 .accessibilityIdentifier("editSelectedSongs")
-            Button { addToPlaylist = true } label: { CompactActionLabel(title: "Añadir a lista", icon: "music.note.list") }
+            Button { addToPlaylist = true } label: { CompactActionLabel(title: "Añadir a lista", icon: "music.note.list", caption: "A lista") }
                 .accessibilityIdentifier("addSelectedToPlaylist")
             Menu {
                 Button("Reproducir a continuación") { player.enqueueSongs(selectedIDs, playNext: true) }

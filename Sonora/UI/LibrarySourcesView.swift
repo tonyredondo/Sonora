@@ -18,12 +18,6 @@ struct LibrarySourcesView: View {
         NavigationStack {
             List {
                 Section {
-                    CompactActionRow {
-                        Button { addMusic = true } label: { CompactActionLabel(title: "Añadir música", icon: "plus") }
-                        Button { showingCopies = true } label: { CompactActionLabel(title: "Copias en Sonora", icon: "internaldrive") }
-                    }
-                }
-                Section {
                     ForEach(library.state.sources) { source in
                         HStack {
                             NavigationLink {
@@ -57,7 +51,15 @@ struct LibrarySourcesView: View {
                                 .accessibilityIdentifier("source-options:" + source.name)
                         }
                     }
-                } header: { Text("Carpetas de música") }
+                } header: {
+                    VStack(alignment: .leading, spacing: 12) {
+                        CompactActionRow(layout: .inline) {
+                            Button { addMusic = true } label: { CompactActionLabel(title: "Añadir música", icon: "plus", caption: "Añadir") }
+                            Button { showingCopies = true } label: { CompactActionLabel(title: "Copias en Sonora", icon: "internaldrive", caption: "Copias") }
+                        }
+                        Text("Carpetas de música")
+                    }.textCase(nil)
+                }
                 footer: { Text("La biblioteca reúne la música de todas tus fuentes, incluidas sus subcarpetas. Puedes usar carpetas de Archivos, iCloud Drive y copias guardadas en Sonora.") }
                 if library.state.sources.isEmpty {
                     ContentUnavailableView("Sin fuentes", systemImage: "folder", description: Text("Añade una carpeta o un enlace para empezar a llenar tu biblioteca."))
@@ -78,6 +80,7 @@ struct LibrarySourcesView: View {
                 if library.isIndexing { Section { ProgressView("Leyendo información · \(library.progress)") } }
                 if let issue = player.issue { Section { Text(issue); Button("Cerrar aviso") { player.issue = nil } } }
             }
+            .compactContentSpacing()
             .navigationTitle("Fuentes")
             .navigationDestination(isPresented: $showingCopies) { LocalMusicView(player: player) }
             .disabled(player.isDeletingFiles)

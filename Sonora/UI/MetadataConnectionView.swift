@@ -32,10 +32,15 @@ struct MetadataConnectionView: View {
                     .accessibilityIdentifier("metadataToken")
                 Text("Usa el token de tu servidor Sonora. Las claves de AcoustID y ElevenLabs se configuran en el servidor.")
                     .font(.footnote).foregroundStyle(.secondary)
-                Button("Guardar conexión") { save() }.accessibilityIdentifier("saveMetadataConnection")
-                Button("Comprobar conexión") { verify() }
-                    .disabled(checking || settings.effectiveOffline || unsaved)
-                    .accessibilityIdentifier("testMetadataConnection")
+                CompactActionRow(layout: .inline) {
+                    Button { save() } label: {
+                        CompactActionLabel(title: "Guardar conexión", icon: "square.and.arrow.down", caption: "Guardar")
+                    }.accessibilityIdentifier("saveMetadataConnection")
+                    Button { verify() } label: {
+                        CompactActionLabel(title: "Comprobar conexión", icon: "network", caption: "Comprobar")
+                    }.disabled(checking || settings.effectiveOffline || unsaved)
+                        .accessibilityIdentifier("testMetadataConnection")
+                }
                 if unsaved { Text("Guarda la conexión para comprobarla.").font(.footnote).foregroundStyle(.secondary) }
                 if checking { ProgressView("Comprobando…") }
                 if let message { Text(message).font(.footnote).accessibilityIdentifier("metadataConnectionMessage") }

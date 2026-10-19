@@ -65,13 +65,19 @@ struct LinkImportStatusView: View {
                     } else { ProgressView() }
                 }.padding(.vertical, 4)
             }
-            if imports.canRetry {
-                Button("Reintentar importación", systemImage: "arrow.clockwise") { imports.retry() }
-                    .accessibilityIdentifier("retryLinkImport")
-            }
-            if imports.canCancel {
-                Button(imports.canRetry ? "Descartar importación" : "Cancelar importación", role: .cancel) { imports.cancel() }
-                    .accessibilityIdentifier("cancelLinkImport")
+            if imports.canRetry || imports.canCancel {
+                CompactActionRow(layout: .inline) {
+                    if imports.canRetry {
+                        Button { imports.retry() } label: {
+                            CompactActionLabel(title: "Reintentar importación", icon: "arrow.clockwise", caption: "Reintentar")
+                        }.accessibilityIdentifier("retryLinkImport")
+                    }
+                    if imports.canCancel {
+                        Button(role: .cancel) { imports.cancel() } label: {
+                            CompactActionLabel(title: imports.canRetry ? "Descartar importación" : "Cancelar importación", icon: "xmark", caption: imports.canRetry ? "Descartar" : "Cancelar")
+                        }.accessibilityIdentifier("cancelLinkImport")
+                    }
+                }
             }
         }
         if let issue = imports.issue {

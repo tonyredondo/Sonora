@@ -78,17 +78,34 @@ struct BulkMetadataEditorView: View {
                             }
                         }.disabled(saving || result != nil)
                     }
-                    Section("Carátula común") {
+                    Section {
                         if importingArtwork { ProgressView("Preparando carátula") }
-                        PhotosPicker(selection: $photo, matching: .images) { Label("Elegir carátula para todas", systemImage: "photo") }
-                        if case .replace(let data) = artwork, let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 160) }
-                        Button("Quitar carátulas de todas", role: .destructive) { artwork = .remove }
-                        if artwork != .keep { Button("Conservar las carátulas actuales") { artwork = .keep } }
-                    }.disabled(saving || importingArtwork || result != nil)
+                        CompactActionHeader {
+                            HStack(spacing: 12) {
+                                if case .replace(let data) = artwork, let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFit().frame(width: 64, height: 64) }
+                                Text("Carátula común").font(.headline)
+                            }
+                        } actions: {
+                            CompactActionRow(layout: artwork == .keep ? .inline : .icons) {
+                                PhotosPicker(selection: $photo, matching: .images) {
+                                    CompactActionLabel(title: "Elegir carátula para todas", icon: "photo", caption: "Elegir")
+                                }
+                                Button(role: .destructive) { artwork = .remove } label: {
+                                    CompactActionLabel(title: "Quitar carátulas de todas", icon: "trash", caption: "Quitar", destructive: true)
+                                }
+                                if artwork != .keep {
+                                    Button { artwork = .keep } label: {
+                                        CompactActionLabel(title: "Conservar las carátulas actuales", icon: "arrow.uturn.backward", caption: "Conservar")
+                                    }
+                                }
+                            }
+                        }
+                    }.compactActionListRow().disabled(saving || importingArtwork || result != nil)
                 }
                 if !blocked.isEmpty { Section("Sin permiso de escritura") { ForEach(blocked, id: \.self) { Text($0) }; Text("Selecciona únicamente los archivos compatibles para editarlos.").font(.footnote) } }
                 if let issue { Text(issue).foregroundStyle(.red) }
             }
+            .compactContentSpacing()
             .navigationTitle(context.title).navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button(result == nil ? "Cancelar" : "Listo") { if changed { confirmDiscard = true } else { dismiss() } }.disabled(saving || importingArtwork) }

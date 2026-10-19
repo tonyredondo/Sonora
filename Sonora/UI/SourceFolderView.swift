@@ -31,20 +31,18 @@ struct SourceFolderView: View {
         let songs = songs
         let playable = Set(songs.map(\.relativePath))
         List {
-            if !songs.isEmpty {
-                Section {
-                    CompactActionRow {
-                        Button { player.playSongs(songs.map(\.id)) } label: { CompactActionLabel(title: "Reproducir carpeta", icon: "play.fill", prominent: true) }
-                        Button { player.enqueueSongs(songs.map(\.id), playNext: false) } label: { CompactActionLabel(title: "Añadir carpeta a la cola", icon: "text.badge.plus") }
-                    }
-                }
-            }
             if loading { ProgressView("Leyendo archivos…") }
             if let message = issue ?? player.issue {
                 Section {
                     Text(message).accessibilityIdentifier("sourceFilesError")
-                    Button("Volver a cargar") { issue = nil; player.issue = nil; Task { await reload() } }
-                    Button("Cerrar aviso") { issue = nil; player.issue = nil }
+                    CompactActionRow(layout: .inline) {
+                        Button { issue = nil; player.issue = nil; Task { await reload() } } label: {
+                            CompactActionLabel(title: "Volver a cargar", icon: "arrow.clockwise", caption: "Reintentar")
+                        }
+                        Button { issue = nil; player.issue = nil } label: {
+                            CompactActionLabel(title: "Cerrar aviso", icon: "xmark", caption: "Cerrar")
+                        }
+                    }
                 }
             }
             Section {
@@ -77,9 +75,21 @@ struct SourceFolderView: View {
                 if entries.isEmpty && !loading && issue == nil {
                     ContentUnavailableView("Carpeta vacía", systemImage: "folder", description: Text("No hay archivos en esta carpeta."))
                 }
-            } header: { Text("Archivos") }
+            } header: {
+                CompactActionHeader {
+                    Text("Archivos")
+                } actions: {
+                    if !songs.isEmpty {
+                        CompactActionRow(layout: .inline) {
+                            Button { player.playSongs(songs.map(\.id)) } label: { CompactActionLabel(title: "Reproducir carpeta", icon: "play.fill", caption: "Reproducir", prominent: true) }
+                            Button { player.enqueueSongs(songs.map(\.id), playNext: false) } label: { CompactActionLabel(title: "Añadir carpeta a la cola", icon: "text.badge.plus", caption: "A la cola") }
+                        }
+                    }
+                }.textCase(nil)
+            }
             footer: { Text("Puedes borrar archivos y subcarpetas desde sus opciones o deslizando su fila.") }
         }
+        .compactContentSpacing()
         .disabled(player.isDeletingFiles)
         .overlay { if player.isDeletingFiles { ProgressView("Eliminando y actualizando biblioteca…").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16)) } }
         .navigationTitle(title)

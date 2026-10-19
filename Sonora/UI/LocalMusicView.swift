@@ -9,6 +9,7 @@ struct LocalMusicView: View {
     @State private var browsingSource: String?
     @State private var showFiles = false
     @Environment(\.scenePhase) private var phase
+    @ScaledMetric(relativeTo: .body) private var copyDetailsWidth = 120
     private var imports: LocalImportController { player.localImports }
     var body: some View {
         List {
@@ -31,29 +32,17 @@ struct LocalMusicView: View {
             if let issue = imports.issue { Section { Text(issue); Button("Cerrar aviso") { imports.issue = nil } } }
             Section("Disponibles sin conexión") {
                 ForEach(imports.copies) { copy in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(copy.name).font(.headline).accessibilityIdentifier("localCopyName:" + copy.id)
-                        Text("\(copy.files) archivos · \(ByteCountFormatter.string(fromByteCount: copy.bytes, countStyle: .file))").font(.caption).foregroundStyle(.secondary)
-                        CompactActionRow {
-                            Button { player.chooseFolder(imports.musicURL(copy), name: copy.name + " · Local") } label: {
-                                CompactActionLabel(title: "Reproducir", icon: "play.fill", prominent: true)
-                            }.accessibilityIdentifier("playLocalCopy:" + copy.id)
-                            Button {
-                                removing = true
-                                Task {
-                                    defer { removing = false }
-                                    do {
-                                        if player.library.sourceID(matching: imports.musicURL(copy)) == nil { try await imports.include(copy, library: player.library) }
-                                        browsingSource = player.library.sourceID(matching: imports.musicURL(copy)); showFiles = browsingSource != nil
-                                    } catch { imports.issue = error.localizedDescription }
-                                }
-                            } label: { CompactActionLabel(title: "Explorar archivos", icon: "folder") }
-                                .accessibilityIdentifier("browseLocalCopy:" + copy.id)
-                            Button(role: .destructive) { deleting = copy } label: {
-                                CompactActionLabel(title: "Eliminar copia de Sonora", icon: "trash", destructive: true)
-                            }.accessibilityIdentifier("deleteLocalCopy:" + copy.id)
-                        }.disabled(imports.isImporting || removing || player.isDeletingFiles)
-                    }.padding(.vertical, 6)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 12) {
+                            copyDetails(copy)
+                                .frame(minWidth: copyDetailsWidth, idealWidth: copyDetailsWidth, maxWidth: .infinity, alignment: .leading)
+                            copyActions(copy).fixedSize(horizontal: true, vertical: false)
+                        }
+                        VStack(alignment: .leading, spacing: 8) {
+                            copyDetails(copy)
+                            copyActions(copy)
+                        }
+                    }.padding(.vertical, 4)
                 }
                 if imports.copies.isEmpty { Text("Todavía no has importado carpetas. Tus fuentes de Archivos siguen disponibles en la biblioteca.").foregroundStyle(.secondary) }
             }
@@ -80,4 +69,35 @@ struct LocalMusicView: View {
         .navigationDestination(isPresented: $showFiles) { if let browsingSource { SourceFolderView(player: player, sourceID: browsingSource) } }
         .onChange(of: phase) { if phase == .background { imports.cancel() } }
     }
+
+    private func copyDetails(_ copy: ImportedMusicRecord) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(copy.name).font(.headline).accessibilityIdentifier("localCopyName:" + copy.id)
+            Text("\(copy.files) archivos · \(ByteCountFormatter.string(fromByteCount: copy.bytes, countStyle: .file))")
+                .font(.caption).foregroundStyle(.secondary)
+        }.fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func copyActions(_ copy: ImportedMusicRecord) -> some View {
+        CompactActionRow {
+            Button { player.chooseFolder(imports.musicURL(copy), name: copy.name + " · Local") } label: {
+                CompactActionLabel(title: "Reproducir", icon: "play.fill", prominent: true)
+            }.accessibilityIdentifier("playLocalCopy:" + copy.id)
+            Button {
+                removing = true
+                Task {
+                    defer { removing = false }
+                    do {
+                        if player.library.sourceID(matching: imports.musicURL(copy)) == nil { try await imports.include(copy, library: player.library) }
+                        browsingSource = player.library.sourceID(matching: imports.musicURL(copy)); showFiles = browsingSource != nil
+                    } catch { imports.issue = error.localizedDescription }
+                }
+            } label: { CompactActionLabel(title: "Explorar archivos", icon: "folder", caption: "Archivos") }
+                .accessibilityIdentifier("browseLocalCopy:" + copy.id)
+            Button(role: .destructive) { deleting = copy } label: {
+                CompactActionLabel(title: "Eliminar copia de Sonora", icon: "trash", caption: "Eliminar", destructive: true)
+            }.accessibilityIdentifier("deleteLocalCopy:" + copy.id)
+        }.disabled(imports.isImporting || removing || player.isDeletingFiles)
+    }
+
 }

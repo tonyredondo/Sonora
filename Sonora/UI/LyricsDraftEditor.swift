@@ -202,14 +202,20 @@ struct LyricsPhraseEditor: View {
                 Section("Frase") { TextField("Texto de la frase", text: $text, axis: .vertical).lineLimit(2...6).accessibilityIdentifier("draftPhraseText") }
                 Section("Inicio") {
                     TextField("mm:ss.mmm o segundos", text: $start).keyboardType(.numbersAndPunctuation).accessibilityIdentifier("draftPhraseTime")
-                    HStack {
-                        Button("−0,1 s") { setTime(max(0, (seconds ?? 0) - 0.1)) }.frame(minHeight: 44)
-                        Spacer()
-                        Button("+0,1 s") { setTime(min(max(0, duration - 0.001), (seconds ?? 0) + 0.1)) }.frame(minHeight: 44)
-                    }.buttonStyle(.bordered)
-                    Button("Usar posición de reproducción") { setTime(max(0, player.currentTime - offset)) }.disabled(!player.isEditingTrackCurrent(track))
-                    Button("Escuchar desde este inicio", systemImage: "play.circle") { if let seconds { player.playForLyricsEditing(track, at: max(0, seconds + offset - 0.5)) } }
-                        .disabled(seconds.map { !$0.isFinite || $0 < 0 || $0 >= duration } ?? true)
+                    CompactActionRow {
+                        Button { setTime(max(0, (seconds ?? 0) - 0.1)) } label: {
+                            CompactActionLabel(title: "Adelantar una décima", icon: "minus", caption: "−0,1 s")
+                        }
+                        Button { setTime(min(max(0, duration - 0.001), (seconds ?? 0) + 0.1)) } label: {
+                            CompactActionLabel(title: "Retrasar una décima", icon: "plus", caption: "+0,1 s")
+                        }
+                        Button { setTime(max(0, player.currentTime - offset)) } label: {
+                            CompactActionLabel(title: "Usar posición de reproducción", icon: "scope", caption: "Ahora")
+                        }.disabled(!player.isEditingTrackCurrent(track))
+                        Button { if let seconds { player.playForLyricsEditing(track, at: max(0, seconds + offset - 0.5)) } } label: {
+                            CompactActionLabel(title: "Escuchar desde este inicio", icon: "play.fill", caption: "Escuchar")
+                        }.disabled(seconds.map { !$0.isFinite || $0 < 0 || $0 >= duration } ?? true)
+                    }
                     Text("Puedes dejar un inicio pendiente en el borrador. Para guardar una letra sincronizada, todas sus frases necesitan un tiempo.").font(.footnote).foregroundStyle(.secondary)
                 }
                 if let issue { Text(issue).foregroundStyle(.red) }

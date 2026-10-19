@@ -26,7 +26,9 @@ struct VolumeAnalysisView: View {
                 } footer: { Text("iCloud requiere descargar los archivos. El análisis se detiene al cerrar esta pantalla o salir de la app.") }
 
                 Section {
-                    Text(session.status).font(.headline).accessibilityIdentifier("volumeStatus")
+                    if session.isLoading || session.isWorking {
+                        Text(session.status).font(.headline).accessibilityIdentifier("volumeStatus")
+                    }
                     if session.isLoading { ProgressView("Buscando resultados guardados…") }
                     else if session.isWorking {
                         ProgressView(value: session.progress) {
@@ -36,11 +38,20 @@ struct VolumeAnalysisView: View {
                         Button(session.isSaving ? "Cancelar guardado" : "Cancelar análisis", role: .cancel) { session.cancel() }
                             .disabled(session.cancellationRequested)
                     } else {
-                        Button("Analizar", systemImage: "waveform") { session.start() }
-                            .accessibilityIdentifier("volumeAnalyze")
-                            .disabled(session.targets.isEmpty || player.volumeAnalysis.issue != nil)
-                        if !session.results.isEmpty {
-                            Button("Volver a analizar todos") { session.start(force: true) }.disabled(player.volumeAnalysis.issue != nil)
+                        CompactActionHeader {
+                            Text(session.status).font(.headline).accessibilityIdentifier("volumeStatus")
+                        } actions: {
+                            CompactActionRow(layout: .inline) {
+                                Button { session.start() } label: {
+                                    CompactActionLabel(title: "Analizar", icon: "waveform")
+                                }.accessibilityIdentifier("volumeAnalyze")
+                                    .disabled(session.targets.isEmpty || player.volumeAnalysis.issue != nil)
+                                if !session.results.isEmpty {
+                                    Button { session.start(force: true) } label: {
+                                        CompactActionLabel(title: "Volver a analizar todos", icon: "arrow.clockwise", caption: "Reanalizar")
+                                    }.disabled(player.volumeAnalysis.issue != nil)
+                                }
+                            }
                         }
                     }
                     if session.analyzedCount + session.reusedCount > 0 {
@@ -95,6 +106,7 @@ struct VolumeAnalysisView: View {
                 }
             }
             .scrollContentBackground(.hidden).background(theme.background).tint(theme.accent)
+            .compactContentSpacing()
             .navigationTitle("Analizar volumen").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { session.cancel(); dismiss() } } }
             .confirmationDialog("Guardar etiquetas ReplayGain", isPresented: $confirmSave, titleVisibility: .visible) {
