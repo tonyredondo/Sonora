@@ -79,6 +79,35 @@ final class MusicToolsUITests: XCTestCase {
         XCTAssertTrue(app.buttons["openDraftPreview"].isHittable)
         capture("editor-audio-tools-compact", app)
     }
+    @MainActor func testMarkerAuditionStartsPausedPlayback() {
+        let app = openPlayer()
+        app.buttons["openAudioTools"].tap()
+        app.buttons["openSongAnalysis"].tap()
+        XCTAssertTrue(app.staticTexts["songBPM"].waitForExistence(timeout: 45))
+        let transport = app.buttons["draftPlayback"]
+        let waveform = app.descendants(matching: .any).matching(identifier: "songWaveform").allElementsBoundByIndex.first(where: \.isHittable)
+        guard let waveform else { return XCTFail("Analysis waveform is missing") }
+        waveform.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)).tap()
+        XCTAssertEqual(transport.label, "Reproducir previsualización", "Scrubbing should preserve paused playback")
+        app.buttons["addSongMarker"].tap()
+        let suffix = " Audition QA " + String(UUID().uuidString.prefix(8))
+        let name = app.textFields["markerName"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5)); name.tap(); name.typeText(suffix)
+        let title = "Marcador" + suffix
+        app.navigationBars["Marcador"].buttons["Guardar"].tap()
+        let audition = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Escuchar \(title),")).firstMatch
+        for _ in 0..<6 where !audition.isHittable { app.swipeUp() }
+        XCTAssertTrue(audition.isHittable)
+        audition.tap()
+        let playing = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Pausar previsualización"), object: transport)
+        let outcome = XCTWaiter.wait(for: [playing], timeout: 5)
+        capture("marker-audition-playback", app)
+        if transport.label == "Pausar previsualización" { transport.tap() }
+        // Remove only this test's marker, including when the audition assertion fails.
+        audition.swipeLeft()
+        app.buttons["Eliminar"].firstMatch.tap()
+        XCTAssertEqual(outcome, .completed, "The marker's Escuchar action must start playback from its saved position")
+    }
     @MainActor func testAudioToolsInLightAndLargeText() {
         let app = openPlayer(theme: "papel", large: true)
         app.buttons["openAudioTools"].tap()

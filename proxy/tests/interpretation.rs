@@ -122,6 +122,48 @@ async fn cancellation_stops_owned_child_and_releases_queue() {
     stub(tmp.path(), false);
     assert!(service.interpret(input("es")).await.is_ok());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_process_output_is_not_cached_and_can_be_retried() {
+    for suffix in [
+        "print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'not JSON'}}))",
+        "print(json.dumps({'type':'turn.failed','error':{'message':'usage_limit_reached'}}))",
+        "print('x' * 1_048_577)",
+        "sys.exit(1)",
+    ] {
+        let tmp = TempDir::new().unwrap();
+        let binary = stub(tmp.path(), false);
+        let script = std::fs::read_to_string(&binary).unwrap();
+        std::fs::write(&binary, format!("{script}\n{suffix}\n")).unwrap();
+        let service = InterpretationService::new(
+            CodexConfig {
+                enabled: true,
+                binary,
+            },
+            cache(tmp.path()),
+        );
+        let failed = tokio::time::timeout(Duration::from_secs(5), service.interpret(input("es")))
+            .await
+            .expect("Invalid output must not leave the worker blocked");
+        assert!(failed.is_err());
+        stub(tmp.path(), false);
+        let value = tokio::time::timeout(Duration::from_secs(5), service.interpret(input("es")))
+            .await
+            .expect("The worker must accept a retry")
+            .unwrap();
+        assert_eq!(value.explanation, "Interpretation in es");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            2,
+            "An earlier valid message from a failed process must never be cached"
+        );
+    }
+}
+
 #[tokio::test]
 async fn api_authentication_and_disabled_state_do_not_start_codex() {
     let tmp = TempDir::new().unwrap();

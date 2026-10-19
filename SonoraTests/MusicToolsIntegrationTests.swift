@@ -85,6 +85,34 @@ final class MusicToolsIntegrationTests: XCTestCase {
         XCTAssertFalse(player.isPlaying, "Opening tools and saving annotations must keep paused playback paused")
     }
 
+    @MainActor func testAnalysisKeepsCueSegmentsAndAnnotationsSeparate() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = try fixture(root), folder = try ScopedFolder(root), fingerprint = try FileFingerprint(url)
+        let sheet = """
+        FILE "pulse.wav" WAVE
+        TRACK 01 AUDIO
+        INDEX 01 00:00:00
+        TRACK 02 AUDIO
+        INDEX 01 00:08:00
+        """
+        let tracks = try CueSheet.tracks(data: Data(sheet.utf8), sheetPath: "pulse.cue", availablePaths: ["pulse.wav"])
+        let cache = MusicToolsCache(root: root.appendingPathComponent("derived")), store = MusicToolsStore(cache: cache)
+        let first = try await store.load(track: tracks[0], folder: folder, expected: fingerprint)
+        let second = try await store.load(track: tracks[1], folder: folder, expected: fingerprint)
+        XCTAssertEqual(first.analysis.duration, 8, accuracy: 0.001)
+        XCTAssertEqual(second.analysis.duration, 16, accuracy: 0.001)
+        XCTAssertNotEqual(first.contentID, second.contentID, "Virtual tracks must hash their own audio interval")
+        let marker = SongMarker(time: 1.25, title: "Inside second track")
+        _ = try await store.save(SongAnnotations(bpm: 90, markers: [marker]), for: tracks[1], folder: folder, result: second)
+        XCTAssertTrue(store.summary(for: tracks[0], folder: folder)?.annotations.markers.isEmpty == true)
+        let restored = MusicToolsStore(cache: cache)
+        for track in tracks { try await restored.restore(track: track.withSource("library"), folder: folder, expected: fingerprint) }
+        XCTAssertTrue(restored.summary(for: tracks[0], folder: folder)?.annotations.markers.isEmpty == true)
+        XCTAssertEqual(restored.summary(for: tracks[1], folder: folder)?.annotations.markers, [marker])
+        XCTAssertEqual(restored.summary(for: tracks[1], folder: folder)?.bpm, 90)
+    }
+
     @MainActor func testInterpretationRequiresANewRequestForEachLanguageAndRetry() async throws {
         let model = LyricInterpretationModel(), document = LyricsDocument(text: "A tree grows")
         let value = try JSONDecoder().decode(LyricsInterpretation.self, from: Data(#"{"explanation":"A possible reading.","model":"gpt-6-astra","effort":"xhigh"}"#.utf8))

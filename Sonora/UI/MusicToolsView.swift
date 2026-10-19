@@ -194,7 +194,7 @@ struct SongAnalysisView: View {
             .accessibilityIdentifier("addSongMarker")
     }
     private func markerPlayback(_ item: SongMarker) -> some View {
-        Button { seek(item.time) } label: {
+        Button { player.playForLyricsEditing(track, at: item.time) } label: {
             if typeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.title).fixedSize(horizontal: false, vertical: true)

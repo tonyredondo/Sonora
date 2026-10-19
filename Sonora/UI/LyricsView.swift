@@ -45,7 +45,6 @@ struct LyricsView: View {
     private var active: Int? { isCurrent ? lyrics.activeLine(at: player.currentTime, offset: offset) : nil }
 
     private var translationKey: String { LyricUnderstanding.translationKey(lyrics, source: translationSource, target: translationTarget) }
-    private var visibleTranslation: LyricTranslation? { showTranslation && translationSourceKey == translationKey ? translation : nil }
 
     private var trackHeading: some View {
         HStack(spacing: 12) {
@@ -62,7 +61,10 @@ struct LyricsView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        // Hash the complete document once per update, not for every visible row.
+        let translationKey = self.translationKey
+        let visibleTranslation = showTranslation && translationSourceKey == translationKey ? translation : nil
+        return NavigationStack {
             VStack(spacing: 0) {
                 ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
