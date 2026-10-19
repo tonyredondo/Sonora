@@ -44,21 +44,21 @@ struct LocalMusicView: View {
                                     browsingSource = player.library.sourceID(matching: imports.musicURL(copy)); showFiles = browsingSource != nil
                                 } catch { imports.issue = error.localizedDescription }
                             }
-                        }.buttonStyle(.borderless).disabled(imports.isImporting || removing || player.isDeletingFiles).accessibilityIdentifier("browseLocalCopy:" + copy.id)
+                        }.frame(minHeight: 44).buttonStyle(.borderless).disabled(imports.isImporting || removing || player.isDeletingFiles).accessibilityIdentifier("browseLocalCopy:" + copy.id)
                         let layout = textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout())
                         layout {
                             Button("Reproducir", systemImage: "play.fill") { player.chooseFolder(imports.musicURL(copy), name: copy.name + " · Local") }
-                                .accessibilityIdentifier("playLocalCopy:" + copy.id)
+                                .frame(minHeight: 44).accessibilityIdentifier("playLocalCopy:" + copy.id)
                             if !textSize.isAccessibilitySize { Spacer() }
                             Button("Eliminar copia de Sonora", systemImage: "trash", role: .destructive) { deleting = copy }
-                                .accessibilityIdentifier("deleteLocalCopy:" + copy.id)
+                                .frame(minHeight: 44).accessibilityIdentifier("deleteLocalCopy:" + copy.id)
                         }.buttonStyle(.borderless).disabled(imports.isImporting || removing || player.isDeletingFiles)
                     }.padding(.vertical, 6)
                 }
                 if imports.copies.isEmpty { Text("Todavía no has importado carpetas. Tus fuentes de Archivos siguen disponibles en la biblioteca.").foregroundStyle(.secondary) }
             }
         }
-        .navigationTitle("Copias locales")
+        .navigationTitle("Copias en Sonora")
         .navigationBarTitleDisplayMode(.inline)
         .fileImporter(isPresented: $chooseFolder, allowedContentTypes: [.folder]) { result in
             switch result {

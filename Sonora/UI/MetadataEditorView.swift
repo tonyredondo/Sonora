@@ -10,6 +10,7 @@ struct MetadataEditorView: View {
     var synchronizeLyricsOnOpen = false
     var lyricsOnly = false
     @State private var loadedLyrics = ""
+    @State private var lyricsEdited = false
     @State private var confirmDiscard = false
     @Environment(\.dismiss) private var dismiss
     @State private var snapshot: MetadataSnapshot?
@@ -26,23 +27,31 @@ struct MetadataEditorView: View {
     private struct RestoreRequest: Identifiable { let id = UUID(); let folder: ScopedFolder }
     @State private var restoreRequest: RestoreRequest?
     @State private var showLyricsSynchronization = false
+    private struct PhraseRequest: Identifiable { let id = UUID(); let draft: LyricsDraft; let line: LyricsDraft.Line }
+    @State private var phraseRequest: PhraseRequest?
+    private struct PreviewRequest: Identifiable { let id = UUID(); let draft: LyricsDraft }
+    @State private var previewRequest: PreviewRequest?
     @State private var sidecarLyrics = ""
     @State private var issue: String?
+    @State private var saveIssue: String?
 
     private var patch: MetadataPatch {
         if lyricsOnly {
             let text = values[.lyrics] ?? ""
             return MetadataPatch(values: text == loadedLyrics ? [:] : [.lyrics: text])
         }
-        return MetadataPatch(values: values.filter { snapshot?.values[$0.key] != $0.value }, artwork: artwork)
+        return MetadataPatch(values: values.filter { $0.key == .lyrics ? lyricsEdited && $0.value != loadedLyrics : snapshot?.values[$0.key] != $0.value }, artwork: artwork)
     }
     private var changed: Bool { !patch.values.isEmpty || artwork != .keep }
     private var existingLyrics: String {
         let draft = values[.lyrics] ?? ""
-        return draft.isEmpty && draft == (snapshot?.values[.lyrics] ?? "") ? sidecarLyrics : draft
+        return !lyricsEdited && draft.isEmpty && draft == (snapshot?.values[.lyrics] ?? "") ? sidecarLyrics : draft
     }
     private func binding(_ field: MetadataField) -> Binding<String> {
-        Binding(get: { values[field] ?? "" }, set: { values[field] = $0 })
+        Binding(get: { field == .lyrics ? existingLyrics : values[field] ?? "" }, set: {
+            if field == .lyrics { lyricsEdited = true }
+            values[field] = $0
+        })
     }
     private var cover: Data? {
         switch artwork { case .keep: snapshot?.artwork; case .replace(let data): data; case .remove: nil }
@@ -52,8 +61,8 @@ struct MetadataEditorView: View {
             Form {
                 if let snapshot {
                     Section {
-                        Text(track.filename).font(.headline)
-                        Text(snapshot.fileDescription).foregroundStyle(.secondary)
+                        Text(lyricsOnly ? values[.title].flatMap { $0.isEmpty ? nil : $0 } ?? track.displayName : track.filename).font(.headline)
+                        if !lyricsOnly { Text(snapshot.fileDescription).foregroundStyle(.secondary) }
                         if track.cue != nil { Label("Esta pista comparte el audio con otros temas. La información se lee del CUE; la edición del archivo compartido está desactivada.", systemImage: "lock") }
                         else if !snapshot.canWrite { Label("Este archivo es de solo lectura o su formato no admite edición.", systemImage: "lock") }
                     }
@@ -92,12 +101,15 @@ struct MetadataEditorView: View {
                     Section("Letra") {
                         Button(LyricsDocument(text: existingLyrics).lines.isEmpty ? "Buscar o transcribir letra" : "Sincronizar letra", systemImage: "waveform") { showLyricsSynchronization = true }
                             .accessibilityIdentifier("openLyricsSynchronization")
-                        if lyricsOnly { lyricsTextEditor }
-                        else {
-                            NavigationLink("Editar letra") { Form { lyricsTextEditor }.navigationTitle("Editar texto") }
+                        if !lyricsOnly {
+                            NavigationLink("Editar letra") {
+                                Form { lyricsTextEditor }.navigationTitle("Editar letra")
+                                    .safeAreaInset(edge: .bottom) { LyricsEditingTransport(player: player, track: track, duration: snapshot.duration, preview: { previewRequest = PreviewRequest(draft: LyricsDraft(text: existingLyrics)) }) }
+                            }
                                 .accessibilityIdentifier("editLyrics")
                         }
                     }.disabled(!snapshot.canWrite || saving || importing)
+                    if lyricsOnly { lyricsTextEditor.disabled(!snapshot.canWrite || saving || importing) }
                     if changed { Label("Cambios sin guardar", systemImage: "pencil.circle").font(.subheadline).accessibilityIdentifier("unsavedMetadata") }
                     if importing { ProgressView("Importando…") }
                     if saving { ProgressView("Guardando…") }
@@ -109,6 +121,9 @@ struct MetadataEditorView: View {
                 } else if let issue {
                     ContentUnavailableView("No se pudo abrir la información", systemImage: "exclamationmark.circle", description: Text(issue))
                 } else if issue == nil { ProgressView("Leyendo información…") }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if lyricsOnly, let snapshot { LyricsEditingTransport(player: player, track: track, duration: snapshot.duration, preview: { previewRequest = PreviewRequest(draft: LyricsDraft(text: existingLyrics)) }).disabled(saving) }
             }
             .navigationTitle(lyricsOnly ? "Editar texto" : "Información").navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -123,6 +138,9 @@ struct MetadataEditorView: View {
             } message: {
                 Text("Se actualizarán: \(patch.values.keys.sorted { $0.rawValue < $1.rawValue }.map(\.title).joined(separator: ", "))\(artwork == .keep ? "" : ", carátula").")
             }
+            .alert("No se pudo guardar", isPresented: Binding(get: { saveIssue != nil }, set: { if !$0 { saveIssue = nil } })) {
+                Button("Volver al borrador", role: .cancel) { saveIssue = nil }
+            } message: { Text(saveIssue ?? "") }
             .alert("Hay cambios sin guardar", isPresented: $confirmDiscard) {
                 Button("Descartar cambios", role: .destructive) { dismiss() }
                 Button("Seguir editando", role: .cancel) { }
@@ -130,7 +148,7 @@ struct MetadataEditorView: View {
             .fileImporter(isPresented: $importLyrics, allowedContentTypes: [.plainText, .data]) { result in
                 Task {
                     importing = true; defer { importing = false }
-                    do { values[.lyrics] = try await LyricsSource.importText(result.get()) }
+                    do { values[.lyrics] = try await LyricsSource.importText(result.get()); lyricsEdited = true }
                     catch { issue = error.localizedDescription }
                 }
             }
@@ -171,14 +189,23 @@ struct MetadataEditorView: View {
                 catch { issue = error.localizedDescription }
             }
             .interactiveDismissDisabled(saving || importing || changed)
+            .sheet(item: $previewRequest) { request in
+                LyricsDraftPreview(player: player, track: track, draft: request.draft, duration: snapshot?.duration ?? 0)
+            }
+            .sheet(item: $phraseRequest) { request in
+                LyricsPhraseEditor(player: player, track: track, duration: snapshot?.duration ?? 0, draft: request.draft, line: request.line) {
+                    values[.lyrics] = $0; lyricsEdited = true
+                }
+            }
             .sheet(isPresented: $showLyricsSynchronization) {
                 if let snapshot {
-                    LyricsSynchronizationView(player: player, track: track, current: values, snapshot: snapshot, lyrics: existingLyrics) { values[.lyrics] = $0 }
+                    LyricsSynchronizationView(player: player, track: track, current: values, snapshot: snapshot, lyrics: existingLyrics) { values[.lyrics] = $0; lyricsEdited = true }
                 }
             }
             .sheet(isPresented: $showAssistant) {
                 MetadataLookupView(player: player, track: track, current: values, hasArtwork: cover != nil,
                     duration: snapshot?.duration ?? 0) { changes, image in
+                    if changes[.lyrics] != nil { lyricsEdited = true }
                     values.merge(changes) { _, proposed in proposed }
                     if let image { artwork = .replace(image); coverPreview = UIImage(data: image) }
                 }
@@ -186,6 +213,7 @@ struct MetadataEditorView: View {
             .sheet(item:$restoreRequest) { request in
                 if let snapshot, let controller = player.metadataArchive {
                     MetadataRestoreView(controller:controller,track:track,folder:request.folder,snapshot:snapshot,current:values,hasArtwork:cover != nil) { changes, image in
+                        if changes[.lyrics] != nil { lyricsEdited = true }
                         values.merge(changes) { _, proposed in proposed }
                         if image != .keep {
                             artwork = image
@@ -199,11 +227,10 @@ struct MetadataEditorView: View {
     }
     private var lyricsTextEditor: some View {
         Group {
-            TextEditor(text: binding(.lyrics)).frame(minHeight: 300).accessibilityIdentifier("metadata-lyrics")
-                .accessibilityLabel("Texto de la letra")
-            Button("Importar .lrc o .txt") { importLyrics = true }
-            Text("Escribe o pega la letra. Los tiempos usan el formato [00:12.50]. Revisa los cambios y pulsa Guardar.")
-                .font(.footnote).foregroundStyle(.secondary)
+            LyricsDraftEditor(player: player, track: track, duration: snapshot?.duration ?? 0, text: binding(.lyrics)) { draft, line in
+                phraseRequest = PhraseRequest(draft: draft, line: line)
+            }
+            Section { Button("Importar .lrc o .txt") { importLyrics = true } }
         }
     }
     private func save() {
@@ -213,9 +240,10 @@ struct MetadataEditorView: View {
             saving = true; issue = nil; defer { saving = false }
             do {
                 try change.validate()
+                if let lyrics = change.values[.lyrics] { try LyricsDraft(text: lyrics).validateForPlayback() }
                 try await player.saveMetadata(for: track, expected: snapshot.fingerprint, patch: change)
                 dismiss()
-            } catch { issue = error.localizedDescription }
+            } catch { issue = error.localizedDescription; saveIssue = error.localizedDescription }
         }
     }
 }

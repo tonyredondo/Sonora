@@ -17,7 +17,7 @@ struct LyricsView: View {
     @State private var issue: String?
     @State private var refresh = UUID()
     @State private var adjusting = false
-    @State private var repairAfterTiming = false
+    @State private var editAfterTiming = false
     private struct EditorRequest: Identifiable {
         let track: AudioTrack
         let synchronize: Bool
@@ -53,8 +53,8 @@ struct LyricsView: View {
                                 .accessibilityIdentifier("repairLyrics")
                         }
                     }.buttonStyle(.bordered).disabled(selectedTrack == nil)
-                    if !lyrics.lines.isEmpty && !lyrics.isTimed {
-                        Button("Sincronizar letra", systemImage: "waveform") { edit(synchronize: true) }
+                    if !lyrics.lines.isEmpty {
+                        Button(lyrics.isTimed ? "Sincronizar de nuevo" : "Sincronizar letra", systemImage: "waveform") { edit(synchronize: true) }
                             .frame(minHeight: 44).accessibilityIdentifier("synchronizeUntimedLyrics")
                     }
                     if lyrics.isTimed {
@@ -124,7 +124,7 @@ struct LyricsView: View {
                 MetadataEditorView(player: player, track: $0.track, synchronizeLyricsOnOpen: $0.synchronize, lyricsOnly: true)
             }
             .sheet(isPresented: $adjusting, onDismiss: {
-                if repairAfterTiming { repairAfterTiming = false; openRepair() }
+                if editAfterTiming { editAfterTiming = false; edit() }
             }) {
                 NavigationStack {
                     Form {
@@ -137,7 +137,7 @@ struct LyricsView: View {
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
                         Section("Frases individuales") {
-                            Button("Revisar tiempos por frase") { repairAfterTiming = true; adjusting = false }
+                            Button("Editar tiempos por frase") { editAfterTiming = true; adjusting = false }
                         }
                     }
                     .navigationTitle("Ajustar tiempos").navigationBarTitleDisplayMode(.inline)

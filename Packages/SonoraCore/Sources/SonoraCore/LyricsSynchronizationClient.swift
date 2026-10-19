@@ -38,10 +38,9 @@ public struct LyricsSynchronizationResult: Codable, Sendable, Equatable {
 }
 
 public enum LyricsSynchronizationError: LocalizedError {
-    case requiresLyrics, providerUnavailable, invalidAlignment, alreadyTimed, unsupportedDuration, noSpeech, noSpeechNotCached
+    case requiresLyrics, providerUnavailable, invalidAlignment, unsupportedDuration, noSpeech, noSpeechNotCached
     public var errorDescription: String? {
         switch self {
-        case .alreadyTimed: "Esta letra ya tiene tiempos. Puedes ajustarlos en Editar letra."
         case .unsupportedDuration: "El análisis con ElevenLabs admite audio de entre un segundo y diez minutos."
         case .requiresLyrics: "No hay una letra sincronizada compatible. Añade primero la letra para poder sincronizarla con ElevenLabs."
         case .providerUnavailable: "ElevenLabs no está disponible. Comprueba que esté habilitado y que su API key esté configurada en el proxy."
@@ -52,8 +51,9 @@ public enum LyricsSynchronizationError: LocalizedError {
     }
 }
 
-/// Catalog lookup never uploads audio. Paid work only runs after a genuine catalog miss;
-/// known text is aligned, and missing text is transcribed. Every stage has persistent cache.
+/// Initial lookup never uploads audio until a genuine catalog miss. Explicit
+/// resynchronization aligns the current words; missing text is transcribed.
+/// Both paths reuse the persistent audio/text cache before any paid request.
 public actor LyricsSynchronizationClient {
     private let connection: MetadataProxyConnection
     private let cache: MetadataLookupCache
@@ -68,10 +68,9 @@ public actor LyricsSynchronizationClient {
     public func synchronize(query: MetadataSearch, duration: Double, lyrics: String, offline: Bool,
                             audio: @Sendable () async throws -> Data) async throws -> MetadataLookupResult<LyricsSynchronizationResult> {
         guard duration.isFinite, duration > 0, duration <= 604800, lyrics.utf8.count <= 65_536, !lyrics.contains("\0") else { throw MetadataLookupError.invalidSearch }
-        guard !LyricsDocument(text: lyrics).isTimed else { throw LyricsSynchronizationError.alreadyTimed }
         let wasAITranscribed = LyricsDocument(text: lyrics).isAITranscribed
         let wasAIRepaired = LyricsDocument(text: lyrics).isAIRepaired
-        var knownText = LyricsDocument.removingInformation(from: lyrics)
+        var knownText = LyricsDraft(text: lyrics).alignmentText
         func attributed(_ result: MetadataLookupResult<LyricsSynchronizationResult>) -> MetadataLookupResult<LyricsSynchronizationResult> {
             let markers = (wasAITranscribed ? [LyricsDocument.aiTranscriptionMarker] : []) + (wasAIRepaired ? [LyricsDocument.aiRepairMarker] : [])
             guard !markers.isEmpty else { return result }
@@ -79,7 +78,9 @@ public actor LyricsSynchronizationClient {
         }
         var catalogFailure: MetadataLookupError?
         try Task.checkCancellation()
-        if !query.title.isEmpty && !query.artist.isEmpty && !query.album.isEmpty {
+        // Explicit resynchronization aligns this draft against its audio instead of
+        // substituting a catalog edition. The audio + plain-text cache still applies.
+        if !LyricsDocument(text: lyrics).isTimed && !query.title.isEmpty && !query.artist.isEmpty && !query.album.isEmpty {
             do {
                 let found = try await lookup.lyrics(title: query.title, artist: query.artist, album: query.album, duration: max(1, Int(duration.rounded())), offline: offline)
                 if !found.value.instrumental, abs(found.value.duration - duration) <= 2,

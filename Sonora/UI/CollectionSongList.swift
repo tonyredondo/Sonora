@@ -4,6 +4,7 @@ import SwiftUI
 private struct MetadataSelection: Identifiable {
     let id = UUID()
     let tracks: [AudioTrack]
+    var context: BulkMetadataContext = .selection
 }
 
 struct CollectionSongList: View {
@@ -14,6 +15,7 @@ struct CollectionSongList: View {
     var sourceID: String? = nil
     var group: CollectionGroup? = nil
     var albumGroup = false
+    @Environment(\.colorScheme) private var scheme
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var selection: Set<String> = []
@@ -22,10 +24,13 @@ struct CollectionSongList: View {
     @State private var volumeSelection: VolumeAnalysisSelection?
     @State private var forget = false
     @State private var addToPlaylist = false
+    @State private var pickingSongs = false
+    @State private var renaming = false
+    @State private var deletingPlaylist = false
     @State private var exporting: PlaylistExportSelection?
     private var library: MusicLibrary { player.library }
     private var firstSong: CollectionSong? { activeIDs.first.flatMap { library.state.songs[$0] } }
-    private var displayedTitle: String { albumGroup ? firstSong?.album ?? title : title }
+    private var displayedTitle: String { playlistID.flatMap { id in library.state.playlists.first { $0.id == id }?.name } ?? (albumGroup ? firstSong?.album ?? title : title) }
     private var activeIDs: [String] { playlistID.flatMap { id in library.state.playlists.first { $0.id == id }?.songIDs } ?? ids }
     private var songs: [CollectionSong] { activeIDs.compactMap { library.state.songs[$0] }.filter { $0.matches(query) } }
     var body: some View {
@@ -40,29 +45,52 @@ struct CollectionSongList: View {
                 Section {
                     HStack(spacing: 16) {
                         CachedCollectionArtwork(library: library, song: activeIDs.first.flatMap { library.state.songs[$0] })
-                            .frame(width: 100, height: 100)
+                            .frame(width: 72, height: 72)
                         VStack(alignment: .leading, spacing: 8) {
                             Text(firstSong?.albumArtist ?? group.subtitle).font(.headline)
-                            Text("\(activeIDs.count) canciones").foregroundStyle(.secondary)
+                            Text(songCount(activeIDs.count)).foregroundStyle(.secondary)
                         }
                     }.padding(.vertical, 6)
                 }
             }
-            if !songs.isEmpty && !editMode.isEditing {
+            if !editMode.isEditing {
                 Section {
-                    Button("Reproducir", systemImage: "play.fill") { player.playSongs(songs.map(\.id)) }
-                    Button("Añadir a la cola", systemImage: "text.badge.plus") { player.enqueueSongs(songs.map(\.id), playNext: false) }
-                    if let playlistID { Button("Exportar playlist", systemImage: "square.and.arrow.up") { exporting = .init(id: playlistID, name: title) } }
-                    if albumGroup {
-                        Button("Editar álbum", systemImage: "pencil") {
-                            metadataSelection = MetadataSelection(tracks: activeIDs.compactMap { library.state.songs[$0]?.audioTrack })
-                        }.accessibilityIdentifier("editAlbum")
+                    if !songs.isEmpty {
+                        ViewThatFits(in: .horizontal) {
+                            HStack { playbackActions }
+                            VStack { playbackActions }
+                        }.buttonStyle(.borderedProminent).foregroundStyle(scheme == .dark ? Color.black : Color.white)
                     }
-                    Menu("Más opciones", systemImage: "ellipsis") {
-                        Button(albumGroup ? "Analizar volumen del álbum" : "Analizar volumen", systemImage: "waveform") {
-                            let tracks = (albumGroup ? activeIDs : songs.map(\.id)).compactMap { library.state.songs[$0]?.audioTrack }
-                            volumeSelection = .init(tracks: tracks, album: albumGroup)
-                        }
+                    if playlistID != nil {
+                        Button("Añadir canciones", systemImage: "plus") { pickingSongs = true }.accessibilityIdentifier("addPlaylistSongs")
+                        Menu {
+                            Button("Renombrar") { renaming = true }
+                            Button("Ordenar o quitar canciones") { editMode = .active }
+                            Button("Exportar playlist", systemImage: "square.and.arrow.up") {
+                                if let playlistID { exporting = .init(id: playlistID, name: displayedTitle) }
+                            }
+                            Button("Eliminar playlist", role: .destructive) { deletingPlaylist = true }
+                        } label: {
+                            HStack { Label("Gestionar lista", systemImage: "ellipsis"); Spacer(); Image(systemName: "chevron.down") }
+                                .frame(maxWidth: .infinity, minHeight: 44).contentShape(.rect)
+                        }.accessibilityIdentifier("managePlaylist")
+                    }
+                    if !songs.isEmpty {
+                        HStack {
+                            if albumGroup {
+                                Button("Editar álbum", systemImage: "pencil") {
+                                    metadataSelection = MetadataSelection(tracks: activeIDs.compactMap { library.state.songs[$0]?.audioTrack }, context: .album(displayedTitle))
+                                }.accessibilityIdentifier("editAlbum")
+                                Spacer()
+                            }
+                            Menu("Más", systemImage: "ellipsis") {
+                                Button("Añadir a la cola", systemImage: "text.badge.plus") { player.enqueueSongs(songs.map(\.id), playNext: false) }
+                                Button(albumGroup ? "Analizar volumen del álbum" : "Analizar volumen", systemImage: "waveform") {
+                                    let tracks = (albumGroup ? activeIDs : songs.map(\.id)).compactMap { library.state.songs[$0]?.audioTrack }
+                                    volumeSelection = .init(tracks: tracks, album: albumGroup)
+                                }
+                            }
+                        }.buttonStyle(.borderless).frame(minHeight: 44)
                     }
                 }
             }
@@ -76,7 +104,7 @@ struct CollectionSongList: View {
             }
             .onDelete { if let playlistID { library.remove(from: playlistID, at: $0) } }
             .onMove { if let playlistID { library.move(in: playlistID, from: $0, to: $1) } }
-            if songs.isEmpty { ContentUnavailableView("Sin canciones", systemImage: "music.note", description: Text(query.isEmpty ? "Añade canciones desde sus opciones en la biblioteca." : "No hay resultados para esta búsqueda.")) }
+            if songs.isEmpty { ContentUnavailableView("Sin canciones", systemImage: "music.note", description: Text(query.isEmpty ? (playlistID != nil ? "Pulsa Añadir canciones para elegir música de tu biblioteca." : "Esta colección todavía no tiene canciones.") : "No hay resultados para esta búsqueda.")) }
             if editMode.isEditing { Text("Selecciona canciones para añadirlas a una playlist, ponerlas en cola o editar su información en conjunto.").font(.footnote).foregroundStyle(.secondary) }
         }
         .accessibilityIdentifier("collectionSongs")
@@ -115,15 +143,30 @@ struct CollectionSongList: View {
             }
         }
         .sheet(item: $metadataSelection) { selected in
-            if selected.tracks.count == 1, let track = selected.tracks.first { MetadataEditorView(player: player, track: track) }
-            else { BulkMetadataEditorView(player: player, tracks: selected.tracks) }
+            if selected.tracks.count == 1, let track = selected.tracks.first, case .selection = selected.context { MetadataEditorView(player: player, track: track) }
+            else { BulkMetadataEditorView(player: player, tracks: selected.tracks, context: selected.context) }
         }
+        .sheet(isPresented: $pickingSongs) { if let playlistID { PlaylistSongPicker(player: player, playlistID: playlistID) } }
+        .sheet(isPresented: $renaming) {
+            PlaylistNameEditor(initialName: playlistID.flatMap { id in library.state.playlists.first { $0.id == id }?.name } ?? title, renaming: true) { name in
+                if let playlistID { library.renamePlaylist(playlistID, name: name) }
+            }
+        }
+        .confirmationDialog("¿Eliminar esta lista?", isPresented: $deletingPlaylist, titleVisibility: .visible) {
+            Button("Eliminar playlist", role: .destructive) { if let playlistID { library.deletePlaylist(playlistID); dismiss() } }
+        } message: { Text("Las canciones y los archivos se conservan en la biblioteca.") }
         .sheet(item: $exporting) { PlaylistExportView(player: player, playlist: $0) }
         .sheet(item: $volumeSelection) { VolumeAnalysisView(player: player, selection: $0) }
         .confirmationDialog("¿Quitar esta fuente de la biblioteca?", isPresented: $forget, titleVisibility: .visible) {
             Button("Quitar de la biblioteca", role: .destructive) { if let sourceID { player.forgetSource(sourceID); dismiss() } }
         } message: { Text("Se quitarán sus referencias de la biblioteca, las playlists y la cola. Los archivos originales no se borrarán.") }
         .sheet(isPresented: $addToPlaylist) { AddSongsToPlaylistView(player: player, songIDs: selectedIDs) }
+    }
+    private var playbackActions: some View {
+        Group {
+            Button { player.shuffle = false; player.playSongs(songs.map(\.id)) } label: { Label("Reproducir", systemImage: "play.fill").frame(maxWidth: .infinity, minHeight: 32) }
+            Button { player.shuffle = true; player.playSongs(songs.map(\.id).shuffled()) } label: { Label("Aleatorio", systemImage: "shuffle").frame(maxWidth: .infinity, minHeight: 32) }
+        }
     }
     private var selectedIDs: [String] { activeIDs.filter { selection.contains($0) } }
     private var selectionActions: some View {

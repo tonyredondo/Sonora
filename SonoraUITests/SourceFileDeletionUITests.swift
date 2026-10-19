@@ -95,7 +95,7 @@ final class SourceFileDeletionUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["-appearance", "noche"]
-        app.launch(); app.assertLibraryHome(); reveal(app.buttons["Disponible sin conexión"], in: app); app.buttons["Disponible sin conexión"].tap()
+        app.launch(); app.assertLibraryHome(); reveal(app.buttons["Copias en Sonora"], in: app); app.buttons["Copias en Sonora"].tap()
         app.buttons["importLocalFolder"].tap()
         app.selectSyntheticFolder(["Sonora Borrado QA", "Descarga Borrado QA"])
         XCTAssertTrue(app.staticTexts["localImportCompleted"].waitForExistence(timeout: 20))
@@ -119,7 +119,7 @@ final class SourceFileDeletionUITests: XCTestCase {
         reveal(app.buttons["importLocalFolder"], in: app); app.buttons["importLocalFolder"].tap()
         app.selectSyntheticFolder(["Sonora Borrado QA", "Descarga Borrado QA"])
         XCTAssertTrue(app.staticTexts["localImportCompleted"].waitForExistence(timeout: 20))
-        app.navigationBars["Copias locales"].buttons.element(boundBy: 0).tap()
+        app.navigationBars["Copias en Sonora"].buttons.element(boundBy: 0).tap()
         app.buttons["Fuentes"].tap()
         let source = app.buttons["source:Descarga Borrado QA · Local"]
         reveal(source, in: app)

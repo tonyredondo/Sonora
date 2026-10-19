@@ -29,7 +29,7 @@ final class UXNavigationUITests: XCTestCase {
             let app = launch(theme, large: large)
             let player = app.buttons["openNowPlaying"]
             XCTAssertTrue(player.waitForExistence(timeout: 10))
-            let offline = app.buttons["Disponible sin conexión"]
+            let offline = app.buttons["Copias en Sonora"]
             // Drag the outer list, away from the horizontal album shelf and player.
             for _ in 0..<6 {
                 if offline.exists && offline.frame.maxY <= player.frame.minY { break }
@@ -42,7 +42,7 @@ final class UXNavigationUITests: XCTestCase {
             XCTAssertTrue(offline.isHittable)
             capture("mini-player-last-row-\(theme)", app)
             offline.tap()
-            XCTAssertTrue(app.navigationBars["Copias locales"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.navigationBars["Copias en Sonora"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.buttons["importLocalFolder"].isHittable)
             XCTAssertTrue(player.isHittable)
             app.tabBars.buttons["Listas"].tap()

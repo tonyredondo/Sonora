@@ -547,6 +547,25 @@ final class PlaybackController: NSObject {
         requestPlayback(trackID: trackID, position: position, start: start)
         failedTracks = preservingFailures
     }
+    /// Explicit audition from a pinned editor. Reuse the queue and the same
+    /// decoder/transport; opening the editor alone never changes playback.
+    func playForLyricsEditing(_ track: AudioTrack, at position: Double? = nil) {
+        guard !isDeletingFiles else { return }
+        let existing = queue.tracks.first { $0.id == track.id || (libraryID(for: $0) != nil && libraryID(for: $0) == libraryID(for: track)) }
+        let target = existing ?? track
+        do { _ = try folderAccess(for: target) }
+        catch { issue = error.localizedDescription; return }
+        if existing == nil { queue.insert([target], afterCurrent: true) }
+        if existing != nil, current?.id == target.id {
+            if let position { seek(to: position) }
+            resume()
+        } else { requestPlayback(trackID: target.id, position: max(0, position ?? 0), start: true) }
+    }
+    func isEditingTrackCurrent(_ track: AudioTrack) -> Bool {
+        guard let current else { return false }
+        return current.id == track.id || (libraryID(for: current) != nil && libraryID(for: current) == libraryID(for: track))
+    }
+
     func togglePlayback() {
         if playIntent && (isPlaying || isPreparing) { pause() } else { resume() }
     }

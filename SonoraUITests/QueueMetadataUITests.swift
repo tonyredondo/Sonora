@@ -36,11 +36,11 @@ final class QueueMetadataUITests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 5)); field.tap()
         let previous = field.value as? String ?? ""
         field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count) + artist)
-        app.navigationBars["Información"].buttons["Guardar"].tap()
+        app.navigationBars["Editar canciones"].buttons["Guardar"].tap()
         app.buttons["Guardar en todos los archivos"].tap()
         let result = app.staticTexts["bulkResult"]
         XCTAssertTrue(result.waitForExistence(timeout: 20)); XCTAssertEqual(result.label, "Guardados 3 de 3")
-        app.navigationBars["Información"].buttons["Listo"].tap()
+        app.navigationBars["Editar canciones"].buttons["Listo"].tap()
         XCTAssertTrue(app.staticTexts[artist].firstMatch.waitForExistence(timeout: 10), "Library index must already show saved tags")
         app.closeMusicSource()
         app.buttons["miniQueue"].tap()

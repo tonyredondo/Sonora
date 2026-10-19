@@ -66,7 +66,7 @@ struct ArtistCollectionView: View {
                     NavigationLink { CollectionSongList(player: player, title: album.title, ids: album.songIDs, group: album, albumGroup: true) } label: {
                         HStack(spacing: 12) {
                             CachedCollectionArtwork(library: player.library, song: album.songIDs.first.flatMap { player.library.state.songs[$0] }).frame(width: 64, height: 64)
-                            VStack(alignment: .leading) { Text(album.title); Text("\(album.songIDs.count) canciones").font(.caption).foregroundStyle(.secondary) }
+                            VStack(alignment: .leading) { Text(album.title); Text(songCount(album.songIDs.count)).font(.caption).foregroundStyle(.secondary) }
                         }
                     }
                 }
@@ -74,7 +74,7 @@ struct ArtistCollectionView: View {
         }
         .navigationTitle(artistTitle)
         .sheet(isPresented: $editing) {
-            BulkMetadataEditorView(player: player, tracks: artist.songIDs.compactMap { player.library.state.songs[$0]?.audioTrack })
+            BulkMetadataEditorView(player: player, tracks: artist.songIDs.compactMap { player.library.state.songs[$0]?.audioTrack }, context: .artist(artistTitle))
         }
         .toolbar { Button { player.library.toggleArtist(artist.id) } label: { Image(systemName: player.library.state.favoriteArtists.contains(artist.id) ? "heart.fill" : "heart") }.accessibilityLabel("Artista favorito") }
     }
@@ -108,12 +108,14 @@ struct PlaylistsView: View {
     @State private var editedID: String?
     @State private var importing = false
     @State private var exporting: PlaylistExportSelection?
+    @State private var pendingPlaylist: String?
+    @State private var songPicker: PlaylistSongSelection?
     var body: some View {
         List {
             ForEach(player.library.state.playlists) { playlist in
                 NavigationLink {
                     CollectionSongList(player: player, title: playlist.name, ids: playlist.songIDs, playlistID: playlist.id)
-                } label: { VStack(alignment: .leading) { Text(playlist.name); Text("\(playlist.songIDs.count) canciones").font(.caption).foregroundStyle(.secondary) } }
+                } label: { VStack(alignment: .leading) { Text(playlist.name); Text(songCount(playlist.songIDs.count)).font(.caption).foregroundStyle(.secondary) } }
                     .contextMenu {
                         Button("Renombrar") { editedID = playlist.id; name = playlist.name; editingName = true }
                         Button("Exportar playlist", systemImage: "square.and.arrow.up") { exporting = .init(id: playlist.id, name: playlist.name) }
@@ -123,7 +125,7 @@ struct PlaylistsView: View {
                 let ids = offsets.compactMap { player.library.state.playlists.indices.contains($0) ? player.library.state.playlists[$0].id : nil }
                 ids.forEach(player.library.deletePlaylist)
             }
-            if player.library.state.playlists.isEmpty { ContentUnavailableView("Tus listas", systemImage: "music.note.list", description: Text("Crea una lista y añade canciones desde la biblioteca o la cola.")) }
+            if player.library.state.playlists.isEmpty { ContentUnavailableView("Tus listas", systemImage: "music.note.list", description: Text("Crea una lista y elige las canciones que quieras incluir.")) }
         }
         .navigationTitle("Listas")
         .toolbar {
@@ -132,9 +134,12 @@ struct PlaylistsView: View {
         }
         .sheet(isPresented: $importing) { PlaylistImportView(player: player) }
         .sheet(item: $exporting) { PlaylistExportView(player: player, playlist: $0) }
-        .sheet(isPresented: $editingName) {
+        .sheet(item: $songPicker) { PlaylistSongPicker(player: player, playlistID: $0.id) }
+        .sheet(isPresented: $editingName, onDismiss: {
+            if let pendingPlaylist { songPicker = .init(id: pendingPlaylist); self.pendingPlaylist = nil }
+        }) {
             PlaylistNameEditor(initialName: name, renaming: editedID != nil) { value in
-                if let editedID { player.library.renamePlaylist(editedID, name: value) } else { _ = player.library.createPlaylist(value) }
+                if let editedID { player.library.renamePlaylist(editedID, name: value) } else { pendingPlaylist = player.library.createPlaylist(value) }
             }
         }
     }
