@@ -124,37 +124,34 @@ struct LyricsEditingTransport: View {
     private var time: Double { current ? player.currentTime : 0 }
     private var playing: Bool { current && (player.isPlaying || player.isPreparing) }
     var body: some View {
-        VStack(spacing: 4) {
-            if textSize.isAccessibilitySize {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                transportButtons
+                Spacer(minLength: 8)
                 if let preview {
-                    Button("Previsualizar", systemImage: "play.rectangle", action: preview)
-                        .font(.caption).frame(maxWidth: .infinity, minHeight: 44).accessibilityIdentifier("openDraftPreview")
-                }
-            } else {
-                HStack {
-                    Text(current ? "Escuchar mientras editas" : "Escuchar esta canción").foregroundStyle(.secondary)
-                    if let preview {
-                        Spacer(minLength: 8)
-                        Button("Previsualizar", systemImage: "play.rectangle", action: preview)
-                            .frame(minHeight: 44).accessibilityIdentifier("openDraftPreview")
+                    Button(action: preview) {
+                        Group {
+                            if textSize.isAccessibilitySize {
+                                Image(systemName: "play.rectangle")
+                            } else {
+                                Label("Previsualizar", systemImage: "play.rectangle")
+                            }
+                        }
+                        .frame(minWidth: 44, minHeight: 44).contentShape(.rect)
                     }
-                }.font(.caption)
-            }
-            if textSize.isAccessibilitySize {
-                HStack(spacing: 24) { transportButtons }
-                position
-            } else {
-                HStack(spacing: 16) {
-                    transportButtons
-                    Spacer(minLength: 0)
-                    position
+                    .font(.caption)
+                    .accessibilityLabel("Previsualizar borrador").accessibilityIdentifier("openDraftPreview")
                 }
+            }.buttonStyle(.plain).foregroundStyle(PlayerTheme(scheme).accent)
+            if textSize.isAccessibilitySize { position }
+            HStack(spacing: 8) {
+                MediaSlider(value: Binding(get: { scrub ?? time }, set: { scrub = $0 }), range: 0...max(0.01, duration), tint: PlayerTheme(scheme).accent, label: "Posición para revisar la letra") { editing in
+                    if !editing, let scrub { seek(scrub); self.scrub = nil }
+                }.frame(height: 30).accessibilityIdentifier("draftPlaybackTimeline")
+                if !textSize.isAccessibilitySize { position.fixedSize() }
             }
-            MediaSlider(value: Binding(get: { scrub ?? time }, set: { scrub = $0 }), range: 0...max(0.01, duration), tint: PlayerTheme(scheme).accent, label: "Posición para revisar la letra") { editing in
-                if !editing, let scrub { seek(scrub); self.scrub = nil }
-            }.frame(height: 30).accessibilityIdentifier("draftPlaybackTimeline")
             if let issue = player.issue { Text(issue).font(.caption).foregroundStyle(.red).lineLimit(2) }
-        }.padding(.horizontal, 12).padding(.vertical, 8)
+        }.padding(.horizontal, 12).padding(.vertical, 6)
             .playerGlassPanel()
             .padding(.horizontal, 12).padding(.vertical, 6)
             .disabled(duration <= 0 || player.isDeletingFiles)
@@ -165,14 +162,16 @@ struct LyricsEditingTransport: View {
     }
     private var transportButtons: some View {
         Group {
-            Button("Retroceder 5 segundos", systemImage: "gobackward.5") { seek(max(0, time - 5)) }
-                .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).accessibilityIdentifier("draftSkipBack")
+            Button { seek(max(0, time - 5)) } label: {
+                Image(systemName: "gobackward.5").frame(minWidth: 44, minHeight: 44).contentShape(.rect)
+            }.accessibilityLabel("Retroceder 5 segundos").accessibilityIdentifier("draftSkipBack")
             Button {
                 if playing { player.pause() } else { player.playForLyricsEditing(track) }
-            } label: { Image(systemName: playing ? "pause.fill" : "play.fill").font(.title2).frame(minWidth: 44, minHeight: 44) }
+            } label: { Image(systemName: playing ? "pause.fill" : "play.fill").font(.title2).frame(minWidth: 44, minHeight: 44).contentShape(.rect) }
                 .accessibilityLabel(playing ? "Pausar previsualización" : "Reproducir previsualización").accessibilityIdentifier("draftPlayback")
-            Button("Adelantar 5 segundos", systemImage: "goforward.5") { seek(min(max(0, duration - 0.01), time + 5)) }
-                .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).accessibilityIdentifier("draftSkipForward")
+            Button { seek(min(max(0, duration - 0.01), time + 5)) } label: {
+                Image(systemName: "goforward.5").frame(minWidth: 44, minHeight: 44).contentShape(.rect)
+            }.accessibilityLabel("Adelantar 5 segundos").accessibilityIdentifier("draftSkipForward")
         }
     }
     private func seek(_ time: Double) {
