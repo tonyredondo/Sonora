@@ -24,14 +24,17 @@ struct LyricsSynchronizationView: View {
                     Text(current[.title].flatMap { $0.isEmpty ? nil : $0 } ?? track.displayName).font(.headline)
                     Text(current[.artist] ?? "").foregroundStyle(.secondary)
                     if settings.effectiveOffline { Label("Modo desconectado · Solo información guardada", systemImage: "wifi.slash") }
-                    Button(settings.effectiveOffline ? "Buscar en caché" : (LyricsDocument(text: lyrics).lines.isEmpty ? "Buscar o transcribir" : "Buscar y sincronizar")) { start() }
-                        .disabled(loading || settings.endpoint.isEmpty || LyricsDocument(text: lyrics).isTimed).accessibilityIdentifier("synchronizeLyrics")
+                    Button(settings.effectiveOffline ? "Buscar en caché" : (LyricsDocument(text: lyrics).lines.isEmpty ? "Buscar o transcribir" : (LyricsDocument(text: lyrics).isTimed ? "Sincronizar de nuevo con IA" : "Buscar y sincronizar"))) { start() }
+                        .disabled(loading || settings.endpoint.isEmpty).accessibilityIdentifier("synchronizeLyrics")
                     NavigationLink("Configurar asistente") { MetadataConnectionView() }.disabled(loading)
-                    Text("Buscamos gratis en LRCLIB. Si hay letra, ElevenLabs sincroniza los tiempos; si no, Scribe v2 la transcribe. La IA envía el audio y consume créditos de tu cuenta. Reutilizamos la caché. Máximo: 10 minutos.")
+                    if !LyricsDocument(text: lyrics).lines.isEmpty {
+                        Text("Usaremos el texto de tu borrador, aunque ya tenga tiempos. La sincronización aparecerá en el editor para escucharla antes de guardar.").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Text(LyricsDocument(text: lyrics).isTimed
+                        ? "ElevenLabs sincroniza tu texto con el audio. Reutilizamos el análisis guardado si el audio y el texto coinciden; un análisis nuevo envía el audio y consume créditos. Máximo: 10 minutos."
+                        : "Buscamos gratis en LRCLIB. Si hay letra, ElevenLabs sincroniza los tiempos; si no, Scribe v2 la transcribe. La IA envía el audio y consume créditos de tu cuenta. Reutilizamos la caché. Máximo: 10 minutos.")
                         .font(.footnote).foregroundStyle(.secondary)
-                    if LyricsDocument(text: lyrics).isTimed {
-                        Text("Esta letra ya tiene tiempos. Puedes ajustarlos en Editar letra.").font(.footnote).foregroundStyle(.secondary)
-                    } else if [current[.artist], current[.album]].contains(where: { ($0 ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+                    if [current[.artist], current[.album]].contains(where: { ($0 ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
                         Text("Faltan artista o álbum para buscar una edición en LRCLIB. Puedes completarlos en Información o usar ElevenLabs directamente.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
@@ -58,7 +61,7 @@ struct LyricsSynchronizationView: View {
                         }
                     }
                     Section {
-                        Button("Revisar y guardar") { apply(result.value.text); dismiss() }
+                        Button("Usar en el borrador") { apply(result.value.text); dismiss() }
                             .accessibilityIdentifier("applySynchronizedLyrics")
                         Text("Abre el borrador para revisar la letra y pulsar Guardar. El archivo no cambia hasta que confirmes el guardado.")
                             .font(.footnote).foregroundStyle(.secondary)

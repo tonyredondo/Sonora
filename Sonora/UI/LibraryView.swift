@@ -39,10 +39,20 @@ struct LibraryView: View {
                     }
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
-                            Button("Fuentes") { sheet = .sources }.accessibilityIdentifier("librarySources")
+                            Button("Fuentes", systemImage: "folder") { sheet = .sources }
+                                .labelStyle(.iconOnly)
+                                .accessibilityIdentifier("librarySources")
                         }
                         ToolbarItem(placement: .topBarTrailing) {
                             Button("Ajustes", systemImage: "gearshape") { sheet = .settings }
+                        }
+                        if #available(iOS 26.0, *) {
+                            ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Añadir música", systemImage: "plus") { sheet = .addMusic }
+                                .labelStyle(.iconOnly)
+                                .accessibilityIdentifier("addMusic")
                         }
                     }
             }
@@ -78,10 +88,6 @@ struct LibraryView: View {
     private var home: some View {
         List {
             Section {
-                Button { sheet = .addMusic } label: {
-                    Label("Añadir música", systemImage: "plus.circle.fill")
-                        .font(.headline).foregroundStyle(theme.isDark ? Color.black : Color.white).frame(maxWidth: .infinity, minHeight: 44)
-                }.buttonStyle(.borderedProminent).accessibilityIdentifier("addMusic")
                 if library.state.sources.isEmpty {
                     Text("Tu biblioteca empieza aquí. Añade una carpeta de Archivos, una copia local o un enlace.")
                         .foregroundStyle(.secondary)
@@ -117,7 +123,7 @@ struct LibraryView: View {
             Section {
                 NavigationLink { CollectionFavoritesView(player: player) } label: { Label("Favoritos", systemImage: "heart") }
                 NavigationLink { ListeningHistoryView(player: player) } label: { Label("Historial", systemImage: "clock") }
-                NavigationLink { LocalMusicView(player: player) } label: { Label("Disponible sin conexión", systemImage: "arrow.down.circle") }
+                NavigationLink { LocalMusicView(player: player) } label: { Label("Copias en Sonora", systemImage: "arrow.down.circle") }
             }.listRowBackground(theme.surface)
         }
         .listSectionSpacing(16)

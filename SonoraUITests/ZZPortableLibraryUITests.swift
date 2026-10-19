@@ -59,7 +59,7 @@ final class ZZPortableLibraryUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication(); app.launchArguments = ["-appearance", "papel", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]; app.launch()
         app.assertLibraryHome()
-        reveal(app.buttons["Disponible sin conexión"], in: app); app.buttons["Disponible sin conexión"].tap()
+        reveal(app.buttons["Copias en Sonora"], in: app); app.buttons["Copias en Sonora"].tap()
         reveal(app.buttons["importLocalFolder"], in: app); app.buttons["importLocalFolder"].tap()
         portableFolder(app); app.buttons["DOCPicker.actionButton"].tap()
         let completed = app.descendants(matching: .any)["localImportCompleted"].firstMatch

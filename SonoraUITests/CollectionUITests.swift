@@ -57,7 +57,7 @@ final class CollectionUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["bulkResult"].waitForExistence(timeout: 20))
         XCTAssertEqual(app.staticTexts["bulkResult"].label, "Guardados 3 de 3")
         capture("collection-batch-saved", app)
-        app.navigationBars["Información"].buttons["Listo"].tap()
+        app.navigationBars["Editar canciones"].buttons["Listo"].tap()
         app.terminate(); app.launchArguments = []; app.launch()
         app.assertLibraryHome()
         app.buttons["Álbumes"].tap()

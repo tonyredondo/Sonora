@@ -2,9 +2,30 @@ import PhotosUI
 import SonoraCore
 import SwiftUI
 
+enum BulkMetadataContext {
+    case selection, artist(String), album(String)
+    var title: String {
+        switch self { case .selection: "Editar canciones"; case .artist: "Editar artista"; case .album: "Editar álbum" }
+    }
+    var name: String? {
+        switch self { case .selection: nil; case .artist(let name), .album(let name): name }
+    }
+    var fields: [MetadataField] {
+        let first: [MetadataField]
+        switch self {
+        case .selection: first = [.artist, .album, .albumArtist, .genre, .date]
+        case .artist: first = [.artist, .albumArtist, .genre]
+        case .album: first = [.album, .albumArtist, .artist, .date, .genre]
+        }
+        return first + MetadataField.allCases.filter { !first.contains($0) }
+    }
+}
+
 struct BulkMetadataEditorView: View {
     let player: PlaybackController
     let tracks: [AudioTrack]
+    var context: BulkMetadataContext = .selection
+    @State private var originals: [MetadataField: Set<String>] = [:]
     @Environment(\.dismiss) private var dismiss
     @State private var expected: [String: FileFingerprint] = [:]
     @State private var values: [MetadataField: String] = [:]
@@ -27,7 +48,8 @@ struct BulkMetadataEditorView: View {
         NavigationStack {
             Form {
                 Section {
-                    Text("\(tracks.count) canciones")
+                    if let name = context.name { Text(name).font(.headline) }
+                    Text(songCount(tracks.count))
                     Text("Activa solo los campos que quieras aplicar a todas. Un campo activado y vacío borrará esa etiqueta.").font(.footnote).foregroundStyle(.secondary)
                 }
                 if (!loaded && issue == nil) || saving { ProgressView("\(saving ? "Guardando" : "Leyendo") · \(progress) / \(tracks.count)") }
@@ -38,7 +60,7 @@ struct BulkMetadataEditorView: View {
                     }
                 }
                 if loaded && result == nil {
-                    ForEach(MetadataField.allCases) { field in
+                    ForEach(context.fields) { field in
                         Section {
                             Toggle(field.title, isOn: Binding(get: { enabled.contains(field) }, set: { if $0 { enabled.insert(field) } else { enabled.remove(field) } }))
                                 .accessibilityIdentifier("bulk-apply-\(field.rawValue)")
@@ -67,24 +89,43 @@ struct BulkMetadataEditorView: View {
                 if !blocked.isEmpty { Section("Sin permiso de escritura") { ForEach(blocked, id: \.self) { Text($0) }; Text("Selecciona únicamente los archivos compatibles para editarlos.").font(.footnote) } }
                 if let issue { Text(issue).foregroundStyle(.red) }
             }
-            .navigationTitle("Información").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(context.title).navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button(result == nil ? "Cancelar" : "Listo") { if changed { confirmDiscard = true } else { dismiss() } }.disabled(saving || importingArtwork) }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Guardar") { confirm = true }.disabled(tracks.isEmpty || expected.count != tracks.count || !loaded || !blocked.isEmpty || saving || importingArtwork || result != nil || (enabled.isEmpty && artwork == .keep))
                 }
             }
-            .confirmationDialog("Guardar en \(tracks.count) archivos", isPresented: $confirm, titleVisibility: .visible) {
-                Button("Guardar en todos los archivos") {
-                    Task {
-                        saving = true; issue = nil; defer { saving = false }
-                        do {
-                            try patch.validate()
-                            result = await player.saveMetadataBatch(tracks, expected: expected, patch: patch) { progress = $0 }
-                        } catch { issue = error.localizedDescription }
+            .sheet(isPresented: $confirm) {
+                NavigationStack {
+                    Form {
+                        Section {
+                            if let name = context.name { Text(name).font(.headline) }
+                            Text(songCount(tracks.count))
+                            Text("Solo se aplicarán estos cambios. El resto de la información se conservará.").font(.footnote).foregroundStyle(.secondary)
+                        }
+                        ForEach(context.fields.filter { enabled.contains($0) }) { field in
+                            Section(field.title) {
+                                let old = originals[field, default: []].sorted()
+                                if old.count <= 1 { Text("Actual: \(old.first.flatMap { $0.isEmpty ? nil : $0 } ?? "Sin información")") }
+                                else {
+                                    DisclosureGroup("Actual: \(old.count) valores diferentes") {
+                                        ForEach(old, id: \.self) { Text($0.isEmpty ? "Sin información" : $0) }
+                                    }
+                                }
+                                if let value = values[field], !value.isEmpty { Text("Nuevo: \(value)").fontWeight(.semibold) }
+                                else { Label("Se borrará esta etiqueta", systemImage: "trash").foregroundStyle(.red) }
+                            }
+                        }
+                        if artwork != .keep {
+                            Section("Carátula") { Text(artwork == .remove ? "Se quitarán las carátulas de todas las canciones." : "Se sustituirán las carátulas de todas las canciones.") }
+                        }
+                        Button("Guardar en todos los archivos") { save() }.accessibilityIdentifier("confirmBulkSave")
                     }
+                    .navigationTitle("Revisar cambios").navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Volver") { confirm = false } } }
                 }
-            } message: { Text("Se aplicarán únicamente los campos activados. Cada archivo se comprobará antes de sustituirlo.") }
+            }
             .alert("Hay cambios sin guardar", isPresented: $confirmDiscard) {
                 Button("Descartar cambios", role: .destructive) { dismiss() }
                 Button("Seguir editando", role: .cancel) { }
@@ -95,6 +136,7 @@ struct BulkMetadataEditorView: View {
                     for (index, track) in tracks.enumerated() {
                         let snapshot = try await player.readMetadata(for: track)
                         try Task.checkCancellation()
+                        for field in MetadataField.allCases { originals[field, default: []].insert(snapshot.values[field] ?? "") }
                         expected[track.id] = snapshot.fingerprint
                         if !snapshot.canWrite { blocked.append(player.location(for: track)) }
                         if index == 0 { values = snapshot.values }
@@ -117,4 +159,17 @@ struct BulkMetadataEditorView: View {
             .interactiveDismissDisabled(saving || importingArtwork || changed)
         }
     }
+    private func save() {
+        confirm = false
+        saving = true; issue = nil
+        let changes = patch
+        Task {
+            defer { saving = false }
+            do {
+                try changes.validate()
+                result = await player.saveMetadataBatch(tracks, expected: expected, patch: changes) { progress = $0 }
+            } catch { issue = error.localizedDescription }
+        }
+    }
+
 }

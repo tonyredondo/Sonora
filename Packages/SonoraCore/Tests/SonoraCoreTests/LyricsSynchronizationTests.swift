@@ -92,13 +92,23 @@ final class LyricsSynchronizationTests: XCTestCase {
         catch { XCTAssertTrue(error is LyricsSynchronizationError) }
     }
 
-    func testAlreadyTimedLyricsCannotAccidentallyBeSentAsATranscript() async throws {
+    func testTimedRepairedLyricsAlignCurrentWordsAndReuseTheSameCache() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }
-        let http = LyricsHTTPFixture()
+        let http = LyricsHTTPFixture(catalog: 200, catalogText: "[00:00]Wrong edition")
         let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http, diagnostics: MetadataDiagnostics(directory: root.appendingPathComponent("Diagnostics")))
-        do { _ = try await client.synchronize(query: query, duration: 2, lyrics: "[00:01]Hello", offline: false) { XCTFail("Do not upload timestamped text"); return pcmFixture() }; XCTFail("Must reject") }
-        catch { XCTAssertTrue(error is LyricsSynchronizationError) }
-        let paths = await http.requests(); XCTAssertTrue(paths.isEmpty)
+        let text = LyricsDocument.aiTranscriptionMarker + "\n" + LyricsDocument.aiRepairMarker + "\n[00:00.90]Hello\n[00:01.90]Again"
+        let first = try await client.synchronize(query: query, duration: 2, lyrics: text, offline: false) { pcmFixture() }
+        XCTAssertEqual(first.value.source, .elevenlabs)
+        XCTAssertEqual(LyricsDocument(text: first.value.text).lines.map(\.time), [0.1, 1.1])
+        XCTAssertTrue(LyricsDocument(text: first.value.text).isAITranscribed)
+        XCTAssertTrue(LyricsDocument(text: first.value.text).isAIRepaired)
+        let second = try await client.synchronize(query: query, duration: 2, lyrics: first.value.text, offline: true) { pcmFixture() }
+        XCTAssertEqual(second.value.text, first.value.text); XCTAssertTrue(second.isCached)
+        let calls = await http.requests(); XCTAssertEqual(calls, ["/v1/lyrics/align"], "Times and attribution do not change the audio/text cache identity")
+        do {
+            _ = try await client.synchronize(query: query, duration: 2, lyrics: "[00:00.1]Hello corrected\n[00:01.1]Again", offline: true) { pcmFixture() }
+            XCTFail("A changed draft must not reuse timings for other words")
+        } catch { XCTAssertEqual(error as? MetadataLookupError, .notCached) }
     }
 
     func testCancellationWhilePreparingAudioDoesNotStartPaidRequest() async throws {

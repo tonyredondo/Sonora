@@ -18,7 +18,7 @@ struct LibrarySourcesView: View {
             List {
                 Section {
                     Button("Añadir música", systemImage: "plus.circle.fill") { addMusic = true }
-                    NavigationLink { LocalMusicView(player: player) } label: { Label("Copias guardadas en Sonora", systemImage: "internaldrive") }
+                    NavigationLink { LocalMusicView(player: player) } label: { Label("Copias en Sonora", systemImage: "internaldrive") }
                 }
                 Section {
                     ForEach(library.state.sources) { source in
