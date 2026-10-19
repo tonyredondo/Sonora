@@ -85,6 +85,7 @@ All JSON provider responses use an envelope with `provider`, `sources` (upstream
 | GET | `/v1/lyrics` | Required `title`, `artist`, `album`, `duration` in seconds; LRCLIB's exact-signature result, including `plainLyrics`, `syncedLyrics`, `instrumental` |
 | POST | `/v1/lyrics/align` | Multipart `file` (canonical WAV) and UTF-8 `text`; returns validated synchronized LRC and audio/text SHA-256 digests |
 | POST | `/v1/lyrics/transcribe` | Multipart `file` (canonical WAV); returns validated Scribe v2 text, line-level LRC and audio SHA-256; valid no-voice results contain empty text |
+| POST | `/v1/lyrics/interpret` | JSON `lyrics` and `language`; cached literary interpretation via the host user's Codex session, GPT-6-Astra at `xhigh` |
 | POST | `/v1/identify` | JSON `fingerprint` and `duration`; AcoustID recording IDs and scores |
 | GET | `/v1/artwork/{release_mbid}` | Front artwork at the provider's 500-pixel variant; downloaded only when requested |
 | POST | `/v1/jobs` | Create a bounded batch; returns 202 and a `Location` to poll |
@@ -132,3 +133,43 @@ Integration tests run real HTTP clients against local synthetic provider servers
 A separate ignored test, `approved_synthetic_elevenlabs_alignment` in `tests/live_alignment.rs`, can verify the real service after explicit approval. It accepts only a synthetic canonical WAV of up to ten seconds and a short known transcript. Supply the exact key, WAV, text and result paths through `SONORA_LIVE_ALIGNMENT_KEY_FILE`, `SONORA_LIVE_ALIGNMENT_WAV`, `SONORA_LIVE_ALIGNMENT_TEXT` and `SONORA_LIVE_ALIGNMENT_OUTPUT`, plus `SONORA_LIVE_ALIGNMENT_ACK=one-paid-synthetic-test`. Run that one test with `--ignored --exact`; it makes one paid request with no automatic retry. Ordinary test runs never read a provider key or run this probe.
 
 Provider contracts: [MusicBrainz rate limiting](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting), [AcoustID web service](https://acoustid.org/webservice), [LRCLIB documentation](https://lrclib.net/docs), [Cover Art Archive API](https://musicbrainz.org/doc/Cover_Art_Archive/API), [HTTP caching](https://www.rfc-editor.org/rfc/rfc9111.html), [ElevenLabs Forced Alignment](https://elevenlabs.io/docs/api-reference/forced-alignment/create), [ElevenLabs speech to text](https://elevenlabs.io/docs/api-reference/speech-to-text/convert). Provider/data terms and lyrics/artwork permissions apply independently of cache retention.
+
+## Lyric interpretation with Codex
+
+This optional personal integration uses the installed Codex CLI and its existing
+ChatGPT login. Sonora never reads, exports or copies the CLI credential. Enable it
+in the proxy TOML configuration after signing in with `codex login` as the same OS
+user that runs the proxy:
+
+```toml
+[codex]
+enabled = true
+binary = "/absolute/path/to/codex"
+```
+
+The adapter is verified with Codex CLI 0.162.0. It uses `codex exec` in an ephemeral,
+read-only session with user configuration, project instructions, shell tools,
+plugins, hooks, browsing and app connectors disabled. Requests explicitly select
+`gpt-6-astra`, reasoning effort `xhigh`, the default service tier and ChatGPT auth.
+No API key is required. Each new analysis consumes the account's Codex allowance;
+this does not turn a ChatGPT login into an API key.
+
+The protected `/v1/lyrics/interpret` route accepts up to 64 KiB of lyrics and one
+response language (`es`, `en`, `fr`, `de`, `it`, `pt`). Only the text is sent, with
+instructions to distinguish interpretation from confirmed author intent. Results
+identify their model and effort. The iPhone labels them as AI interpretations.
+
+One Codex process runs at a time, with at most eight active/waiting requests.
+The process deadline is 180 seconds and the total queue deadline 210 seconds.
+The proxy does not automatically start another Codex invocation after failure.
+Cancelling the owning task stops its child process. Identical queued requests
+reuse the first successful cached result.
+Text, language, model, effort and prompt version form the SHA-256 cache identity.
+Interpretations share the existing bounded SQLite cache and are reusable until
+eviction, including when Codex is disabled. Errors are never cached as results.
+The iPhone keeps its own exact-input cache for offline viewing.
+
+Ordinary tests use a local stub CLI. The ignored
+`live_codex_astra_xhigh_interpretation_and_cache` test uses only synthetic text and
+requires explicitly setting `SONORA_LIVE_CODEX` to an approved CLI binary. It makes
+one real request, then verifies reuse with Codex disabled.

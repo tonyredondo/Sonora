@@ -63,3 +63,9 @@ enabled = true
 min_interval_ms = 1000
 # Derived audio analysis cache, keyed by canonical audio + job parameters/version.
 ttl_seconds = 31536000
+
+# Personal lyric explanations through this OS user's Codex ChatGPT session.
+# Requires Codex CLI 0.162.0 or a compatible version. Never put a Codex token here.
+[codex]
+enabled = false
+binary = "codex" # Use an absolute path for launchd.

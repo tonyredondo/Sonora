@@ -1,6 +1,7 @@
 import AVFAudio
 import Observation
 import SFBAudioEngine
+import SonoraCore
 
 struct EqualizerSettings: Codable, Equatable {
     static let frequencies: [Float] = [31, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
@@ -50,6 +51,14 @@ enum EqualizerPreset: String, CaseIterable, Identifiable {
 /// The render callback never reads app state or takes a Swift lock.
 final class EqualizerProcessor: @unchecked Sendable {
     let node = AVAudioUnitEQ(numberOfBands: 10)
+    let timePitch = AVAudioUnitTimePitch()
+
+    func applyPlayback(_ value: PlaybackAdjustment) {
+        let value = value.validated
+        timePitch.rate = value.rate
+        timePitch.pitch = value.semitones * 100
+        timePitch.bypass = value.isOriginal
+    }
     private var settings = EqualizerSettings()
     private var sampleRate: Double = 44100
 
@@ -72,7 +81,9 @@ final class EqualizerProcessor: @unchecked Sendable {
         sampleRate = format.sampleRate
         apply(settings)
         engine.disconnectNodeOutput(node)
-        engine.connect(node, to: engine.mainMixerNode, format: format)
+        engine.disconnectNodeOutput(timePitch)
+        engine.connect(node, to: timePitch, format: format)
+        engine.connect(timePitch, to: engine.mainMixerNode, format: format)
         return node
     }
 }
@@ -80,6 +91,7 @@ final class EqualizerProcessor: @unchecked Sendable {
 @MainActor @Observable
 final class AudioEqualizer {
     private(set) var settings: EqualizerSettings
+    private(set) var playback: PlaybackAdjustment
     @ObservationIgnored let processor = EqualizerProcessor()
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let player: AudioPlayer
@@ -88,15 +100,28 @@ final class AudioEqualizer {
         self.defaults = defaults; self.player = player
         settings = defaults.data(forKey: "equalizerSettings")
             .flatMap { try? JSONDecoder().decode(EqualizerSettings.self, from: $0) }?.validated() ?? EqualizerSettings()
-        let processor = processor, settings = settings
+        playback = defaults.data(forKey: "playbackAdjustment")
+            .flatMap { try? JSONDecoder().decode(PlaybackAdjustment.self, from: $0) }?.validated ?? PlaybackAdjustment()
+        let processor = processor, settings = settings, playback = playback
         player.modifyProcessingGraph { engine in
             engine.attach(processor.node)
+            engine.attach(processor.timePitch)
+            processor.applyPlayback(playback)
             let source = player.sourceNode, format = source.outputFormat(forBus: 0)
             engine.disconnectNodeOutput(source)
             processor.apply(settings)
             let node = processor.connect(in: engine, format: format)
             engine.connect(source, to: node, format: format)
         }
+    }
+
+    func setPlayback(_ value: PlaybackAdjustment) {
+        let value = value.validated
+        guard value != playback else { return }
+        playback = value
+        let processor = processor
+        player.modifyProcessingGraph { _ in processor.applyPlayback(value) }
+        if let data = try? JSONEncoder().encode(value) { defaults.set(data, forKey: "playbackAdjustment") }
     }
 
     var preset: EqualizerPreset? {

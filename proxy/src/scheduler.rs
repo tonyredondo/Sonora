@@ -120,6 +120,9 @@ impl Drop for Inner {
 #[derive(Clone)]
 pub(crate) struct Scheduler(Arc<Inner>);
 impl Scheduler {
+    pub(crate) fn cache(&self) -> Cache {
+        self.0.cache.clone()
+    }
     pub fn new(config: Config) -> Result<Self, Error> {
         config.validate().map_err(|_| Error::Configuration)?;
         let cache = Cache::open(

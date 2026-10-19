@@ -4,6 +4,13 @@ struct SoundSettingsView: View {
     let player: PlaybackController
     var body: some View {
         List {
+            PlaybackAdjustmentControls(player: player)
+            if let track = player.current {
+                Section {
+                    NavigationLink { SongAnalysisView(player: player, track: track) } label: { Label("BPM, forma de onda y marcadores", systemImage: "waveform.path") }
+                        .accessibilityIdentifier("openSongAnalysis")
+                }
+            }
             Section {
                 NavigationLink { EqualizerView(player: player) } label: { Label("Ecualizador", systemImage: "slider.vertical.3") }
                 NavigationLink { TransitionSettingsView(player: player) } label: { Label("Transiciones entre canciones", systemImage: "arrow.triangle.branch") }

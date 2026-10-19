@@ -91,3 +91,25 @@ The Xcode project is included in the source tree. `python3 scripts/generate-proj
 Read the [product proposal](docs/product-proposal.md) for the complete scope and the [selected visual references](docs/design/README.md) for Noche/Papel. The original boards show fictional music and the earlier collection/lyrics proposals; they are design references, not screenshots of implemented features.
 
 The app bundles the upstream [audio license notices](Sonora/Resources/ThirdPartyNotices.txt). Distribution obligations and signed device packaging must be checked before a release.
+
+## Audio and lyric tools
+
+Open **Audio** in the player for independent speed (0.5–2×) and pitch (±12
+semitones). The settings also apply while previewing lyric edits; positions remain
+in original audio seconds so lyric timing and seeking stay aligned.
+
+**BPM, waveform and markers** analyzes the current file locally, supports files
+up to two hours, and caches the waveform and estimated tempo by decoded audio
+identity. Silence or an unstable beat can leave BPM unavailable. Correct the BPM
+manually or tap a steady rhythm; named markers can be edited and revisited. Derived
+analysis is bounded to 32 MB/512 entries; personal BPM overrides and markers are
+stored separately and never removed by analysis-cache eviction. None of these
+operations rewrites audio tags.
+
+In **Lyrics → Comprender**, **Significado** requests a cached AI interpretation
+through the [Codex proxy integration](proxy/README.md#lyric-interpretation-with-codex).
+**Traducción** uses Apple's Translation framework on iOS 18 or later. Download the
+requested language models when iOS prompts; supported downloaded pairs then work
+offline. Translation appears beneath each original phrase, retaining its identity,
+seek target and timing. Editing text or timing invalidates that translation.
+Translations never overwrite the original lyric or its file tags.
