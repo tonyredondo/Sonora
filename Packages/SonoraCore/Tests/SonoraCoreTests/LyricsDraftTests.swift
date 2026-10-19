@@ -2,6 +2,24 @@ import XCTest
 @testable import SonoraCore
 
 final class LyricsDraftTests: XCTestCase {
+    func testTrimPreservesCuesHeadersLineEndingsAndInternalWhitespace() {
+        let source = " [by:Someone] \r\n[offset:200]\r\n[00:01.20][00:08.200] \tFirst  phrase\t \r\n\r\n[01:12:345]\tCanci\u{00f3}n \u{1f3b5} \r\n[01:13]  \r\n"
+        let expected = " [by:Someone] \r\n[offset:200]\r\n[00:01.20][00:08.200]First  phrase\r\n\r\n[01:12:345]Canci\u{00f3}n \u{1f3b5}\r\n[01:13]\r\n"
+        let trimmed = LyricsDraft.trimmingPhraseWhitespace(in: source)
+        XCTAssertEqual(trimmed, expected)
+        XCTAssertEqual(LyricsDraft(text: trimmed).lines.map(\.time), LyricsDraft(text: source).lines.map(\.time))
+        XCTAssertEqual(LyricsDraft.trimmingPhraseWhitespace(in: trimmed), trimmed)
+    }
+
+    func testTrimKeepsStanzasAndDoesNotModifyDraftWhileTyping() {
+        let source = "  First  phrase \t\n\n\tSecond\tphrase  \r  Last \n"
+        let draft = LyricsDraft(text: source)
+        XCTAssertEqual(draft.text, source)
+        XCTAssertEqual(LyricsDraft.trimmingPhraseWhitespace(in: source), "First  phrase\n\nSecond\tphrase\rLast\n")
+        XCTAssertEqual(LyricsDraft.trimmingPhraseWhitespace(in: ""), "")
+        XCTAssertEqual(LyricsDraft.trimmingPhraseWhitespace(in: " \n\t\n"), " \n\t\n")
+    }
+
     func testOpeningAndPreviewingPreservesSourceAndMixedUntimedLines() throws {
         let source = "[by:Someone]\r\n[offset:200]\r\n[00:01]First\r\nMissing time\r\n\r\n[00:03]Last"
         let draft = LyricsDraft(text: source)

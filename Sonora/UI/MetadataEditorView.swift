@@ -256,7 +256,10 @@ struct MetadataEditorView: View {
     }
     private func save() {
         guard let snapshot else { return }
-        let change = patch
+        var change = patch
+        if let lyrics = change.values[.lyrics] {
+            change.values[.lyrics] = LyricsDraft.trimmingPhraseWhitespace(in: lyrics)
+        }
         Task {
             saving = true; issue = nil; defer { saving = false }
             do {

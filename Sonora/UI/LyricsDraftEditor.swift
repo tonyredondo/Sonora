@@ -19,7 +19,9 @@ struct LyricsDraftEditor: View {
                 ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }.pickerStyle(.segmented).accessibilityIdentifier("lyricsDraftMode")
             if mode == .text {
-                TextEditor(text: $text).frame(minHeight: 240).focused($editingText).accessibilityLabel("Texto de la letra").accessibilityIdentifier("metadata-lyrics")
+                TextEditor(text: $text)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 240).focused($editingText).accessibilityLabel("Texto de la letra").accessibilityIdentifier("metadata-lyrics")
                 Text("En Frases puedes editar cada línea y su inicio. Previsualizar sigue este borrador con la música; solo Guardar cambia el archivo.")
                     .font(.footnote).foregroundStyle(.secondary)
             } else if draft.lines.isEmpty {
@@ -152,7 +154,9 @@ struct LyricsEditingTransport: View {
                 if !editing, let scrub { seek(scrub); self.scrub = nil }
             }.frame(height: 30).accessibilityIdentifier("draftPlaybackTimeline")
             if let issue = player.issue { Text(issue).font(.caption).foregroundStyle(.red).lineLimit(2) }
-        }.padding(.horizontal).padding(.vertical, 8).background(.bar)
+        }.padding(.horizontal, 12).padding(.vertical, 8)
+            .playerGlassPanel()
+            .padding(.horizontal, 12).padding(.vertical, 6)
             .disabled(duration <= 0 || player.isDeletingFiles)
     }
     private var position: some View {

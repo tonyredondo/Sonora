@@ -29,7 +29,7 @@ enum LyricsSource {
             defer { if access { url.stopAccessingSecurityScopedResource() } }
             guard ["lrc", "txt"].contains(url.pathExtension.lowercased()),
                   let text = sidecar(url, coordinator: NSFileCoordinator()) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
-            return text
+            return LyricsDraft.trimmingPhraseWhitespace(in: text)
         }.value
     }
 }

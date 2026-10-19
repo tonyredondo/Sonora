@@ -90,6 +90,7 @@ struct SourceFolderView: View {
             footer: { Text("Puedes borrar archivos y subcarpetas desde sus opciones o deslizando su fila.") }
         }
         .compactContentSpacing()
+        .miniPlayerContentMargins()
         .disabled(player.isDeletingFiles)
         .overlay { if player.isDeletingFiles { ProgressView("Eliminando y actualizando biblioteca…").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16)) } }
         .navigationTitle(title)

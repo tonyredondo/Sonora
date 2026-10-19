@@ -47,6 +47,7 @@ struct LocalMusicView: View {
                 if imports.copies.isEmpty { Text("Todavía no has importado carpetas. Tus fuentes de Archivos siguen disponibles en la biblioteca.").foregroundStyle(.secondary) }
             }
         }
+        .miniPlayerContentMargins()
         .navigationTitle("Copias en Sonora")
         .navigationBarTitleDisplayMode(.inline)
         .fileImporter(isPresented: $chooseFolder, allowedContentTypes: [.folder]) { result in
