@@ -51,6 +51,7 @@ struct LibrarySearchView: View {
                 if artists.isEmpty && albums.isEmpty && playlists.isEmpty && songs.isEmpty { ContentUnavailableView.search(text: query) }
             }
         }
+        .miniPlayerContentMargins()
         .safeAreaInset(edge: .top, spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {

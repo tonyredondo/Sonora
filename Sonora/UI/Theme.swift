@@ -16,6 +16,55 @@ struct PlayerTheme {
     var heading: Font.Design { isDark ? .default : .serif }
 }
 
+struct PlayerGlassGroup<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 8) { content }
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    func playerControlGlass<S: Shape>(in shape: S, prominent: Bool = false, destructive: Bool = false) -> some View {
+        modifier(PlayerControlGlass(shape: shape, prominent: prominent, destructive: destructive))
+    }
+
+    func playerGlassPanel() -> some View { modifier(PlayerGlassPanel()) }
+}
+
+private struct PlayerControlGlass<S: Shape>: ViewModifier {
+    let shape: S
+    let prominent: Bool
+    let destructive: Bool
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.isEnabled) private var isEnabled
+
+    func body(content: Content) -> some View {
+        let accent = destructive ? Color.red : PlayerTheme(scheme).accent
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular.tint(prominent ? accent : nil).interactive(isEnabled), in: shape)
+        } else {
+            content.background(prominent ? accent : accent.opacity(0.12), in: shape)
+        }
+    }
+}
+
+private struct PlayerGlassPanel: ViewModifier {
+    @Environment(\.colorScheme) private var scheme
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular, in: .rect(cornerRadius: 26))
+        } else {
+            content.background(PlayerTheme(scheme).surface, in: .rect(cornerRadius: 14))
+        }
+    }
+}
+
 struct ArtworkView: View {
     let image: UIImage?
     var cornerRadius: CGFloat = 12

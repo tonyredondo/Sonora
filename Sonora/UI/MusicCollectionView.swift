@@ -40,7 +40,8 @@ struct CollectionGroupsView: View {
                     }
                 }
             }
-        }.navigationTitle(albums ? "Álbumes" : "Artistas")
+        }.miniPlayerContentMargins()
+            .navigationTitle(albums ? "Álbumes" : "Artistas")
             .sheet(item: $volumeSelection) { VolumeAnalysisView(player: player, selection: $0) }
     }
 }
@@ -78,6 +79,7 @@ struct ArtistCollectionView: View {
             }
         }
         .compactContentSpacing()
+        .miniPlayerContentMargins()
         .navigationTitle(artistTitle)
         .navigationDestination(isPresented: $showingSongs) { CollectionSongList(player: player, title: artistTitle, ids: artist.songIDs) }
         .sheet(isPresented: $editing) {
@@ -104,7 +106,8 @@ struct CollectionFavoritesView: View {
             if library.state.favorites.isEmpty && library.state.favoriteAlbums.isEmpty && library.state.favoriteArtists.isEmpty {
                 ContentUnavailableView("Tus favoritos", systemImage: "heart", description: Text("Marca canciones, álbumes o artistas desde sus opciones."))
             }
-        }.navigationTitle("Favoritos")
+        }.miniPlayerContentMargins()
+            .navigationTitle("Favoritos")
     }
 }
 
@@ -134,6 +137,7 @@ struct PlaylistsView: View {
             }
             if player.library.state.playlists.isEmpty { ContentUnavailableView("Tus listas", systemImage: "music.note.list", description: Text("Crea una lista y elige las canciones que quieras incluir.")) }
         }
+        .miniPlayerContentMargins()
         .navigationTitle("Listas")
         .toolbar {
             Button("Importar playlist", systemImage: "square.and.arrow.down") { importing = true }
@@ -166,6 +170,7 @@ struct ListeningHistoryView: View {
             }
             if player.library.state.history.isEmpty { ContentUnavailableView("Todavía no has escuchado música", systemImage: "clock", description: Text("Aquí aparecerán tus últimas 500 canciones reproducidas.")) }
         }
+        .miniPlayerContentMargins()
         .navigationTitle("Historial")
         .toolbar { Button("Borrar historial", role: .destructive) { clear = true }.disabled(player.library.state.history.isEmpty) }
         .confirmationDialog("¿Borrar el historial?", isPresented: $clear, titleVisibility: .visible) { Button("Borrar historial", role: .destructive) { player.library.clearHistory() } }

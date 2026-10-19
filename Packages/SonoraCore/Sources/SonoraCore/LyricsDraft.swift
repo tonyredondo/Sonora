@@ -62,6 +62,31 @@ public struct LyricsDraft: Sendable {
         }
     }
 
+    /// Clean phrase edges at import/save boundaries, keeping LRC cues and line endings intact.
+    public static func trimmingPhraseWhitespace(in text: String) -> String {
+        func trimLine(_ raw: Substring) -> String {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty, header.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) == nil else { return String(raw) }
+            var phrase = line
+            var cues = ""
+            while let match = cue.firstMatch(in: phrase, range: NSRange(phrase.startIndex..., in: phrase)),
+                  let range = Range(match.range, in: phrase) {
+                cues += phrase[range]
+                phrase = String(phrase[range.upperBound...])
+            }
+            return cues + phrase.trimmingCharacters(in: .whitespaces)
+        }
+        var result = ""
+        var start = text.startIndex
+        for index in text.indices where text[index].isNewline {
+            result += trimLine(text[start..<index])
+            result.append(text[index])
+            start = text.index(after: index)
+        }
+        result += trimLine(text[start...])
+        return result
+    }
+
     public func replacing(_ id: String, text replacement: String, time: Double?, duration: Double) throws -> String {
         guard let target = lines.first(where: { $0.id == id }), !replacement.contains("\n"), !replacement.contains("\r"), !replacement.contains("\0"), duration.isFinite, duration > 0,
               Self.cue.firstMatch(in: replacement, range: NSRange(replacement.startIndex..., in: replacement)) == nil,

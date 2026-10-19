@@ -12,6 +12,7 @@ struct LibraryView: View {
     @State private var categoryDestination: LibraryCategory?
     @State private var selectedAlbum: CollectionGroup?
     @State private var showAlbum = false
+    @State private var miniPlayerHeight: CGFloat = 0
     private enum LibraryCategory: Hashable { case artists, albums, songs }
     private var library: MusicLibrary { player.library }
     private var theme: PlayerTheme { PlayerTheme(scheme) }
@@ -75,14 +76,23 @@ struct LibraryView: View {
         .onChange(of: phase) { if phase == .background { player.localImports.cancel() } }
     }
 
-    private func playerTab<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        // Reserve the player's actual height for the whole stack, including pushed lists.
-        // An inset outside NavigationStack can leave its scroll content behind the player.
-        VStack(spacing: 0) {
+    @ViewBuilder private func playerTab<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        if #available(iOS 26.0, *) {
             NavigationStack { content() }
-            miniPlayer
+                .environment(\.miniPlayerBottomInset, player.current == nil ? 0 : miniPlayerHeight)
+                .safeAreaBar(edge: .bottom, spacing: 0) {
+                    miniPlayer
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                            if height > 0 { miniPlayerHeight = height }
+                        }
+                }
+        } else {
+            VStack(spacing: 0) {
+                NavigationStack { content() }
+                miniPlayer
+            }
+            .background(theme.background)
         }
-        .background(theme.background)
     }
 
     private var home: some View {
@@ -127,6 +137,7 @@ struct LibraryView: View {
             }.listRowBackground(theme.surface)
         }
         .listSectionSpacing(16)
+        .miniPlayerContentMargins()
         .accessibilityIdentifier("libraryHome")
         .scrollContentBackground(.hidden).background(theme.background)
         .confirmationDialog("¿Restablecer la biblioteca?", isPresented: $reset, titleVisibility: .visible) {
@@ -145,8 +156,34 @@ struct LibraryView: View {
     @ViewBuilder private var miniPlayer: some View {
         if player.current != nil {
             MiniPlayer(player: player, openPlayer: { showPlayer = true }, openQueue: { sheet = .queue })
-                .background(theme.background)
         }
+    }
+}
+
+private struct MiniPlayerBottomInsetKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+    var miniPlayerBottomInset: CGFloat {
+        get { self[MiniPlayerBottomInsetKey.self] }
+        set { self[MiniPlayerBottomInsetKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Reserve scrollable space, leaving the viewport free to draw behind the glass.
+    func miniPlayerContentMargins(isEnabled: Bool = true) -> some View {
+        modifier(MiniPlayerContentMargins(isEnabled: isEnabled))
+    }
+}
+
+private struct MiniPlayerContentMargins: ViewModifier {
+    @Environment(\.miniPlayerBottomInset) private var inset
+    let isEnabled: Bool
+
+    func body(content: Content) -> some View {
+        content.contentMargins(.bottom, isEnabled && inset > 0 ? inset + 12 : nil, for: .scrollContent)
     }
 }
 

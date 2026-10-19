@@ -16,7 +16,6 @@ struct CollectionSongList: View {
     var group: CollectionGroup? = nil
     var albumGroup = false
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var scheme
     @State private var query = ""
     @State private var selection: Set<String> = []
     @State private var editMode: EditMode = .inactive
@@ -34,7 +33,7 @@ struct CollectionSongList: View {
     private var displayedTitle: String { playlistID.flatMap { id in library.state.playlists.first { $0.id == id }?.name } ?? (albumGroup ? firstSong?.album ?? title : title) }
     private var activeIDs: [String] { playlistID.flatMap { id in library.state.playlists.first { $0.id == id }?.songIDs } ?? ids }
     private var songs: [CollectionSong] { activeIDs.compactMap { library.state.songs[$0] }.filter { $0.matches(query) } }
-    var body: some View {
+    private var songList: some View {
         List(selection: $selection) {
             if albumGroup, let group, !editMode.isEditing {
                 Section {
@@ -71,10 +70,39 @@ struct CollectionSongList: View {
             if editMode.isEditing { Text("Selecciona canciones para añadirlas a una playlist, ponerlas en cola o editar su información en conjunto.").font(.footnote).foregroundStyle(.secondary) }
         }
         .compactContentSpacing()
+        .miniPlayerContentMargins()
         .accessibilityIdentifier("collectionSongs")
         .environment(\.editMode, $editMode)
-        .navigationTitle(playlistID.flatMap { id in library.state.playlists.first { $0.id == id }?.name } ?? displayedTitle)
+        .navigationTitle(editMode.isEditing ? "\(selection.count) seleccionadas" : displayedTitle)
+        .navigationBarTitleDisplayMode(editMode.isEditing ? .inline : .automatic)
         .searchable(text: $query, prompt: "Buscar canciones")
+    }
+
+    @ViewBuilder private var listWithSelectionHeader: some View {
+        if #available(iOS 26.0, *) {
+            songList.safeAreaBar(edge: .top, spacing: 0) { selectionToolbar }
+        } else {
+            songList.safeAreaInset(edge: .top, spacing: 0) { selectionToolbar }
+        }
+    }
+
+    @ViewBuilder private var selectionToolbar: some View {
+        if editMode.isEditing {
+            CompactActionRow {
+                Button { selection = Set(songs.map(\.id)) } label: {
+                    CompactActionLabel(title: "Seleccionar todo", icon: "checkmark.circle", caption: "Todo")
+                }
+                .accessibilityIdentifier("selectAllSongs")
+                .disabled(songs.isEmpty)
+                selectionActions
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+        }
+    }
+
+    var body: some View {
+        listWithSelectionHeader
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button(editMode.isEditing ? "Listo" : "Seleccionar") {
@@ -82,30 +110,14 @@ struct CollectionSongList: View {
                     if !editMode.isEditing { selection = [] }
                 }
             }
-            if let group {
+            if let group, !editMode.isEditing {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         if albumGroup { library.toggleAlbum(group.id) } else { library.toggleArtist(group.id) }
                     } label: { Image(systemName: (albumGroup ? library.state.favoriteAlbums : library.state.favoriteArtists).contains(group.id) ? "heart.fill" : "heart") }.accessibilityLabel("Marcar favorito")
                 }
             }
-            if sourceID != nil { ToolbarItem(placement: .primaryAction) { Button("Quitar de la biblioteca", role: .destructive) { forget = true } } }
-        }
-        .safeAreaInset(edge: .bottom) {
-            if editMode.isEditing {
-                VStack(spacing: 10) {
-                    HStack {
-                        Text("\(selection.count) seleccionadas").font(.subheadline).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Seleccionar todo") { selection = Set(songs.map(\.id)) }
-                    }
-                    CompactActionRow { selectionActions }
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 20)
-                .background(PlayerTheme(scheme).background)
-            }
+            if sourceID != nil, !editMode.isEditing { ToolbarItem(placement: .primaryAction) { Button("Quitar de la biblioteca", role: .destructive) { forget = true } } }
         }
         .sheet(item: $metadataSelection) { selected in
             if selected.tracks.count == 1, let track = selected.tracks.first, case .selection = selected.context { MetadataEditorView(player: player, track: track) }
@@ -150,7 +162,7 @@ struct CollectionSongList: View {
                     .accessibilityIdentifier("browseSourceFiles")
             }
             if !songs.isEmpty {
-                Menu { collectionMenuActions } label: { CompactActionLabel(title: "Más", icon: "ellipsis") }
+                CompactActionMenu(title: "Más", icon: "ellipsis") { collectionMenuActions }
                     .accessibilityIdentifier("collectionOptions")
             }
         }
@@ -160,7 +172,7 @@ struct CollectionSongList: View {
             if !songs.isEmpty { playbackActions }
             Button { pickingSongs = true } label: { CompactActionLabel(title: "Añadir canciones", icon: "plus", caption: "Añadir") }
                 .accessibilityIdentifier("addPlaylistSongs")
-            Menu {
+            CompactActionMenu(title: "Gestionar lista", icon: "ellipsis", caption: "Más") {
                 if !songs.isEmpty {
                     collectionMenuActions
                     Divider()
@@ -172,7 +184,7 @@ struct CollectionSongList: View {
                 }
                 Divider()
                 Button("Eliminar playlist", role: .destructive) { deletingPlaylist = true }
-            } label: { CompactActionLabel(title: "Gestionar lista", icon: "ellipsis", caption: "Más") }
+            }
                 .accessibilityIdentifier("managePlaylist")
         }
     }
@@ -199,13 +211,13 @@ struct CollectionSongList: View {
                 .accessibilityIdentifier("editSelectedSongs")
             Button { addToPlaylist = true } label: { CompactActionLabel(title: "Añadir a lista", icon: "music.note.list", caption: "A lista") }
                 .accessibilityIdentifier("addSelectedToPlaylist")
-            Menu {
+            CompactActionMenu(title: "Más", icon: "ellipsis") {
                 Button("Reproducir a continuación") { player.enqueueSongs(selectedIDs, playNext: true) }
                 Button("Añadir al final de la cola") { player.enqueueSongs(selectedIDs, playNext: false) }
                 Button("Analizar volumen", systemImage: "waveform") {
                     volumeSelection = .init(tracks: selectedIDs.compactMap { library.state.songs[$0]?.audioTrack })
                 }
-            } label: { CompactActionLabel(title: "Más", icon: "ellipsis") }
+            }
                 .accessibilityIdentifier("selectedSongsOptions")
         }.disabled(selection.isEmpty)
     }

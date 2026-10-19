@@ -20,6 +20,10 @@ struct CompactActionRow<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
+        PlayerGlassGroup { row }
+    }
+
+    private var row: some View {
         ViewThatFits(in: .horizontal) {
             actions.fixedSize(horizontal: true, vertical: false)
             if layout == .inline {
@@ -100,7 +104,7 @@ struct CompactActionLabel: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .frame(minWidth: 44, minHeight: 44)
-                    .background(prominent ? accent : accent.opacity(0.12), in: .capsule)
+                    .playerControlGlass(in: Capsule(), prominent: prominent, destructive: destructive)
             } else {
                 iconLabel(accent: accent)
             }
@@ -117,7 +121,7 @@ struct CompactActionLabel: View {
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(prominent ? (scheme == .dark ? Color.black : Color.white) : accent)
                 .frame(width: 44, height: 44)
-                .background(prominent ? accent : accent.opacity(0.12), in: .circle)
+                .playerControlGlass(in: Circle(), prominent: prominent, destructive: destructive)
             Text(caption ?? title)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(destructive ? Color.red : .primary)
@@ -125,5 +129,28 @@ struct CompactActionLabel: View {
                 .fixedSize(horizontal: true, vertical: false)
         }
         .frame(minWidth: actionWidth)
+    }
+}
+
+/// A native menu promotes glass inside its label to the full label bounds.
+/// Keep the visible label outside it while the transparent menu covers both icon and caption.
+struct CompactActionMenu<Content: View>: View {
+    let title: String
+    let icon: String
+    var caption: String? = nil
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        CompactActionLabel(title: title, icon: icon, caption: caption)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .overlay {
+                Menu { content } label: {
+                    Color.clear.contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityHidden(false)
+                .accessibilityLabel(title)
+            }
     }
 }

@@ -75,28 +75,31 @@ struct NowPlayingView: View {
             }
     }
     private var header: some View {
-        HStack {
-            Button { dismiss() } label: { Image(systemName: "chevron.down").frame(width: 44, height: 44) }.accessibilityLabel("Cerrar reproductor")
-            Spacer(minLength: 8)
-            Text(player.currentDetails?.album ?? player.folderName).font(.subheadline).lineLimit(1)
-            Spacer(minLength: 8)
-            Button { showArtworkLyrics.toggle() } label: {
-                Image(systemName: showArtworkLyrics ? "quote.bubble.fill" : "quote.bubble")
-                    .frame(width: 44, height: 44)
-            }
-            .foregroundStyle(showArtworkLyrics ? theme.accent : .secondary)
-            .accessibilityLabel(showArtworkLyrics ? "Ocultar letra en portada" : "Mostrar letra en portada")
-            .accessibilityValue(showArtworkLyrics ? "Visibles" : "Ocultas")
-            .accessibilityAddTraits(showArtworkLyrics ? .isSelected : [])
-            .accessibilityIdentifier("toggleArtworkLyrics")
-            Menu {
-                Button("Sonido", systemImage: "slider.horizontal.3") { showListening = true }
-                Button("Temporizador", systemImage: "moon.zzz") { showTimer = true }
-                Divider()
-                if let track = player.current { SongActions(player: player, track: track) { songAction = $0 } }
-            } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }.accessibilityLabel("Opciones de canción")
-            Button { showQueue = true } label: { Image(systemName: "list.bullet").frame(width: 44, height: 44) }.accessibilityLabel("Cola").accessibilityIdentifier("playerQueue")
-        }.font(.system(size: 18, weight: .medium))
+        PlayerGlassGroup {
+            HStack {
+                Button { dismiss() } label: { Image(systemName: "chevron.down").frame(width: 44, height: 44).playerControlGlass(in: Circle()) }.accessibilityLabel("Cerrar reproductor")
+                Spacer(minLength: 8)
+                Text(player.currentDetails?.album ?? player.folderName).font(.subheadline).lineLimit(1)
+                Spacer(minLength: 8)
+                Button { showArtworkLyrics.toggle() } label: {
+                    Image(systemName: showArtworkLyrics ? "quote.bubble.fill" : "quote.bubble")
+                        .frame(width: 44, height: 44)
+                        .playerControlGlass(in: Circle())
+                }
+                .foregroundStyle(showArtworkLyrics ? theme.accent : .secondary)
+                .accessibilityLabel(showArtworkLyrics ? "Ocultar letra en portada" : "Mostrar letra en portada")
+                .accessibilityValue(showArtworkLyrics ? "Visibles" : "Ocultas")
+                .accessibilityAddTraits(showArtworkLyrics ? .isSelected : [])
+                .accessibilityIdentifier("toggleArtworkLyrics")
+                Menu {
+                    Button("Sonido", systemImage: "slider.horizontal.3") { showListening = true }
+                    Button("Temporizador", systemImage: "moon.zzz") { showTimer = true }
+                    Divider()
+                    if let track = player.current { SongActions(player: player, track: track) { songAction = $0 } }
+                } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44).playerControlGlass(in: Circle()) }.accessibilityLabel("Opciones de canción")
+                Button { showQueue = true } label: { Image(systemName: "list.bullet").frame(width: 44, height: 44).playerControlGlass(in: Circle()) }.accessibilityLabel("Cola").accessibilityIdentifier("playerQueue")
+            }.font(.system(size: 18, weight: .medium)).buttonStyle(.plain)
+        }
     }
     private func trackInformation(compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: compact ? 4 : 8) {
@@ -111,18 +114,20 @@ struct NowPlayingView: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private var transport: some View {
-        HStack(spacing: 16) {
-            Button { player.shuffle.toggle() } label: { Image(systemName: "shuffle").frame(width: 44, height: 44) }
-                .foregroundStyle(player.shuffle ? theme.accent : .secondary).accessibilityLabel("Aleatorio").accessibilityValue(player.shuffle ? "Activado" : "Desactivado")
-            Button { player.previous() } label: { Image(systemName: "backward.end.fill").font(.system(size: 28)).frame(width: 44, height: 44) }.accessibilityLabel("Anterior")
-            playButton
-            Button { player.next() } label: { Image(systemName: "forward.end.fill").font(.system(size: 28)).frame(width: 44, height: 44) }.accessibilityLabel("Siguiente")
-            Button {
-                player.repeatMode = player.repeatMode == .off ? .all : player.repeatMode == .all ? .one : .off
-            } label: { Image(systemName: player.repeatMode == .one ? "repeat.1" : "repeat").frame(width: 44, height: 44) }
-                .foregroundStyle(player.repeatMode == .off ? .secondary : theme.accent)
-                .accessibilityLabel("Repetición").accessibilityValue(player.repeatMode == .off ? "Desactivada" : player.repeatMode == .one ? "Una canción" : "Toda la cola")
-        }.font(.system(size: 20))
+        PlayerGlassGroup {
+            HStack(spacing: 16) {
+                Button { player.shuffle.toggle() } label: { Image(systemName: "shuffle").frame(width: 44, height: 44).playerControlGlass(in: Circle()) }
+                    .foregroundStyle(player.shuffle ? theme.accent : .secondary).accessibilityLabel("Aleatorio").accessibilityValue(player.shuffle ? "Activado" : "Desactivado")
+                Button { player.previous() } label: { Image(systemName: "backward.end.fill").font(.system(size: 28)).frame(width: 44, height: 44).playerControlGlass(in: Circle()) }.accessibilityLabel("Anterior")
+                playButton
+                Button { player.next() } label: { Image(systemName: "forward.end.fill").font(.system(size: 28)).frame(width: 44, height: 44).playerControlGlass(in: Circle()) }.accessibilityLabel("Siguiente")
+                Button {
+                    player.repeatMode = player.repeatMode == .off ? .all : player.repeatMode == .all ? .one : .off
+                } label: { Image(systemName: player.repeatMode == .one ? "repeat.1" : "repeat").frame(width: 44, height: 44).playerControlGlass(in: Circle()) }
+                    .foregroundStyle(player.repeatMode == .off ? .secondary : theme.accent)
+                    .accessibilityLabel("Repetición").accessibilityValue(player.repeatMode == .off ? "Desactivada" : player.repeatMode == .one ? "Una canción" : "Toda la cola")
+            }.font(.system(size: 20)).buttonStyle(.plain)
+        }
     }
     private var output: some View {
         HStack(spacing: 12) {
@@ -136,10 +141,12 @@ struct NowPlayingView: View {
     private var playButton: some View {
         Button { player.togglePlayback() } label: {
             ZStack {
-                Circle().strokeBorder(.primary.opacity(0.6), lineWidth: 1).frame(width: 76, height: 76)
                 if player.isPreparing { ProgressView() }
                 else { Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 30)).contentTransition(.symbolEffect(.replace)) }
             }
+            .frame(width: 76, height: 76)
+            .foregroundStyle(scheme == .dark ? Color.black : Color.white)
+            .playerControlGlass(in: Circle(), prominent: true)
         }.accessibilityLabel(player.isPlaying ? "Pausar" : "Reproducir").accessibilityIdentifier("playerTransport")
     }
 }
@@ -187,12 +194,14 @@ struct MiniPlayer: View {
             }.buttonStyle(.plain).accessibilityHint("Abrir reproductor").accessibilityIdentifier("openNowPlaying")
             HStack(spacing: 10) {
                 Button { player.togglePlayback() } label: {
-                    if player.isPreparing { ProgressView().frame(width: 44, height: 44) }
-                    else { Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.title3).frame(width: 44, height: 44) }
+                    Group {
+                        if player.isPreparing { ProgressView() }
+                        else { Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.title3) }
+                    }.frame(width: 44, height: 44).contentShape(.rect)
                 }.accessibilityLabel(player.isPlaying ? "Pausar" : "Reproducir").accessibilityIdentifier("miniTransport")
-                Button(action: openQueue) { Image(systemName: "list.bullet").frame(width: 44, height: 44) }.accessibilityLabel("Cola").accessibilityIdentifier("miniQueue")
-            }.padding(.trailing, 12)
-        }.background(PlayerTheme(scheme).surface).clipShape(.rect(cornerRadius: 14)).padding(.horizontal, 12).padding(.bottom, 6)
+                Button(action: openQueue) { Image(systemName: "list.bullet").frame(width: 44, height: 44).contentShape(.rect) }.accessibilityLabel("Cola").accessibilityIdentifier("miniQueue")
+            }.foregroundStyle(PlayerTheme(scheme).accent).padding(.trailing, 12)
+        }.buttonStyle(.plain).playerGlassPanel().padding(.horizontal, 12).padding(.bottom, 6)
     }
 }
 

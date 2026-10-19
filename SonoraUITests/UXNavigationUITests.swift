@@ -144,16 +144,18 @@ final class UXNavigationUITests: XCTestCase {
         XCTAssertTrue(editor.waitForExistence(timeout: 10))
         let original = editor.value as? String ?? ""
         XCTAssertTrue(original.isEmpty, "This test owns only the empty synthetic lyric fixture")
-        editor.tap(); editor.typeText("Letra de prueba UX\nSegunda línea")
+        let savedLyrics = "[00:01.20]Letra de prueba UX\n\n[00:02.38]Segunda línea"
+        editor.tap(); editor.typeText("[00:01.20]  Letra de prueba UX  \n\n[00:02.38]  Segunda línea  ")
         app.buttons["metadataSave"].tap(); app.buttons["Guardar en archivo"].tap()
         XCTAssertTrue(app.buttons["editLyricsText"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.staticTexts["Letra de prueba UX"].waitForExistence(timeout: 10))
         app.buttons["editLyricsText"].tap()
         XCTAssertTrue(editor.waitForExistence(timeout: 10))
-        XCTAssertEqual(editor.value as? String, "Letra de prueba UX\nSegunda línea")
+        XCTAssertEqual(editor.value as? String, savedLyrics)
+        capture("ux-lyrics-monospaced-trimmed", app)
         // Restore the marked synthetic fixture through the same real save flow.
         editor.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.9)).tap()
-        editor.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "Letra de prueba UX\nSegunda línea".count))
+        editor.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: savedLyrics.count))
         XCTAssertEqual(editor.value as? String, "")
         app.buttons["metadataSave"].tap(); app.buttons["Guardar en archivo"].tap()
         XCTAssertTrue(app.buttons["findMissingLyrics"].waitForExistence(timeout: 15))
