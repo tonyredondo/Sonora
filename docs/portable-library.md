@@ -42,9 +42,9 @@ The CarPlay scene uses four native tabs: Biblioteca, Playlists, Favoritos and Co
 
 Both scenes share one player and one paused restoration task, including a launch initiated by the car. Cached browsing appears before provider-backed queue restoration finishes. Disconnecting releases CarPlay observers and templates while preserving the phone's transport.
 
-Apple requires approval of `com.apple.developer.carplay-audio` for the app's App ID before device activation. No developer-account capabilities or provisioning profiles have been changed. See [Apple's entitlement instructions](https://developer.apple.com/documentation/carplay/requesting-carplay-entitlements).
+Apple requires approval of `com.apple.developer.carplay-audio` for the app's App ID before device activation. The explicit `com.tonyredondo.Sonora` App ID now has a **Sonora Development** profile for iTony, using the existing development certificate. It does not include the CarPlay entitlement while approval is pending. See [Apple's entitlement instructions](https://developer.apple.com/documentation/carplay/requesting-carplay-entitlements).
 
-The project enables the entitlement for ad-hoc Simulator signing. Device builds retain ordinary signing until approval. After approval and provisioning, build with `CODE_SIGN_ENTITLEMENTS=Sonora/CarPlay.entitlements` or add that setting to the device configuration. Simulator signing uses `CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-`; unsigned builds cannot prove CarPlay Home-screen availability.
+The project enables the entitlement for ad-hoc Simulator signing. Device builds select **Sonora Development** explicitly. After approval, regenerate and install that profile with CarPlay enabled, then build with `CODE_SIGN_ENTITLEMENTS=Sonora/CarPlay.entitlements` or add that setting to the device configuration. Simulator signing uses `CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-`; unsigned builds cannot prove CarPlay Home-screen availability.
 
 Native template, transport, error and lifecycle tests complement head-unit validation. A real vehicle, locked-iPhone access, interruptions, Siri and route behavior require separate device checks, as described in [Apple's simulator guidance](https://developer.apple.com/documentation/carplay/using-the-carplay-simulator).
 
