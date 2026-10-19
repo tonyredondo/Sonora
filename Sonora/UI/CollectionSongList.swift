@@ -15,7 +15,6 @@ struct CollectionSongList: View {
     var sourceID: String? = nil
     var group: CollectionGroup? = nil
     var albumGroup = false
-    @Environment(\.colorScheme) private var scheme
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var selection: Set<String> = []
@@ -28,6 +27,7 @@ struct CollectionSongList: View {
     @State private var renaming = false
     @State private var deletingPlaylist = false
     @State private var exporting: PlaylistExportSelection?
+    @State private var browsingFiles = false
     private var library: MusicLibrary { player.library }
     private var firstSong: CollectionSong? { activeIDs.first.flatMap { library.state.songs[$0] } }
     private var displayedTitle: String { playlistID.flatMap { id in library.state.playlists.first { $0.id == id }?.name } ?? (albumGroup ? firstSong?.album ?? title : title) }
@@ -35,12 +35,6 @@ struct CollectionSongList: View {
     private var songs: [CollectionSong] { activeIDs.compactMap { library.state.songs[$0] }.filter { $0.matches(query) } }
     var body: some View {
         List(selection: $selection) {
-            if let sourceID, !editMode.isEditing {
-                Section {
-                    NavigationLink { SourceFolderView(player: player, sourceID: sourceID) } label: { Label("Explorar archivos", systemImage: "folder") }
-                        .accessibilityIdentifier("browseSourceFiles")
-                }
-            }
             if albumGroup, let group, !editMode.isEditing {
                 Section {
                     HStack(spacing: 16) {
@@ -55,42 +49,10 @@ struct CollectionSongList: View {
             }
             if !editMode.isEditing {
                 Section {
-                    if !songs.isEmpty {
-                        ViewThatFits(in: .horizontal) {
-                            HStack { playbackActions }
-                            VStack { playbackActions }
-                        }.buttonStyle(.borderedProminent).foregroundStyle(scheme == .dark ? Color.black : Color.white)
-                    }
                     if playlistID != nil {
-                        Button("Añadir canciones", systemImage: "plus") { pickingSongs = true }.accessibilityIdentifier("addPlaylistSongs")
-                        Menu {
-                            Button("Renombrar") { renaming = true }
-                            Button("Ordenar o quitar canciones") { editMode = .active }
-                            Button("Exportar playlist", systemImage: "square.and.arrow.up") {
-                                if let playlistID { exporting = .init(id: playlistID, name: displayedTitle) }
-                            }
-                            Button("Eliminar playlist", role: .destructive) { deletingPlaylist = true }
-                        } label: {
-                            HStack { Label("Gestionar lista", systemImage: "ellipsis"); Spacer(); Image(systemName: "chevron.down") }
-                                .frame(maxWidth: .infinity, minHeight: 44).contentShape(.rect)
-                        }.accessibilityIdentifier("managePlaylist")
-                    }
-                    if !songs.isEmpty {
-                        HStack {
-                            if albumGroup {
-                                Button("Editar álbum", systemImage: "pencil") {
-                                    metadataSelection = MetadataSelection(tracks: activeIDs.compactMap { library.state.songs[$0]?.audioTrack }, context: .album(displayedTitle))
-                                }.accessibilityIdentifier("editAlbum")
-                                Spacer()
-                            }
-                            Menu("Más", systemImage: "ellipsis") {
-                                Button("Añadir a la cola", systemImage: "text.badge.plus") { player.enqueueSongs(songs.map(\.id), playNext: false) }
-                                Button(albumGroup ? "Analizar volumen del álbum" : "Analizar volumen", systemImage: "waveform") {
-                                    let tracks = (albumGroup ? activeIDs : songs.map(\.id)).compactMap { library.state.songs[$0]?.audioTrack }
-                                    volumeSelection = .init(tracks: tracks, album: albumGroup)
-                                }
-                            }
-                        }.buttonStyle(.borderless).frame(minHeight: 44)
+                        playlistActions
+                    } else if !songs.isEmpty || sourceID != nil {
+                        collectionActions
                     }
                 }
             }
@@ -104,7 +66,7 @@ struct CollectionSongList: View {
             }
             .onDelete { if let playlistID { library.remove(from: playlistID, at: $0) } }
             .onMove { if let playlistID { library.move(in: playlistID, from: $0, to: $1) } }
-            if songs.isEmpty { ContentUnavailableView("Sin canciones", systemImage: "music.note", description: Text(query.isEmpty ? (playlistID != nil ? "Pulsa Añadir canciones para elegir música de tu biblioteca." : "Esta colección todavía no tiene canciones.") : "No hay resultados para esta búsqueda.")) }
+            if songs.isEmpty { ContentUnavailableView("Sin canciones", systemImage: "music.note", description: Text(query.isEmpty ? (playlistID != nil ? "Pulsa + para elegir música de tu biblioteca." : "Esta colección todavía no tiene canciones.") : "No hay resultados para esta búsqueda.")) }
             if editMode.isEditing { Text("Selecciona canciones para añadirlas a una playlist, ponerlas en cola o editar su información en conjunto.").font(.footnote).foregroundStyle(.secondary) }
         }
         .accessibilityIdentifier("collectionSongs")
@@ -135,10 +97,7 @@ struct CollectionSongList: View {
                         Spacer()
                         Button("Seleccionar todo") { selection = Set(songs.map(\.id)) }
                     }
-                    ViewThatFits(in: .horizontal) {
-                        HStack { selectionActions }
-                        VStack { selectionActions }
-                    }
+                    CompactActionRow { selectionActions }
                 }.padding().background(.bar)
             }
         }
@@ -157,6 +116,9 @@ struct CollectionSongList: View {
         } message: { Text("Las canciones y los archivos se conservan en la biblioteca.") }
         .sheet(item: $exporting) { PlaylistExportView(player: player, playlist: $0) }
         .sheet(item: $volumeSelection) { VolumeAnalysisView(player: player, selection: $0) }
+        .navigationDestination(isPresented: $browsingFiles) {
+            if let sourceID { SourceFolderView(player: player, sourceID: sourceID) }
+        }
         .confirmationDialog("¿Quitar esta fuente de la biblioteca?", isPresented: $forget, titleVisibility: .visible) {
             Button("Quitar de la biblioteca", role: .destructive) { if let sourceID { player.forgetSource(sourceID); dismiss() } }
         } message: { Text("Se quitarán sus referencias de la biblioteca, las playlists y la cola. Los archivos originales no se borrarán.") }
@@ -164,25 +126,82 @@ struct CollectionSongList: View {
     }
     private var playbackActions: some View {
         Group {
-            Button { player.shuffle = false; player.playSongs(songs.map(\.id)) } label: { Label("Reproducir", systemImage: "play.fill").frame(maxWidth: .infinity, minHeight: 32) }
-            Button { player.shuffle = true; player.playSongs(songs.map(\.id).shuffled()) } label: { Label("Aleatorio", systemImage: "shuffle").frame(maxWidth: .infinity, minHeight: 32) }
+            Button { playSongs(shuffled: false) } label: { CompactActionLabel(title: "Reproducir", icon: "play.fill", prominent: true) }
+            Button { playSongs(shuffled: true) } label: { CompactActionLabel(title: "Aleatorio", icon: "shuffle") }
         }
+    }
+    private var collectionActions: some View {
+        CompactActionRow {
+            if !songs.isEmpty { playbackActions }
+            if albumGroup, !songs.isEmpty {
+                Button {
+                    metadataSelection = MetadataSelection(tracks: activeIDs.compactMap { library.state.songs[$0]?.audioTrack }, context: .album(displayedTitle))
+                } label: { CompactActionLabel(title: "Editar álbum", icon: "pencil") }
+                    .accessibilityIdentifier("editAlbum")
+            }
+            if sourceID != nil {
+                Button { browsingFiles = true } label: { CompactActionLabel(title: "Explorar archivos", icon: "folder") }
+                    .accessibilityIdentifier("browseSourceFiles")
+            }
+            if !songs.isEmpty {
+                Menu { collectionMenuActions } label: { CompactActionLabel(title: "Más", icon: "ellipsis") }
+                    .accessibilityIdentifier("collectionOptions")
+            }
+        }
+    }
+    private var playlistActions: some View {
+        CompactActionRow {
+            if !songs.isEmpty { playbackActions }
+            Button { pickingSongs = true } label: { CompactActionLabel(title: "Añadir canciones", icon: "plus") }
+                .accessibilityIdentifier("addPlaylistSongs")
+            Menu {
+                if !songs.isEmpty {
+                    collectionMenuActions
+                    Divider()
+                }
+                Button("Renombrar") { renaming = true }
+                Button("Ordenar o quitar canciones") { editMode = .active }
+                Button("Exportar playlist", systemImage: "square.and.arrow.up") {
+                    if let playlistID { exporting = .init(id: playlistID, name: displayedTitle) }
+                }
+                Divider()
+                Button("Eliminar playlist", role: .destructive) { deletingPlaylist = true }
+            } label: { CompactActionLabel(title: "Gestionar lista", icon: "ellipsis") }
+                .accessibilityIdentifier("managePlaylist")
+        }
+    }
+    private var collectionMenuActions: some View {
+        Group {
+            Button("Añadir a la cola", systemImage: "text.badge.plus") { player.enqueueSongs(songs.map(\.id), playNext: false) }
+            Button(albumGroup ? "Analizar volumen del álbum" : "Analizar volumen", systemImage: "waveform") {
+                let tracks = (albumGroup ? activeIDs : songs.map(\.id)).compactMap { library.state.songs[$0]?.audioTrack }
+                volumeSelection = .init(tracks: tracks, album: albumGroup)
+            }
+        }
+    }
+    private func playSongs(shuffled: Bool) {
+        player.shuffle = shuffled
+        let ids = songs.map(\.id)
+        player.playSongs(shuffled ? ids.shuffled() : ids)
     }
     private var selectedIDs: [String] { activeIDs.filter { selection.contains($0) } }
     private var selectionActions: some View {
         Group {
-            Button("Editar información", systemImage: "pencil") {
+            Button {
                 metadataSelection = MetadataSelection(tracks: selectedIDs.compactMap { library.state.songs[$0]?.audioTrack })
-            }.accessibilityIdentifier("editSelectedSongs")
-            Button("Añadir a lista", systemImage: "music.note.list") { addToPlaylist = true }
-            Menu("Más", systemImage: "ellipsis") {
+            } label: { CompactActionLabel(title: "Editar información", icon: "pencil") }
+                .accessibilityIdentifier("editSelectedSongs")
+            Button { addToPlaylist = true } label: { CompactActionLabel(title: "Añadir a lista", icon: "music.note.list") }
+                .accessibilityIdentifier("addSelectedToPlaylist")
+            Menu {
                 Button("Reproducir a continuación") { player.enqueueSongs(selectedIDs, playNext: true) }
                 Button("Añadir al final de la cola") { player.enqueueSongs(selectedIDs, playNext: false) }
                 Button("Analizar volumen", systemImage: "waveform") {
                     volumeSelection = .init(tracks: selectedIDs.compactMap { library.state.songs[$0]?.audioTrack })
                 }
-            }
-        }.buttonStyle(.bordered).disabled(selection.isEmpty)
+            } label: { CompactActionLabel(title: "Más", icon: "ellipsis") }
+                .accessibilityIdentifier("selectedSongsOptions")
+        }.disabled(selection.isEmpty)
     }
 }
 

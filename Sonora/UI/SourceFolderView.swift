@@ -33,8 +33,10 @@ struct SourceFolderView: View {
         List {
             if !songs.isEmpty {
                 Section {
-                    Button("Reproducir carpeta", systemImage: "play.fill") { player.playSongs(songs.map(\.id)) }
-                    Button("Añadir carpeta a la cola", systemImage: "text.badge.plus") { player.enqueueSongs(songs.map(\.id), playNext: false) }
+                    CompactActionRow {
+                        Button { player.playSongs(songs.map(\.id)) } label: { CompactActionLabel(title: "Reproducir carpeta", icon: "play.fill", prominent: true) }
+                        Button { player.enqueueSongs(songs.map(\.id), playNext: false) } label: { CompactActionLabel(title: "Añadir carpeta a la cola", icon: "text.badge.plus") }
+                    }
                 }
             }
             if loading { ProgressView("Leyendo archivos…") }

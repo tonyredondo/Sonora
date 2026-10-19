@@ -63,15 +63,29 @@ private struct ArtworkLyrics: View {
         let activeLine = active
         ScrollViewReader { reader in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
+                LazyVStack(alignment: .leading, spacing: lyrics.isTimed ? 2 : 18) {
                     ForEach(lyrics.lines) { line in
-                        Text(line.text.isEmpty ? "♪" : line.text)
+                        let text = Text(line.text.isEmpty ? "♪" : line.text)
                             .font(activeLine == line.id ? .title.bold() : .title3.weight(.semibold))
                             .foregroundStyle(activeLine == line.id ? PlayerTheme(scheme).accent : .primary)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .accessibilityValue(activeLine == line.id ? "Línea actual" : "")
-                            .accessibilityAddTraits(activeLine == line.id ? .isSelected : [])
-                            .id(line.id)
+                        Group {
+                            if let time = line.time {
+                                Button { player.seek(to: max(0, time + offset)) } label: {
+                                    text.padding(.vertical, 8)
+                                        .frame(minHeight: 44)
+                                        .contentShape(.rect)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityHint("Saltar a esta parte de la canción")
+                                .accessibilityIdentifier("artworkLyricLine\(line.id)")
+                            } else {
+                                text
+                            }
+                        }
+                        .accessibilityValue(activeLine == line.id ? "Línea actual" : "")
+                        .accessibilityAddTraits(activeLine == line.id ? .isSelected : [])
+                        .id(line.id)
                     }
                 }
                 .padding(.horizontal, 24)

@@ -78,11 +78,11 @@ final class InlineLyricsUITests: XCTestCase {
         let controls = app.buttons["playerTransport"].frame
         seekUsingLyrics(app, line: 20)
         let lyrics = app.scrollViews["playerLyrics"]
-        let current = lyrics.staticTexts["Línea sincronizada 20"]
+        let current = lyrics.buttons["Línea sincronizada 20"]
         XCTAssertTrue(current.waitForExistence(timeout: 5), "The artwork must scroll to the current line after seeking")
         XCTAssertTrue(current.isHittable)
         XCTAssertEqual(current.value as? String, "Línea actual")
-        let previous = lyrics.staticTexts["Línea sincronizada 19"]
+        let previous = lyrics.buttons["Línea sincronizada 19"]
         XCTAssertNotEqual(previous.value as? String, "Línea actual")
         XCTAssertGreaterThan(current.frame.height, previous.frame.height, "The current phrase should use a larger font")
         XCTAssertEqual(app.buttons["playerTransport"].frame, controls)
@@ -98,8 +98,13 @@ final class InlineLyricsUITests: XCTestCase {
         XCTAssertTrue(current.waitForExistence(timeout: 5))
         XCTAssertTrue(current.isHittable, "Reopening playback should start at the current phrase")
 
+        lyrics.buttons["artworkLyricLine18"].tap()
+        XCTAssertEqual(app.staticTexts["playerElapsedTime"].label, "0:18")
+        XCTAssertEqual(app.buttons["playerTransport"].label, "Reproducir", "Tapping a lyric should preserve pause")
+        XCTAssertEqual(lyrics.buttons["artworkLyricLine18"].value as? String, "Línea actual")
+
         seekUsingLyrics(app, line: 2)
-        let earlier = lyrics.staticTexts["Línea sincronizada 02"]
+        let earlier = lyrics.buttons["Línea sincronizada 02"]
         XCTAssertTrue(earlier.waitForExistence(timeout: 5))
         XCTAssertTrue(earlier.isHittable)
         XCTAssertEqual(earlier.value as? String, "Línea actual")
@@ -120,11 +125,11 @@ final class InlineLyricsUITests: XCTestCase {
             header.press(forDuration:0.05,thenDragTo:header.withOffset(CGVector(dx:90,dy:5)),withVelocity:.slow,thenHoldForDuration:0.1)
             XCTAssertTrue(close.exists,"A horizontal gesture must not minimize playback")
             let lyrics = app.scrollViews["playerLyrics"]
-            let before = lyrics.staticTexts.allElementsBoundByIndex.filter(\.isHittable).map(\.label)
+            let before = lyrics.buttons.allElementsBoundByIndex.filter(\.isHittable).map(\.label)
             let from = lyrics.coordinate(withNormalizedOffset:CGVector(dx:0.45,dy:0.75))
             from.press(forDuration:0.05,thenDragTo:lyrics.coordinate(withNormalizedOffset:CGVector(dx:0.45,dy:0.25)))
             XCTAssertTrue(close.exists)
-            let after = lyrics.staticTexts.allElementsBoundByIndex.filter(\.isHittable).map(\.label)
+            let after = lyrics.buttons.allElementsBoundByIndex.filter(\.isHittable).map(\.label)
             XCTAssertNotEqual(before,after,"The artwork's lyric region must still scroll")
             lyrics.coordinate(withNormalizedOffset:CGVector(dx:0.45,dy:0.25)).press(forDuration:0.05,thenDragTo:lyrics.coordinate(withNormalizedOffset:CGVector(dx:0.45,dy:0.75)))
             XCTAssertTrue(close.exists,"A downward lyric scroll must not minimize the player")
@@ -168,13 +173,13 @@ final class InlineLyricsUITests: XCTestCase {
         XCTAssertGreaterThan(seconds, 20)
         XCTAssertLessThan(seconds, 39)
         let lyrics = app.scrollViews["playerLyrics"]
-        let current = lyrics.staticTexts.matching(NSPredicate(format: "value == %@", "Línea actual")).firstMatch
+        let current = lyrics.buttons.matching(NSPredicate(format: "value == %@", "Línea actual")).firstMatch
         XCTAssertTrue(current.waitForExistence(timeout: 5))
         let line = Int(current.label.split(separator: " ").last ?? "") ?? -1
         // The clock displays whole seconds; the highlighted phrase can already be the next one.
         XCTAssertGreaterThanOrEqual(line, seconds)
         XCTAssertLessThanOrEqual(line, seconds + 1)
-        let previous = lyrics.staticTexts[String(format: "Línea sincronizada %02d", line - 1)]
+        let previous = lyrics.buttons[String(format: "Línea sincronizada %02d", line - 1)]
         XCTAssertTrue(current.isHittable)
         XCTAssertEqual(current.value as? String, "Línea actual")
         XCTAssertNotEqual(previous.value as? String, "Línea actual", "The preceding phrase should return to its normal style")
@@ -214,7 +219,7 @@ final class InlineLyricsUITests: XCTestCase {
         capture("current-lyric-papel-expanded-offset", app)
         app.buttons["Listo"].tap()
         let lyrics = app.scrollViews["playerLyrics"]
-        let delayed = lyrics.staticTexts[String(format: "Línea sincronizada %02d", line - 5)]
+        let delayed = lyrics.buttons[String(format: "Línea sincronizada %02d", line - 5)]
         XCTAssertTrue(delayed.waitForExistence(timeout: 5))
         XCTAssertTrue(delayed.isHittable, app.debugDescription)
         XCTAssertEqual(delayed.value as? String, "Línea actual", "Artwork must apply the expanded view's +5 second adjustment")
@@ -227,7 +232,7 @@ final class InlineLyricsUITests: XCTestCase {
         app.buttons["Restablecer ajuste"].tap()
         app.navigationBars["Ajustar tiempos"].buttons["Listo"].tap()
         app.buttons["Listo"].tap()
-        let current = lyrics.staticTexts[String(format: "Línea sincronizada %02d", line)]
+        let current = lyrics.buttons[String(format: "Línea sincronizada %02d", line)]
         XCTAssertFalse(current.isHittable, "Disabling following should allow the listener to keep reading elsewhere")
 
         app.buttons["expandLyrics"].tap()
@@ -236,7 +241,7 @@ final class InlineLyricsUITests: XCTestCase {
         XCTAssertTrue(active.waitForExistence(timeout: 5))
         let restoredLine = Int(active.identifier.dropFirst("lyricLine".count)) ?? -1
         XCTAssertGreaterThanOrEqual(restoredLine, 0)
-        let restored = lyrics.staticTexts[String(format: "Línea sincronizada %02d", restoredLine)]
+        let restored = lyrics.buttons[String(format: "Línea sincronizada %02d", restoredLine)]
         app.buttons["Listo"].tap()
         XCTAssertTrue(restored.waitForExistence(timeout: 5))
         XCTAssertTrue(restored.isHittable, "Enabling following should bring the current phrase back immediately")
@@ -296,7 +301,7 @@ final class InlineLyricsUITests: XCTestCase {
         XCTAssertFalse(lyrics.exists, "Changing songs should keep lyrics hidden")
         toggle.tap()
         XCTAssertTrue(lyrics.waitForExistence(timeout: 5))
-        XCTAssertTrue(lyrics.staticTexts["Línea sincronizada 00"].isHittable)
+        XCTAssertTrue(lyrics.buttons["Línea sincronizada 00"].isHittable)
         XCTAssertEqual(toggle.value as? String, "Visibles")
         XCTAssertTrue(app.buttons["expandLyrics"].isHittable)
         capture("artwork-lyrics-restored-noche", app)
@@ -337,8 +342,8 @@ final class InlineLyricsUITests: XCTestCase {
         XCTAssertFalse(lyrics.staticTexts["Verso 01 de la prueba de Sonora"].exists)
         capture("inline-lyrics-noche-edited", app)
         app.buttons["Siguiente"].tap()
-        XCTAssertTrue(lyrics.staticTexts["Línea sincronizada 00"].waitForExistence(timeout: 10))
-        XCTAssertTrue(lyrics.staticTexts["Línea sincronizada 00"].isHittable, "Changing songs should reset the lyrics scroll")
+        XCTAssertTrue(lyrics.buttons["Línea sincronizada 00"].waitForExistence(timeout: 10))
+        XCTAssertTrue(lyrics.buttons["Línea sincronizada 00"].isHittable, "Changing songs should reset the lyrics scroll")
         XCTAssertFalse(lyrics.staticTexts["Letra actualizada desde el editor"].exists)
         app.buttons["Siguiente"].tap()
         XCTAssertTrue(lyrics.waitForNonExistence(timeout: 10))
@@ -356,7 +361,7 @@ final class InlineLyricsUITests: XCTestCase {
         let lyrics = app.scrollViews["playerLyrics"]
         XCTAssertTrue(lyrics.waitForExistence(timeout: 5))
         let transport = app.buttons["playerTransport"].frame
-        let end = lyrics.staticTexts["Línea sincronizada 03"]
+        let end = lyrics.buttons["Línea sincronizada 03"]
         let seconds = Int(app.staticTexts["playerElapsedTime"].label.split(separator: ":").last ?? "") ?? 0
         let scrollsForward = seconds < 3
         for _ in 0..<24 {

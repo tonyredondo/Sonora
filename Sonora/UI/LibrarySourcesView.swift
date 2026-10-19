@@ -6,6 +6,7 @@ struct LibrarySourcesView: View {
     let player: PlaybackController
     @Environment(\.dismiss) private var dismiss
     @State private var addMusic = false
+    @State private var showingCopies = false
     @State private var removing: CollectionSource?
     @State private var confirmRemoval = false
     @State private var deletingCopy: ImportedMusicRecord?
@@ -17,8 +18,10 @@ struct LibrarySourcesView: View {
         NavigationStack {
             List {
                 Section {
-                    Button("Añadir música", systemImage: "plus.circle.fill") { addMusic = true }
-                    NavigationLink { LocalMusicView(player: player) } label: { Label("Copias en Sonora", systemImage: "internaldrive") }
+                    CompactActionRow {
+                        Button { addMusic = true } label: { CompactActionLabel(title: "Añadir música", icon: "plus") }
+                        Button { showingCopies = true } label: { CompactActionLabel(title: "Copias en Sonora", icon: "internaldrive") }
+                    }
                 }
                 Section {
                     ForEach(library.state.sources) { source in
@@ -76,6 +79,7 @@ struct LibrarySourcesView: View {
                 if let issue = player.issue { Section { Text(issue); Button("Cerrar aviso") { player.issue = nil } } }
             }
             .navigationTitle("Fuentes")
+            .navigationDestination(isPresented: $showingCopies) { LocalMusicView(player: player) }
             .disabled(player.isDeletingFiles)
             .interactiveDismissDisabled(player.isDeletingFiles)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { dismiss() } } }

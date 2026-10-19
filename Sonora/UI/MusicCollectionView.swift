@@ -49,6 +49,7 @@ struct ArtistCollectionView: View {
     let player: PlaybackController
     let artist: CollectionGroup
     @State private var editing = false
+    @State private var showingSongs = false
     private var artistTitle: String { artist.songIDs.first.flatMap { player.library.state.songs[$0]?.artist } ?? artist.title }
     private var albums: [CollectionGroup] {
         let ids = Set(artist.songIDs)
@@ -57,9 +58,13 @@ struct ArtistCollectionView: View {
     var body: some View {
         List {
             Section {
-                Button("Reproducir", systemImage: "play.fill") { player.playSongs(artist.songIDs) }
-                Button("Editar artista", systemImage: "pencil") { editing = true }.accessibilityIdentifier("editArtist")
-                NavigationLink("Todas las canciones") { CollectionSongList(player: player, title: artistTitle, ids: artist.songIDs) }
+                CompactActionRow {
+                    Button { player.playSongs(artist.songIDs) } label: { CompactActionLabel(title: "Reproducir", icon: "play.fill", prominent: true) }
+                    Button { editing = true } label: { CompactActionLabel(title: "Editar artista", icon: "pencil") }
+                        .accessibilityIdentifier("editArtist")
+                    Button { showingSongs = true } label: { CompactActionLabel(title: "Todas las canciones", icon: "music.note.list") }
+                        .accessibilityIdentifier("artistSongs")
+                }
             }
             Section("Discografía local") {
                 ForEach(albums) { album in
@@ -73,6 +78,7 @@ struct ArtistCollectionView: View {
             }
         }
         .navigationTitle(artistTitle)
+        .navigationDestination(isPresented: $showingSongs) { CollectionSongList(player: player, title: artistTitle, ids: artist.songIDs) }
         .sheet(isPresented: $editing) {
             BulkMetadataEditorView(player: player, tracks: artist.songIDs.compactMap { player.library.state.songs[$0]?.audioTrack }, context: .artist(artistTitle))
         }

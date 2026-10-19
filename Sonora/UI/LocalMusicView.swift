@@ -9,7 +9,6 @@ struct LocalMusicView: View {
     @State private var browsingSource: String?
     @State private var showFiles = false
     @Environment(\.scenePhase) private var phase
-    @Environment(\.dynamicTypeSize) private var textSize
     private var imports: LocalImportController { player.localImports }
     var body: some View {
         List {
@@ -35,24 +34,25 @@ struct LocalMusicView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(copy.name).font(.headline).accessibilityIdentifier("localCopyName:" + copy.id)
                         Text("\(copy.files) archivos · \(ByteCountFormatter.string(fromByteCount: copy.bytes, countStyle: .file))").font(.caption).foregroundStyle(.secondary)
-                        Button("Explorar archivos", systemImage: "folder") {
-                            removing = true
-                            Task {
-                                defer { removing = false }
-                                do {
-                                    if player.library.sourceID(matching: imports.musicURL(copy)) == nil { try await imports.include(copy, library: player.library) }
-                                    browsingSource = player.library.sourceID(matching: imports.musicURL(copy)); showFiles = browsingSource != nil
-                                } catch { imports.issue = error.localizedDescription }
-                            }
-                        }.frame(minHeight: 44).buttonStyle(.borderless).disabled(imports.isImporting || removing || player.isDeletingFiles).accessibilityIdentifier("browseLocalCopy:" + copy.id)
-                        let layout = textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout())
-                        layout {
-                            Button("Reproducir", systemImage: "play.fill") { player.chooseFolder(imports.musicURL(copy), name: copy.name + " · Local") }
-                                .frame(minHeight: 44).accessibilityIdentifier("playLocalCopy:" + copy.id)
-                            if !textSize.isAccessibilitySize { Spacer() }
-                            Button("Eliminar copia de Sonora", systemImage: "trash", role: .destructive) { deleting = copy }
-                                .frame(minHeight: 44).accessibilityIdentifier("deleteLocalCopy:" + copy.id)
-                        }.buttonStyle(.borderless).disabled(imports.isImporting || removing || player.isDeletingFiles)
+                        CompactActionRow {
+                            Button { player.chooseFolder(imports.musicURL(copy), name: copy.name + " · Local") } label: {
+                                CompactActionLabel(title: "Reproducir", icon: "play.fill", prominent: true)
+                            }.accessibilityIdentifier("playLocalCopy:" + copy.id)
+                            Button {
+                                removing = true
+                                Task {
+                                    defer { removing = false }
+                                    do {
+                                        if player.library.sourceID(matching: imports.musicURL(copy)) == nil { try await imports.include(copy, library: player.library) }
+                                        browsingSource = player.library.sourceID(matching: imports.musicURL(copy)); showFiles = browsingSource != nil
+                                    } catch { imports.issue = error.localizedDescription }
+                                }
+                            } label: { CompactActionLabel(title: "Explorar archivos", icon: "folder") }
+                                .accessibilityIdentifier("browseLocalCopy:" + copy.id)
+                            Button(role: .destructive) { deleting = copy } label: {
+                                CompactActionLabel(title: "Eliminar copia de Sonora", icon: "trash", destructive: true)
+                            }.accessibilityIdentifier("deleteLocalCopy:" + copy.id)
+                        }.disabled(imports.isImporting || removing || player.isDeletingFiles)
                     }.padding(.vertical, 6)
                 }
                 if imports.copies.isEmpty { Text("Todavía no has importado carpetas. Tus fuentes de Archivos siguen disponibles en la biblioteca.").foregroundStyle(.secondary) }
