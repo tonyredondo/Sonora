@@ -35,7 +35,7 @@ deps = [add('sfb-product', 'XCSwiftPackageProductDependency', package=sfb, produ
 frameworks = [add('link-'+d, 'PBXBuildFile', productRef=d) for d in deps]
 configs = {}
 for mode in ['Debug','Release']:
-    settings = dict(IPHONEOS_DEPLOYMENT_TARGET='17.0', SDKROOT='iphoneos', CLANG_ENABLE_MODULES='YES', SWIFT_VERSION='5.0', SWIFT_STRICT_CONCURRENCY='complete', DEBUG_INFORMATION_FORMAT='dwarf' if mode=='Debug' else 'dwarf-with-dsym')
+    settings = dict(DEVELOPMENT_TEAM='HNF8XS7V57', IPHONEOS_DEPLOYMENT_TARGET='17.0', SDKROOT='iphoneos', CLANG_ENABLE_MODULES='YES', SWIFT_VERSION='5.0', SWIFT_STRICT_CONCURRENCY='complete', DEBUG_INFORMATION_FORMAT='dwarf' if mode=='Debug' else 'dwarf-with-dsym')
     if mode=='Debug': settings.update(SWIFT_OPTIMIZATION_LEVEL='-Onone', SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG', ENABLE_TESTABILITY='YES', ONLY_ACTIVE_ARCH='YES')
     else: settings.update(SWIFT_COMPILATION_MODE='wholemodule')
     configs[mode] = add('project-'+mode, 'XCBuildConfiguration', name=mode, buildSettings=settings)
@@ -48,6 +48,11 @@ def target_config(name, identifier, extra):
         settings.update(extra)
         if name=='app':
             settings.update(SWIFT_OBJC_BRIDGING_HEADER='Sonora/Sonora-Bridging-Header.h', CLANG_CXX_LANGUAGE_STANDARD='c++17')
+            # Pin the explicit App ID profile; automatic signing can select the
+            # team's wildcard profile while CarPlay approval is pending.
+            settings['CODE_SIGN_STYLE[sdk=iphoneos*]']='Manual'
+            settings['CODE_SIGN_IDENTITY[sdk=iphoneos*]']='Apple Development'
+            settings['PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]']='Sonora Development'
             # Simulator can use an ad-hoc CarPlay entitlement. Device builds keep
             # ordinary signing until Apple grants CarPlay for this App ID; pass
             # CODE_SIGN_ENTITLEMENTS=Sonora/CarPlay.entitlements after approval.
