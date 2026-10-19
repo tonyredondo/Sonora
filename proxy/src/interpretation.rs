@@ -292,7 +292,7 @@ async fn run_codex(
 
 fn parse_events(bytes: &[u8]) -> Result<Interpretation, InterpretationError> {
     use InterpretationError as E;
-    let mut explanation = None;
+    let mut final_message = None;
     let mut completed = false;
     for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
         let event: Value = serde_json::from_slice(line).map_err(|_| E::InvalidResponse)?;
@@ -312,14 +312,11 @@ fn parse_events(bytes: &[u8]) -> Result<Interpretation, InterpretationError> {
                 );
             }
             Some("item.completed") if event["item"]["type"] == "agent_message" => {
-                let value: Value =
-                    serde_json::from_str(event["item"]["text"].as_str().ok_or(E::InvalidResponse)?)
-                        .map_err(|_| E::InvalidResponse)?;
-                explanation = Some(
-                    value["explanation"]
+                // --output-schema constrains the final response, not commentary.
+                final_message = Some(
+                    event["item"]["text"]
                         .as_str()
                         .ok_or(E::InvalidResponse)?
-                        .trim()
                         .to_owned(),
                 );
             }
@@ -334,8 +331,14 @@ fn parse_events(bytes: &[u8]) -> Result<Interpretation, InterpretationError> {
             _ => {}
         }
     }
+    let value: Value = serde_json::from_str(&final_message.ok_or(E::InvalidResponse)?)
+        .map_err(|_| E::InvalidResponse)?;
     let result = Interpretation {
-        explanation: explanation.ok_or(E::InvalidResponse)?,
+        explanation: value["explanation"]
+            .as_str()
+            .ok_or(E::InvalidResponse)?
+            .trim()
+            .to_owned(),
         model: MODEL.into(),
         effort: EFFORT.into(),
     };
@@ -348,6 +351,39 @@ fn parse_events(bytes: &[u8]) -> Result<Interpretation, InterpretationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn message(text: &str) -> String {
+        json!({"type":"item.completed","item":{"type":"agent_message","text":text}}).to_string()
+            + "\n"
+    }
+    #[test]
+    fn commentary_does_not_replace_validation_of_the_final_response() {
+        let final_message = message(r#"{"explanation":"A possible reading."}"#);
+        let commentary = message("I will interpret the imagery.");
+        let completed = "{\"type\":\"turn.completed\"}\n";
+        let output = format!("{commentary}{final_message}{completed}");
+        assert_eq!(
+            parse_events(output.as_bytes()).unwrap().explanation,
+            "A possible reading."
+        );
+        // Never salvage an earlier valid JSON message when the final one is bad.
+        for invalid in [
+            "not JSON",
+            "{}",
+            r#"{"explanation":" "}"#,
+            r#"{"explanation":false}"#,
+        ] {
+            let output = format!("{final_message}{}{completed}", message(invalid));
+            assert!(parse_events(output.as_bytes()).is_err());
+        }
+        assert!(parse_events(format!("{commentary}{completed}").as_bytes()).is_err());
+        assert!(parse_events(completed.as_bytes()).is_err());
+        for failure in [
+            "{\"type\":\"turn.failed\"}",
+            "{\"type\":\"item.started\",\"item\":{\"type\":\"command_execution\"}}",
+        ] {
+            assert!(parse_events(format!("{output}{failure}\n").as_bytes()).is_err());
+        }
+    }
     #[test]
     fn output_requires_valid_json_and_successful_turn() {
         let output = concat!(

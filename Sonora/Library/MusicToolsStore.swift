@@ -55,24 +55,30 @@ struct SongToolsResult: Sendable {
 
 @MainActor @Observable
 final class MusicToolsStore {
-    private(set) var summaries: [String: SongToolsResult] = [:]
+    private var summaries: [String: SongToolsResult] = [:]
     @ObservationIgnored private let cache: MusicToolsCache
     private struct Identity: Codable, Sendable { let fingerprint: FileFingerprint; let contentID: String }
     init(cache: MusicToolsCache = .shared) { self.cache = cache }
 
     private func identityKey(track: AudioTrack, folder: ScopedFolder) -> String {
-        "identity-v1:\(track.id):\(track.url(in: folder.url).absoluteString)"
+        // Queue and library entries may have different source-qualified IDs.
+        // The file URL plus local ID also keeps separate CUE segments distinct.
+        "identity-v1:\(track.localID):\(track.url(in: folder.url).standardizedFileURL.absoluteString)"
+    }
+    func summary(for track: AudioTrack, folder: ScopedFolder) -> SongToolsResult? {
+        summaries[identityKey(track: track, folder: folder)]
     }
 
     /// Restore only an already measured, unchanged file; never start analysis on playback.
     func restore(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint) async throws {
-        if summaries[track.id]?.fingerprint == expected { return }
-        summaries[track.id] = nil
-        guard let binding = try await cache.read(Identity.self, key: identityKey(track: track, folder: folder)), binding.fingerprint == expected,
+        let key = identityKey(track: track, folder: folder)
+        if summaries[key]?.fingerprint == expected { return }
+        summaries[key] = nil
+        guard let binding = try await cache.read(Identity.self, key: key), binding.fingerprint == expected,
               let analysis = try await cache.read(SongAnalysis.self, key: "analysis:\(SongAnalysis.version):\(binding.contentID)"), analysis.isValid else { return }
         let annotations = try await cache.read(SongAnnotations.self, key: binding.contentID, personal: true) ?? SongAnnotations()
         try Task.checkCancellation()
-        summaries[track.id] = SongToolsResult(contentID: binding.contentID, fingerprint: expected, analysis: analysis, annotations: try annotations.validated(duration: analysis.duration))
+        summaries[key] = SongToolsResult(contentID: binding.contentID, fingerprint: expected, analysis: analysis, annotations: try annotations.validated(duration: analysis.duration))
     }
 
     func load(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint,
@@ -108,14 +114,18 @@ final class MusicToolsStore {
         let annotations = try await cache.read(SongAnnotations.self, key: contentID, personal: true) ?? SongAnnotations()
         let result = SongToolsResult(contentID: contentID, fingerprint: expected, analysis: analysis, annotations: try annotations.validated(duration: analysis.duration))
         try Task.checkCancellation()
-        summaries[track.id] = result
+        summaries[identityKey] = result
         return result
     }
-    func save(_ annotations: SongAnnotations, for track: AudioTrack, result: SongToolsResult) async throws -> SongToolsResult {
+    func save(_ annotations: SongAnnotations, for track: AudioTrack, folder: ScopedFolder, result: SongToolsResult) async throws -> SongToolsResult {
         let value = try annotations.validated(duration: result.analysis.duration)
         try await cache.write(value, key: result.contentID, personal: true)
         var updated = result; updated.annotations = value
-        summaries[track.id] = updated
+        // All loaded copies with the same audio hash share personal annotations.
+        for key in summaries.keys where summaries[key]?.contentID == result.contentID {
+            summaries[key]?.annotations = value
+        }
+        summaries[identityKey(track: track, folder: folder)] = updated
         return updated
     }
 }

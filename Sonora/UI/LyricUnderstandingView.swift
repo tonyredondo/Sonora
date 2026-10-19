@@ -31,10 +31,8 @@ struct LyricUnderstandingView: View {
 
 private struct LyricInterpretationView: View {
     let document: LyricsDocument
-    @State private var explanation: String?
-    @State private var issue: String?
-    @State private var running = false
-    @State private var request = 0
+    @State private var model = LyricInterpretationModel()
+    @State private var request: LyricInterpretationModel.Request?
 
     @AppStorage("lyricMeaningLanguage") private var language = "es"
     var body: some View {
@@ -43,32 +41,21 @@ private struct LyricInterpretationView: View {
                 Picker("Idioma de respuesta", selection: $language) {
                     Text("Español").tag("es"); Text("English").tag("en"); Text("Français").tag("fr")
                     Text("Deutsch").tag("de"); Text("Italiano").tag("it"); Text("Português").tag("pt")
-                }.disabled(running)
-                if running { ProgressView("Interpretando con Codex…"); Button("Cancelar") { request = 0 } }
+                }.disabled(model.running).accessibilityIdentifier("interpretationLanguage")
+                if model.running { ProgressView("Interpretando con Codex…"); Button("Cancelar") { request = nil } }
                 else {
-                    Button(explanation == nil ? "Interpretar letra" : "Ver interpretación guardada", systemImage: "sparkles") { request += 1 }
+                    Button(model.explanation == nil ? "Interpretar letra" : "Ver interpretación guardada", systemImage: "sparkles") { request = .init(language: language) }
                         .accessibilityIdentifier("interpretLyrics")
                 }
 
-                if let issue { Text(issue).foregroundStyle(.red) }
+                if let issue = model.issue { Text(issue).foregroundStyle(.red).accessibilityIdentifier("interpretationIssue") }
             } footer: { Text("Interpretación de IA · GPT Astra. Es una lectura posible, no una explicación confirmada por su autor. Un análisis nuevo envía la letra a Codex desde tu servidor y consume uso de tu plan. Las interpretaciones guardadas funcionan sin conexión.") }
             if document.isAITranscribed { Section { Text("Esta letra fue transcrita por IA y puede contener errores que afecten a la interpretación.").font(.footnote) } }
-            if let explanation { Section("Interpretación de IA") { Text(explanation).textSelection(.enabled).accessibilityIdentifier("lyricInterpretation") } }
+            if let explanation = model.explanation { Section("Interpretación de IA") { Text(explanation).textSelection(.enabled).accessibilityIdentifier("lyricInterpretation") } }
         }
         .compactContentSpacing()
-        .task(id: "\(language):\(request)") {
-            explanation = nil; issue = nil; running = false
-            do {
-                if let cached = try? await LyricUnderstanding.interpret(document, language: language, cachedOnly: true) {
-                    try Task.checkCancellation(); explanation = cached.explanation
-                }
-                guard request > 0, explanation == nil else { return }
-                running = true
-                let value = try await LyricUnderstanding.interpret(document, language: language)
-                try Task.checkCancellation()
-                explanation = value.explanation; running = false
-            } catch is CancellationError { }
-            catch { if !Task.isCancelled { running = false; issue = error.localizedDescription } }
+        .task(id: "\(language):\(request?.id.uuidString ?? "")") { [language, request] in
+            await model.load(document, language: language, request: request)
         }
     }
 }
@@ -137,7 +124,8 @@ private struct LyricTranslationView: View {
         .translationTask(configuration) { session in
             let key = LyricUnderstanding.translationKey(document, source: source, target: target)
             do {
-                try await session.prepareTranslation()
+                // The batch call detects the source and requests any downloads.
+                // prepareTranslation() fails when automatic detection uses nil.
                 let lines = document.lines.filter { !$0.text.isEmpty }
                 var translated: [Int: String] = [:]
                 for start in stride(from: 0, to: lines.count, by: 40) {

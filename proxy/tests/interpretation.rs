@@ -38,6 +38,7 @@ assert 'OPENAI_API_KEY' not in os.environ
 with (root/'calls').open('a') as f:f.write('call\n')
 (root/'pid').write_text(str(os.getpid()))
 if {sleep}:time.sleep(30)
+print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text':'I will interpret the supplied text.'}}}}))
 print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text':json.dumps({{'explanation':'Interpretation in '+x['language']}})}}}}))
 print(json.dumps({{'type':'turn.completed'}}))
 "#,

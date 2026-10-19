@@ -86,7 +86,7 @@ struct SongAnalysisView: View {
     @State private var taps: [Double] = []
     @State private var marker: SongMarker?
     @State private var saving = false
-    private var time: Double { player.current?.id == track.id ? player.currentTime : 0 }
+    private var time: Double { player.isEditingTrackCurrent(track) ? player.currentTime : 0 }
 
     var body: some View {
         List {
@@ -183,7 +183,7 @@ struct SongAnalysisView: View {
         .sheet(item: $marker) { item in
             if let result { SongMarkerEditor(marker: item, duration: result.analysis.duration) { edited in
                 var value = result.annotations; value.markers.removeAll { $0.id == edited.id }; value.markers.append(edited)
-                self.result = try await player.musicTools.save(value, for: track, result: result)
+                self.result = try await player.musicTools.save(value, for: track, folder: player.folderAccess(for: track), result: result)
             } }
         }
     }
@@ -212,7 +212,7 @@ struct SongAnalysisView: View {
         }.buttonStyle(.plain).accessibilityLabel("Editar \(item.title)")
     }
     private func seek(_ time: Double) {
-        if player.current?.id == track.id { player.seek(to: time) }
+        if player.isEditingTrackCurrent(track) { player.seek(to: time) }
         else { player.playForLyricsEditing(track, at: time) }
     }
     private func save(_ value: SongAnnotations) {
@@ -220,7 +220,7 @@ struct SongAnalysisView: View {
         saving = true
         Task { @MainActor in
             defer { saving = false }
-            do { self.result = try await player.musicTools.save(value, for: track, result: result); issue = nil }
+            do { self.result = try await player.musicTools.save(value, for: track, folder: player.folderAccess(for: track), result: result); issue = nil }
             catch { issue = error.localizedDescription }
         }
     }

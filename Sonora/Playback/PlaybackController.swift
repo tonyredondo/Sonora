@@ -7,7 +7,7 @@ import SonoraCore
 @MainActor @Observable
 final class PlaybackController: NSObject {
     let equalizer: AudioEqualizer
-    let musicTools = MusicToolsStore()
+    let musicTools: MusicToolsStore
     let library: MusicLibrary
     let volumeAnalysis: VolumeAnalysisStore
     let localImports: LocalImportController
@@ -69,7 +69,8 @@ final class PlaybackController: NSObject {
     var current: AudioTrack? { queue.current }
     var currentDetails: TrackDetails? { current.flatMap { details[$0.id] } }
     var currentSongTools: SongToolsResult? {
-        guard let id = current?.id, let result = musicTools.summaries[id], result.fingerprint == currentDetails?.fingerprint else { return nil }
+        guard let track = current, let folder = try? folderAccess(for: track),
+              let result = musicTools.summary(for: track, folder: folder), result.fingerprint == currentDetails?.fingerprint else { return nil }
         return result
     }
     var duration: Double { currentDetails?.duration ?? 0 }
@@ -184,8 +185,9 @@ final class PlaybackController: NSObject {
         return try await body(token)
     }
 
-    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil) {
+    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil, musicTools: MusicToolsStore? = nil) {
         self.defaults = defaults
+        self.musicTools = musicTools ?? MusicToolsStore()
         self.metadataArchive = metadataArchive
         player = audioPlayer
         library = MusicLibrary(defaults: defaults)

@@ -8,7 +8,7 @@ final class MusicToolsUITests: XCTestCase {
     @MainActor private func openPlayer(theme: String = "noche", large: Bool = false) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchArguments = ["-appearance", theme, "-metadata.offline", "YES", "-metadata.endpoint", "http://127.0.0.1:9", "-playbackAdjustment", "", "-showArtworkLyrics", "YES",
+        app.launchArguments = ["-appearance", theme, "-metadata.offline", "YES", "-metadata.endpoint", "http://127.0.0.1:9", "-playbackAdjustment", "", "-showArtworkLyrics", "YES", "-lyricTranslationSource", "auto",
                                "-UIPreferredContentSizeCategoryName", large ? "UICTContentSizeCategoryAccessibilityXXXL" : "UICTContentSizeCategoryL"]
         app.launch(); app.openMusicSource("Sonora Lyrics QA")
         let song = app.buttons["library-song:02 - Letra sincronizada QA.flac"]
@@ -57,8 +57,18 @@ final class MusicToolsUITests: XCTestCase {
         XCTAssertTrue(app.buttons["understandLyrics"].waitForExistence(timeout: 10)); capture("lyrics-understanding-entry", app)
         app.buttons["understandLyrics"].tap()
         XCTAssertTrue(app.buttons["interpretLyrics"].waitForExistence(timeout: 5))
+        // A launch-argument default would override subsequent Picker changes.
+        app.buttons["interpretationLanguage"].tap(); app.buttons["Español"].tap()
         app.buttons["interpretLyrics"].tap()
+        let issue = app.staticTexts["interpretationIssue"]
+        XCTAssertTrue(issue.waitForExistence(timeout: 5))
         capture("lyrics-meaning-availability", app)
+        app.buttons["interpretationLanguage"].tap()
+        app.buttons["English"].tap()
+        let cleared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: issue)
+        XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 5), .completed, "A language change only loads cached results; it must not retry the failed generation")
+        XCTAssertTrue(app.buttons["interpretLyrics"].isEnabled)
+        capture("lyrics-language-change-awaits-request", app)
         app.segmentedControls.buttons["Traducción"].tap()
         XCTAssertTrue(app.buttons["translateLyrics"].waitForExistence(timeout: 10))
         capture("lyrics-translation-controls", app)
