@@ -8,6 +8,11 @@ import SonoraCore
 final class PlaybackController: NSObject {
     let equalizer: AudioEqualizer
     let musicTools: MusicToolsStore
+    let lyricTranslations: LyricTranslationStore
+    let lyricInterpretations: LyricInterpretationStore
+    @ObservationIgnored lazy var queuePreparation = QueuePreparationStore { [weak self] item, preferences in
+        try await self?.prepareQueuedSong(item, preferences: preferences)
+    }
     let library: MusicLibrary
     let volumeAnalysis: VolumeAnalysisStore
     let localImports: LocalImportController
@@ -17,12 +22,15 @@ final class PlaybackController: NSObject {
     private(set) var lastTransition: TransitionOutcome?
     private(set) var sleepTimer: SleepTimer?
     private(set) var listeningSettings: ListeningSettings
-    private(set) var queue = PlaybackQueue()
+    private(set) var queue = PlaybackQueue() { didSet { refreshQueuePreparation() } }
     private(set) var details: [String: TrackDetails] = [:]
     private(set) var currentTime: Double = 0
     private(set) var isPlaying = false
     private(set) var isLoading = false
     private(set) var isPreparing = false
+    private(set) var songAnalysisProgress: Double?
+    private(set) var songAnalysisIssue: String?
+    private(set) var songMetadataRefresh: SongMetadataRefresh?
     var isDeletingFiles: Bool { library.isDeletingFiles }
     private(set) var folderName = "Tu música"
     var issue: String?
@@ -55,6 +63,9 @@ final class PlaybackController: NSObject {
     @ObservationIgnored private var lookAhead: Task<Void, Never>?
     @ObservationIgnored private var lookAheadID = UUID()
     @ObservationIgnored private var ticker: Task<Void, Never>?
+    @ObservationIgnored private var songAnalysisTask: Task<Void, Never>?
+    @ObservationIgnored private var songAnalysisRequest: SongAnalysisRequest?
+    @ObservationIgnored private var songAnalysisID = UUID()
     @ObservationIgnored private var systemControls: SystemPlaybackControls?
     @ObservationIgnored private var playIntent = false
     @ObservationIgnored private var interrupted = false
@@ -66,12 +77,182 @@ final class PlaybackController: NSObject {
         var handoff: CrossfadeHandoff? = nil
         var transition: TransitionOutcome? = nil
     }
+    private struct SongAnalysisRequest: Equatable {
+        let url: URL
+        let localID: String
+        let fingerprint: FileFingerprint
+        let translationKey: String
+        let preferences: QueuePreparationPreferences
+    }
     var current: AudioTrack? { queue.current }
     var currentDetails: TrackDetails? { current.flatMap { details[$0.id] } }
     var currentSongTools: SongToolsResult? {
         guard let track = current, let folder = try? folderAccess(for: track),
               let result = musicTools.summary(for: track, folder: folder), result.fingerprint == currentDetails?.fingerprint else { return nil }
         return result
+    }
+    func retrySongAnalysis() {
+        detachSongAnalysis()
+        prepareCurrentSongTools()
+    }
+    /// An explicit refresh belongs to the captured song, not the sheet or the
+    /// current selection. Each store replaces only successfully refreshed data.
+    func refreshCurrentSongMetadata() {
+        guard songMetadataRefresh?.isRunning != true, !isPreparing, !isLoading, let track = current else { return }
+        songMetadataRefresh = SongMetadataRefresh(trackID: track.id, title: currentDetails?.title ?? track.displayName)
+        let access: ScopedFolder
+        do { access = try folderAccess(for: track) }
+        catch {
+            for step in SongMetadataRefresh.Step.allCases { songMetadataRefresh?.steps[step] = .failed(error.localizedDescription) }
+            songMetadataRefresh?.isRunning = false
+            return
+        }
+        let preferences = QueuePreparationPreferences(defaults: defaults)
+        Task(priority: .utility) { [self] in
+            defer { songMetadataRefresh?.isRunning = false }
+            let snapshot: MetadataSnapshot
+            let lyrics: LyricsDocument
+            do {
+                snapshot = try await MetadataService.read(url: track.url(in: access.url), folder: access)
+                lyrics = try await CoordinatedAudioRead.read(track: track, folder: access, expected: snapshot.fingerprint) { url, coordinator in
+                    let text = LyricsSource.read(for: url, embedded: snapshot.values[.lyrics] ?? "", coordinator: coordinator).text
+                    let document = LyricsDocument(text: text)
+                    guard let cue = track.cue else { return document }
+                    return document.sliced(from: cue.startSeconds, duration: track.duration(in: snapshot.duration))
+                }
+            } catch {
+                for step in SongMetadataRefresh.Step.allCases { songMetadataRefresh?.steps[step] = .failed(error.localizedDescription) }
+                return
+            }
+            songMetadataRefresh?.steps[.audio] = .running
+            do {
+                _ = try await musicTools.load(track: track, folder: access, expected: snapshot.fingerprint, refresh: true)
+                songMetadataRefresh?.steps[.audio] = .updated
+            } catch { songMetadataRefresh?.steps[.audio] = .failed(error.localizedDescription) }
+
+            guard lyrics.lines.contains(where: { !$0.text.isEmpty }) else {
+                songMetadataRefresh?.steps[.translation] = .skipped("Esta canción no tiene letra.")
+                songMetadataRefresh?.steps[.meaning] = .skipped("Esta canción no tiene letra.")
+                return
+            }
+            songMetadataRefresh?.steps[.translation] = .running
+            do {
+                _ = try await lyricTranslations.load(lyrics, source: preferences.source, target: preferences.target, refresh: true)
+                songMetadataRefresh?.steps[.translation] = .updated
+            } catch LyricTranslationIssue.sameLanguage {
+                songMetadataRefresh?.steps[.translation] = .skipped("La letra ya está en el idioma elegido.")
+            } catch { songMetadataRefresh?.steps[.translation] = .failed(error.localizedDescription) }
+
+            songMetadataRefresh?.steps[.meaning] = .running
+            do {
+                _ = try await lyricInterpretations.load(lyrics, language: preferences.meaningLanguage, refresh: true)
+                songMetadataRefresh?.steps[.meaning] = .updated
+            } catch { songMetadataRefresh?.steps[.meaning] = .failed(error.localizedDescription) }
+        }
+    }
+    func translationPreferencesDidChange() { preparationPreferencesDidChange() }
+    func preparationPreferencesDidChange() {
+        refreshQueuePreparation()
+        prepareCurrentSongTools()
+    }
+    func retryQueuePreparation() {
+        lyricInterpretations.retryAutomatic()
+        refreshQueuePreparation(retry: true)
+        retrySongAnalysis()
+    }
+    private func refreshQueuePreparation(retry: Bool = false) {
+        let preferences = QueuePreparationPreferences(defaults: defaults)
+        // Current, upcoming, then already played songs. Reordering never
+        // interrupts a decoder or provider request already writing its cache.
+        let index = queue.currentIndex ?? 0
+        let ordered = Array(queue.tracks.dropFirst(index)) + Array(queue.tracks.prefix(index))
+        let items = ordered.compactMap { track -> QueuePreparationStore.Item? in
+            guard let access = try? folderAccess(for: track) else { return nil }
+            return .init(track: track, folder: access)
+        }
+        lyricInterpretations.setAutomaticQueue(preferences.meaning ? items.map(\.id) : [], language: preferences.meaningLanguage)
+        queuePreparation.update(
+            preferences.audio || preferences.translation || preferences.meaning
+                ? items.filter { $0.track.id != current?.id } : [],
+            preferences: preferences, retry: retry
+        )
+    }
+    private func prepareQueuedSong(_ item: QueuePreparationStore.Item, preferences: QueuePreparationPreferences) async throws {
+        // Let the selected song reach the audio/translation stores first.
+        await songAnalysisTask?.value
+        let snapshot = try await MetadataService.read(url: item.track.url(in: item.folder.url), folder: item.folder)
+        let lyrics = await Task.detached(priority: .utility) {
+            let text = LyricsSource.read(for: item.track.url(in: item.folder.url),
+                                         embedded: snapshot.values[.lyrics] ?? "", coordinator: NSFileCoordinator()).text
+            let document = LyricsDocument(text: text)
+            guard let cue = item.track.cue else { return document }
+            return document.sliced(from: cue.startSeconds, duration: item.track.duration(in: snapshot.duration))
+        }.value
+        var audioIssue: Error?
+        if preferences.audio && QueuePreparationPreferences(defaults: defaults).audio {
+            do { _ = try await musicTools.load(track: item.track, folder: item.folder, expected: snapshot.fingerprint) }
+            catch { audioIssue = error }
+        }
+        await prepareLyrics(lyrics, owner: item.id, preferences: preferences)
+        if let audioIssue { throw audioIssue }
+    }
+    private func prepareLyrics(_ lyrics: LyricsDocument, owner: String, preferences: QueuePreparationPreferences) async {
+        guard lyrics.lines.contains(where: { !$0.text.isEmpty }) else { return }
+        if preferences.translation && QueuePreparationPreferences(defaults: defaults).translation {
+            _ = try? await lyricTranslations.load(lyrics, source: preferences.source, target: preferences.target)
+        }
+        let latest = QueuePreparationPreferences(defaults: defaults)
+        if preferences.meaning && latest.meaning && preferences.meaningLanguage == latest.meaningLanguage {
+            await lyricInterpretations.enqueue(lyrics, language: preferences.meaningLanguage, owner: owner)
+        }
+    }
+    private func detachSongAnalysis() {
+        // Let the request reach the cache queue even if selection changes before
+        // its first suspension finishes. The ID below detaches its UI updates.
+        songAnalysisTask = nil; songAnalysisRequest = nil
+        songAnalysisID = UUID()
+        songAnalysisProgress = nil; songAnalysisIssue = nil
+    }
+    /// Selection owns the progress/error display; the store owns the analysis.
+    private func prepareCurrentSongTools() {
+        guard let track = current, let fingerprint = currentDetails?.fingerprint,
+              let access = try? folderAccess(for: track) else { detachSongAnalysis(); return }
+        let lyrics = currentDetails?.lyrics ?? LyricsDocument(text: "")
+        let preferences = QueuePreparationPreferences(defaults: defaults)
+        let source = preferences.source, target = preferences.target
+        let request = SongAnalysisRequest(url: track.url(in: access.url).standardizedFileURL,
+                                          localID: track.localID, fingerprint: fingerprint,
+                                          translationKey: LyricUnderstanding.translationKey(lyrics, source: source, target: target),
+                                          preferences: preferences)
+        guard songAnalysisRequest != request else { return }
+        detachSongAnalysis()
+        songAnalysisRequest = request; songAnalysisProgress = preferences.audio ? 0 : nil
+        let store = musicTools, id = songAnalysisID
+        songAnalysisTask = Task(priority: .utility) { [weak self] in
+            do {
+                if preferences.audio {
+                    _ = try await store.load(track: track, folder: access, expected: fingerprint) { [weak self] progress in
+                        Task { @MainActor in
+                            guard self?.songAnalysisID == id, self?.songAnalysisTask != nil else { return }
+                            self?.songAnalysisProgress = progress
+                        }
+                    }
+                } else {
+                    try await store.restore(track: track, folder: access, expected: fingerprint)
+                }
+                try Task.checkCancellation()
+            } catch is CancellationError { return }
+            catch {
+                if !Task.isCancelled, self?.songAnalysisID == id { self?.songAnalysisIssue = error.localizedDescription }
+            }
+            if self?.songAnalysisID == id {
+                self?.songAnalysisProgress = nil; self?.songAnalysisTask = nil
+            }
+            // Continue for this captured document even after the player changes
+            // song. Translation errors belong to the lyric controls, not playback.
+            guard !Task.isCancelled, lyrics.lines.contains(where: { !$0.text.isEmpty }) else { return }
+            await self?.prepareLyrics(lyrics, owner: QueuePreparationStore.Item.id(track, folder: access), preferences: preferences)
+        }
     }
     var duration: Double { currentDetails?.duration ?? 0 }
     func setPlaybackAdjustment(rate: Float? = nil, semitones: Float? = nil) {
@@ -131,6 +312,7 @@ final class PlaybackController: NSObject {
         let source = track.sourceID ?? primaryLibraryID
         let destination = metadataArchive?.destination
         let saved = try await metadataTransaction { token in
+            musicTools.invalidate(at: track.url(in: access.url))
             let saved = try await MetadataService.save(url: track.url(in: access.url), folder: access, expected: expected, patch: patch)
             if let id = libraryID(for: track) { try volumeAnalysis.rebind(id, from: expected, to: saved.fingerprint) }
             if generation == token { details.removeValue(forKey: track.id) }
@@ -152,6 +334,7 @@ final class PlaybackController: NSObject {
                     guard track.cue == nil else { throw MusicTextError.invalid("Las pistas CUE no permiten editar etiquetas del audio compartido.") }
                     guard let fingerprint = expected[track.id] else { throw MetadataIOError.changed }
                     let access = try folderAccess(for: track)
+                    musicTools.invalidate(at: track.url(in: access.url))
                     let saved = try await MetadataService.save(url: track.url(in: access.url), folder: access, expected: fingerprint, patch: patch)
                     if let id = libraryID(for: track) { try volumeAnalysis.rebind(id, from: fingerprint, to: saved.fingerprint) }
                     if generation == token { details.removeValue(forKey: track.id) }
@@ -175,9 +358,10 @@ final class PlaybackController: NSObject {
     func metadataTransaction<T>(_ body: (UUID) async throws -> T) async rethrows -> T {
         refresh()
         let selected = current?.id, position = resumePosition, shouldResume = playIntent, intent = pauseRevision
-        invalidatePlayback(); playIntent = false
+        detachSongAnalysis(); invalidatePlayback(); playIntent = false
         let token = generation
         defer {
+            refreshQueuePreparation(retry: true)
             if generation == token, let selected, current?.id == selected {
                 requestPlayback(trackID: selected, position: position, start: shouldResume && pauseRevision == intent)
             }
@@ -185,9 +369,11 @@ final class PlaybackController: NSObject {
         return try await body(token)
     }
 
-    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil, musicTools: MusicToolsStore? = nil) {
+    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil, musicTools: MusicToolsStore? = nil, lyricTranslations: LyricTranslationStore? = nil, lyricInterpretations: LyricInterpretationStore? = nil) {
         self.defaults = defaults
         self.musicTools = musicTools ?? MusicToolsStore()
+        self.lyricTranslations = lyricTranslations ?? LyricTranslationStore()
+        self.lyricInterpretations = lyricInterpretations ?? LyricInterpretationStore()
         self.metadataArchive = metadataArchive
         player = audioPlayer
         library = MusicLibrary(defaults: defaults)
@@ -352,7 +538,7 @@ final class PlaybackController: NSObject {
         cancelLoading(); library.beginFileDeletion(for: affectedIDs)
         refresh()
         let selected = current?.id, position = resumePosition, shouldResume = playIntent, intent = pauseRevision
-        invalidatePlayback(); playIntent = false
+        detachSongAnalysis(); musicTools.invalidate(at: target); invalidatePlayback(); playIntent = false
         let token = generation
         defer {
             library.finishFileDeletion(for: affectedIDs)
@@ -425,7 +611,7 @@ final class PlaybackController: NSObject {
                 }
                 if tracks.isEmpty {
                     guard loadID == request else { return }
-                    invalidatePlayback(); playIntent = false
+                    detachSongAnalysis(); invalidatePlayback(); playIntent = false
                     folder = access; bookmark = data; folderName = url.lastPathComponent
                     primaryLibraryID = nil; extraFolders = [:]
                     if case .endOfTrack = sleepTimer { storeSleepTimer(nil) }
@@ -459,6 +645,7 @@ final class PlaybackController: NSObject {
             resumePosition = currentTime
             playIntent = autoPlay && pauseRevision == intent
             if playIntent { try submit(prepared, trackID: tracks[index].id) }
+            prepareCurrentSongTools()
             updateNowPlaying(); save()
         } catch is CancellationError { }
         catch { if loadID == request { issue = error.localizedDescription } }
@@ -514,6 +701,7 @@ final class PlaybackController: NSObject {
             currentTime = seconds.isFinite ? max(0, min(seconds, prepared.details.duration)) : 0; resumePosition = currentTime
             playIntent = autoPlay && pauseRevision == intent
             if playIntent { try submit(prepared, trackID: tracks[index].id) }
+            prepareCurrentSongTools()
             updateNowPlaying(); save(); return true
         } catch is CancellationError { return false }
         catch { if loadID == request { issue = error.localizedDescription }; return false }
@@ -528,6 +716,7 @@ final class PlaybackController: NSObject {
         let track = queue.tracks[index]
         if case .endOfTrack(let target) = sleepTimer, target != trackID { storeSleepTimer(nil) }
         guard let folder = try? folderAccess(for: track) else { issue = "Vuelve a abrir la carpeta de esta canción."; return }
+        if current?.id != trackID { detachSongAnalysis() }
         invalidatePlayback(); queue.select(index: index)
         currentTime = position; resumePosition = position; playIntent = start; isPreparing = true
         let token = generation
@@ -543,6 +732,7 @@ final class PlaybackController: NSObject {
                 guard generation == token else { return }
                 isPreparing = false
                 if playIntent && !interrupted { try submit(prepared, trackID: trackID, position: position) }
+                prepareCurrentSongTools()
                 updateNowPlaying(); save()
             } catch is CancellationError { }
             catch {
@@ -605,7 +795,7 @@ final class PlaybackController: NSObject {
     func stop() {
         pauseRevision = UUID()
         storeSleepTimer(nil)
-        refresh(); playIntent = false; invalidatePlayback(); save(); updateNowPlaying()
+        refresh(); playIntent = false; detachSongAnalysis(); invalidatePlayback(); save(); updateNowPlaying()
         let token = generation
         Task { [weak self] in
             guard let self, generation == token, !playIntent else { return }
@@ -754,6 +944,7 @@ final class PlaybackController: NSObject {
                 shufflePlayed.insert(entry.trackID)
             }
             queue.select(index: index); currentTime = entry.position; resumePosition = entry.position; isPreparing = false
+            prepareCurrentSongTools()
             if let source = queue.current?.sourceID ?? primaryLibraryID, let current = queue.current {
                 library.recordPlayed(source + "\0" + current.localID)
             }

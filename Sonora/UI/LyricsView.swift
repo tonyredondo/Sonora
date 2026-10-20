@@ -9,9 +9,11 @@ struct LyricsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var textSize
     @AppStorage("lyricsAutoScroll") private var autoScroll = true
-    @State private var showUnderstanding = false
-    @State private var translation: LyricTranslation?
-    @State private var translationSourceKey = ""
+    private enum UnderstandingTool: Int, Identifiable {
+        case meaning, translation
+        var id: Int { rawValue }
+    }
+    @State private var understanding: UnderstandingTool?
     @AppStorage("lyricTranslationSource") private var translationSource = "auto"
     @AppStorage("lyricTranslationTarget") private var translationTarget = "es"
     @AppStorage("showLyricTranslation") private var showTranslation = true
@@ -47,23 +49,17 @@ struct LyricsView: View {
     private var translationKey: String { LyricUnderstanding.translationKey(lyrics, source: translationSource, target: translationTarget) }
 
     private var trackHeading: some View {
-        HStack(spacing: 12) {
         VStack(alignment: .leading, spacing: 4) {
             Text(title.isEmpty ? selectedTrack?.displayName ?? "Letra" : title).font(.headline).lineLimit(2)
             if !artist.isEmpty { Text(artist).font(.subheadline).foregroundStyle(.secondary) }
         }
-        Spacer(minLength: 0)
-        if !lyrics.lines.isEmpty {
-            Button { showUnderstanding = true } label: { CompactActionLabel(title: "Comprender letra", icon: "character.book.closed", caption: "Comprender") }
-                .buttonStyle(.plain).accessibilityIdentifier("understandLyrics")
-        }
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     var body: some View {
         // Hash the complete document once per update, not for every visible row.
         let translationKey = self.translationKey
-        let visibleTranslation = showTranslation && translationSourceKey == translationKey ? translation : nil
+        let visibleTranslation = showTranslation ? player.lyricTranslations.results[translationKey] : nil
         return NavigationStack {
             VStack(spacing: 0) {
                 ScrollView {
@@ -151,6 +147,11 @@ struct LyricsView: View {
                         .onChange(of: autoScroll) { scroll(reader) }
                     }
                     if visibleTranslation != nil { Text("Traducción automática · Apple").font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("lyricsTranslationSource") }
+                    else if let status = player.lyricTranslations.statuses[translationKey], status != .ready {
+                        Button { understanding = .translation } label: {
+                            Text(status.message).font(.caption).multilineTextAlignment(.center)
+                        }.padding(.horizontal).padding(.vertical, 6).accessibilityIdentifier("lyricsTranslationStatus")
+                    }
                     if let attribution = lyrics.attribution {
                         Text(attribution).font(.caption).foregroundStyle(.secondary).padding(8).accessibilityIdentifier("lyricsSource")
                     } else if isCurrent, let source = player.currentDetails?.lyricsSource {
@@ -160,21 +161,26 @@ struct LyricsView: View {
             }
             .background(PlayerTheme(scheme).background)
             .navigationTitle("Letra").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Listo") { dismiss() } } }
-            .task(id: "\(selectedTrack?.id ?? "")-\(refresh)") { await load() }
-            .task(id: translationKey) {
-                let key = translationKey
-                translation = nil
-                if let value = try? await MusicToolsCache.shared.read(LyricTranslation.self, key: key),
-                   let validated = try? LyricTranslation(lines: value.lines, document: lyrics), !Task.isCancelled {
-                    translation = validated; translationSourceKey = key
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Listo") { dismiss() } }
+                if !lyrics.lines.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Comprender letra", systemImage: "character.book.closed") { understanding = .meaning }
+                            .labelStyle(.iconOnly)
+                            .accessibilityIdentifier("understandLyrics")
+                    }
                 }
             }
-            .sheet(isPresented: $showUnderstanding) {
+            .task(id: "\(selectedTrack?.id ?? "")-\(refresh)") { await load() }
+            .task(id: translationKey) {
+                await player.lyricTranslations.restore(lyrics, source: translationSource, target: translationTarget)
+            }
+            .sheet(item: $understanding) { tool in
                 let sourceKey = LyricUnderstanding.sourceKey(lyrics)
-                LyricUnderstandingView(document: lyrics, translation: visibleTranslation) { value in
+                LyricUnderstandingView(document: lyrics, translation: visibleTranslation, translations: player.lyricTranslations, interpretations: player.lyricInterpretations, initialMode: tool.rawValue) { value in
                     guard sourceKey == LyricUnderstanding.sourceKey(lyrics) else { return }
-                    translation = value; translationSourceKey = translationKey; showTranslation = value != nil
+                    showTranslation = value != nil
+                    Task { await player.lyricTranslations.restore(lyrics, source: translationSource, target: translationTarget) }
                 }.id(sourceKey)
             }
             .onChange(of: offset) {

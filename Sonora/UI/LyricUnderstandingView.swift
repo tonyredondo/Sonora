@@ -7,9 +7,17 @@ import SwiftUI
 struct LyricUnderstandingView: View {
     let document: LyricsDocument
     let translation: LyricTranslation?
+    let translations: LyricTranslationStore
+    let interpretations: LyricInterpretationStore
     let applyTranslation: (LyricTranslation?) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var mode = 0
+    init(document: LyricsDocument, translation: LyricTranslation?, translations: LyricTranslationStore, interpretations: LyricInterpretationStore,
+         initialMode: Int = 0, applyTranslation: @escaping (LyricTranslation?) -> Void) {
+        self.document = document; self.translation = translation; self.translations = translations
+        self.interpretations = interpretations
+        self.applyTranslation = applyTranslation; _mode = State(initialValue: initialMode)
+    }
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -17,8 +25,10 @@ struct LyricUnderstandingView: View {
                     Text("Significado").tag(0)
                     Text("Traducción").tag(1)
                 }.pickerStyle(.segmented).padding()
-                if mode == 0 { LyricInterpretationView(document: document) }
-                else if #available(iOS 18.0, *) {
+                if mode == 0 { LyricInterpretationView(document: document, store: interpretations) }
+                else if #available(iOS 26.4, *) {
+                    ContextualTranslationView(document: document, store: translations, hasTranslation: translation != nil) { value in applyTranslation(value); dismiss() }
+                } else if #available(iOS 18.0, *) {
                     LyricTranslationView(document: document, hasTranslation: translation != nil) { value in applyTranslation(value); dismiss() }
                 } else {
                     ContentUnavailableView("Necesita iOS 18", systemImage: "character.bubble", description: Text("La traducción local está disponible a partir de iOS 18."))
@@ -29,34 +39,111 @@ struct LyricUnderstandingView: View {
     }
 }
 
+@available(iOS 26.4, *)
+private struct ContextualTranslationView: View {
+    let document: LyricsDocument
+    let store: LyricTranslationStore
+    let hasTranslation: Bool
+    let apply: (LyricTranslation?) -> Void
+    @AppStorage("lyricTranslationSource") private var source = "auto"
+    @AppStorage("lyricTranslationTarget") private var target = "es"
+    @State private var languages: [Locale.Language] = []
+    @State private var configuration: TranslationSession.Configuration?
+    @State private var request: (source: String, target: String)?
+    @State private var issue: String?
+    private var key: String { LyricUnderstanding.translationKey(document, source: source, target: target) }
+    private var status: LyricTranslationStore.Status? { store.statuses[key] }
+    var body: some View {
+        List {
+            Section {
+                Picker("Idioma original", selection: $source) {
+                    Text("Detectar automáticamente").tag("auto"); languageOptions
+                }.disabled(request != nil)
+                Picker("Traducir a", selection: $target) { languageOptions }.disabled(request != nil)
+                if let status { Text(status.message).font(.footnote).foregroundStyle(.secondary).accessibilityIdentifier("translationState") }
+                if status?.busy == true || request != nil {
+                    ProgressView("Traduciendo letra…")
+                } else {
+                    Button(status == .needsLanguages ? "Descargar idiomas y traducir" : "Traducir y mostrar", systemImage: "character.bubble") {
+                        issue = nil
+                        if let cached = store.results[key] { apply(cached); return }
+                        do {
+                            let from = try AppleLyricTranslator.sourceLanguage(document, source: source)
+                            guard from.languageCode != Locale.Language(identifier: target).languageCode else { throw LyricTranslationIssue.sameLanguage }
+                            request = (source, target)
+                            let next = TranslationSession.Configuration(source: from, target: Locale.Language(identifier: target))
+                            if configuration == next { configuration?.invalidate() } else { configuration = next }
+                        } catch { issue = error.localizedDescription }
+                    }.disabled(languages.isEmpty || source == target || status == .sameLanguage).accessibilityIdentifier("translateLyrics")
+                    if hasTranslation { Button("Ocultar traducción") { apply(nil) } }
+                }
+                if let issue { Text(issue).foregroundStyle(.red).accessibilityIdentifier("translationIssue") }
+            } footer: {
+                Text("Preparamos las letras de toda la cola de reproducción y guardamos cada traducción después de analizar el audio. Conservamos las frases y sus tiempos. Si faltan idiomas, descárgalos una vez para continuar automáticamente y sin conexión.")
+            }
+        }.compactContentSpacing()
+        .task { languages = await LanguageAvailability().supportedLanguages.sorted { name($0) < name($1) } }
+        .task(id: key) {
+            issue = nil
+            await store.restore(document, source: source, target: target)
+        }
+        .translationTask(configuration) { session in
+            guard let current = request else { return }
+            do {
+                // Download approval stays in Apple's UI, only after this button.
+                try await session.prepareTranslation()
+                // The independent installed-language session survives this sheet.
+                let value = try await store.load(document, source: current.source, target: current.target)
+                try Task.checkCancellation()
+                request = nil; apply(value)
+            } catch {
+                request = nil
+                if !Task.isCancelled { issue = error.localizedDescription }
+            }
+        }
+    }
+    private func name(_ language: Locale.Language) -> String {
+        Locale(identifier: "es").localizedString(forIdentifier: language.minimalIdentifier) ?? language.minimalIdentifier
+    }
+    @ViewBuilder private var languageOptions: some View {
+        ForEach(languages, id: \.minimalIdentifier) { Text(name($0)).tag($0.minimalIdentifier) }
+    }
+}
+
 private struct LyricInterpretationView: View {
     let document: LyricsDocument
-    @State private var model = LyricInterpretationModel()
-    @State private var request: LyricInterpretationModel.Request?
-
+    let store: LyricInterpretationStore
     @AppStorage("lyricMeaningLanguage") private var language = "es"
+    private var key: String { store.key(document, language: language) }
+    private var status: LyricInterpretationStore.Status? { store.statuses[key] }
+    private var explanation: String? { store.results[key]?.explanation }
     var body: some View {
         List {
             Section {
                 Picker("Idioma de respuesta", selection: $language) {
                     Text("Español").tag("es"); Text("English").tag("en"); Text("Français").tag("fr")
                     Text("Deutsch").tag("de"); Text("Italiano").tag("it"); Text("Português").tag("pt")
-                }.disabled(model.running).accessibilityIdentifier("interpretationLanguage")
-                if model.running { ProgressView("Interpretando con Codex…"); Button("Cancelar") { request = nil } }
-                else {
-                    Button(model.explanation == nil ? "Interpretar letra" : "Ver interpretación guardada", systemImage: "sparkles") { request = .init(language: language) }
+                }.accessibilityIdentifier("interpretationLanguage")
+                if status == .interpreting {
+                    ProgressView("Interpretando con Codex…")
+                        .accessibilityIdentifier("interpretationState")
+                } else if explanation == nil {
+                    if status == .queued {
+                        Text(store.automaticIssue ?? (store.waitingForConnection ? "Pendiente de conexión con el servidor." : "Interpretación en cola…"))
+                            .font(.footnote).foregroundStyle(.secondary).accessibilityIdentifier("interpretationState")
+                    }
+                    Button(status == .queued ? "Interpretar ahora" : "Interpretar letra", systemImage: "sparkles") {
+                        Task { _ = try? await store.load(document, language: language) }
+                    }
                         .accessibilityIdentifier("interpretLyrics")
                 }
-
-                if let issue = model.issue { Text(issue).foregroundStyle(.red).accessibilityIdentifier("interpretationIssue") }
-            } footer: { Text("Interpretación de IA · GPT Astra. Es una lectura posible, no una explicación confirmada por su autor. Un análisis nuevo envía la letra a Codex desde tu servidor y consume uso de tu plan. Las interpretaciones guardadas funcionan sin conexión.") }
+                if case .failed(let issue) = status { Text(issue).foregroundStyle(.red).accessibilityIdentifier("interpretationIssue") }
+            } footer: { Text("Preparamos el significado de toda la cola, una canción cada vez. Puedes desactivarlo en Ajustes → Preparación automática. GPT Astra ofrece una lectura posible, no una explicación confirmada por su autor. Cada análisis nuevo envía la letra a Codex desde tu servidor y consume uso de tu plan. Los resultados guardados funcionan sin conexión.") }
             if document.isAITranscribed { Section { Text("Esta letra fue transcrita por IA y puede contener errores que afecten a la interpretación.").font(.footnote) } }
-            if let explanation = model.explanation { Section("Interpretación de IA") { Text(explanation).textSelection(.enabled).accessibilityIdentifier("lyricInterpretation") } }
+            if let explanation { Section("Interpretación de IA") { Text(explanation).textSelection(.enabled).accessibilityIdentifier("lyricInterpretation") } }
         }
         .compactContentSpacing()
-        .task(id: "\(language):\(request?.id.uuidString ?? "")") { [language, request] in
-            await model.load(document, language: language, request: request)
-        }
+        .task(id: key) { await store.restore(document, language: language) }
     }
 }
 

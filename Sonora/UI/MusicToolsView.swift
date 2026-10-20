@@ -45,13 +45,11 @@ struct WaveformTimeline: View {
     var body: some View {
         Canvas { context, size in
             let width = max(1, Int(size.width / 3)), fraction = min(1, max(0, time / analysis.duration))
-            for index in 0..<width {
-                let start = index * analysis.waveform.count / width
-                let end = max(start + 1, (index + 1) * analysis.waveform.count / width)
-                let amplitude = analysis.waveform[start..<min(end, analysis.waveform.count)].max() ?? 0
-                let height = max(2, CGFloat(sqrt(amplitude)) * (size.height - 8))
-                let rect = CGRect(x: CGFloat(index) * size.width / CGFloat(width), y: (size.height - height) / 2, width: 2, height: height)
-                context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(Double(index) / Double(width) <= fraction ? PlayerTheme(scheme).accent : .secondary.opacity(0.4)))
+            let levels = analysis.waveformLevels(count: width)
+            for (index, amplitude) in levels.enumerated() {
+                let height = max(2, CGFloat(amplitude) * (size.height - 8))
+                let rect = CGRect(x: CGFloat(index) * size.width / CGFloat(levels.count), y: (size.height - height) / 2, width: 2, height: height)
+                context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(Double(index) / Double(levels.count) <= fraction ? PlayerTheme(scheme).accent : .secondary.opacity(0.4)))
             }
             for marker in markers {
                 let x = marker.time / analysis.duration * size.width
@@ -94,16 +92,17 @@ struct SongAnalysisView: View {
                 Section {
                     CompactActionHeader {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(result.bpm.map { String(format: "%.1f BPM", $0) } ?? "Sin pulso estable").font(.title2.bold()).monospacedDigit().accessibilityIdentifier("songBPM")
+                            Text(result.bpm.map { String(format: "%.0f BPM", $0.rounded()) } ?? "BPM no detectado").font(.title2.bold()).monospacedDigit().accessibilityIdentifier("songBPM")
                             Text(result.annotations.bpm != nil ? "Corregido por ti" : result.analysis.tempo.variable ? "Estimado · ritmo variable" : "Estimado")
                                 .font(.caption).foregroundStyle(.secondary)
                             if result.annotations.bpm == nil, result.bpm != nil {
-                                Text("Confianza: \(Int(result.analysis.tempo.confidence * 100)) %").font(.caption).foregroundStyle(.secondary)
+                                Text(result.analysis.tempo.confidence >= 0.7 ? "Confianza alta" : result.analysis.tempo.confidence >= 0.4 ? "Confianza media" : "Confianza baja · aproximado")
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
                         }
                     } actions: {
                         CompactActionRow(layout: .inline) {
-                            Button { bpmText = result.bpm.map { String(format: "%.1f", $0) } ?? ""; editingBPM = true } label: { CompactActionLabel(title: "Corregir BPM", icon: "pencil", caption: "BPM") }
+                            Button { bpmText = result.bpm.map { String(format: "%.0f", $0.rounded()) } ?? ""; editingBPM = true } label: { CompactActionLabel(title: "Corregir BPM", icon: "pencil", caption: "BPM") }
                             Button { taps = []; tapping = true } label: { CompactActionLabel(title: "Marcar ritmo con toques", icon: "hand.tap", caption: "Toques") }
                         }
                     }
@@ -167,7 +166,7 @@ struct SongAnalysisView: View {
         .sheet(isPresented: $tapping) {
             NavigationStack {
                 VStack(spacing: 16) {
-                    Text(TapTempo.bpm(taps: taps).map { String(format: "%.1f BPM", $0) } ?? "Da al menos cuatro toques").font(.title2).monospacedDigit()
+                    Text(TapTempo.bpm(taps: taps).map { String(format: "%.0f BPM", $0.rounded()) } ?? "Da al menos cuatro toques").font(.title2).monospacedDigit()
                     Button {
                         let now = ProcessInfo.processInfo.systemUptime
                         if let last = taps.last, now - last > 1.5 { taps = [] }

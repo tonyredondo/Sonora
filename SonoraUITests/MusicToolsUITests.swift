@@ -5,14 +5,20 @@ final class MusicToolsUITests: XCTestCase {
         let attachment = XCTAttachment(screenshot: app.screenshot()); attachment.name = name
         attachment.lifetime = .keepAlways; add(attachment)
     }
-    @MainActor private func openPlayer(theme: String = "noche", large: Bool = false) -> XCUIApplication {
+    @MainActor private func openPlayer(theme: String = "noche", large: Bool = false,
+                                       track: String = "02 - Letra sincronizada QA.flac", refresh: Bool = false) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchArguments = ["-appearance", theme, "-metadata.offline", "YES", "-metadata.endpoint", "http://127.0.0.1:9", "-playbackAdjustment", "", "-showArtworkLyrics", "YES", "-lyricTranslationSource", "auto",
+        app.launchArguments = ["-appearance", theme, "-metadata.offline", "YES", "-metadata.endpoint", "http://127.0.0.1:9", "-playbackAdjustment", "", "-showArtworkLyrics", "YES", "-lyricTranslationSource", "auto", "-lyricTranslationTarget", "es",
                                "-UIPreferredContentSizeCategoryName", large ? "UICTContentSizeCategoryAccessibilityXXXL" : "UICTContentSizeCategoryL"]
-        app.launch(); app.openMusicSource("Sonora Lyrics QA")
-        let song = app.buttons["library-song:02 - Letra sincronizada QA.flac"]
-        XCTAssertTrue(song.waitForExistence(timeout: 5)); song.tap()
+        app.launch(); app.openMusicSource("Sonora Lyrics QA", refresh: refresh)
+        let song = app.buttons["library-song:\(track)"]
+        let search = app.searchFields.firstMatch
+        // List creates offscreen rows when scrolling. A partially visible final
+        // row can also report hittable underneath iOS's search bar.
+        for _ in 0..<8 where !song.exists || !song.isHittable || (search.exists && song.frame.intersects(search.frame)) { app.swipeUp() }
+        XCTAssertTrue(song.waitForExistence(timeout: 5))
+        XCTAssertTrue(song.isHittable); song.tap()
         app.closeMusicSource("Sonora Lyrics QA")
         let transport = app.buttons["miniTransport"]
         let playing = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Pausar"), object: transport)
@@ -20,6 +26,39 @@ final class MusicToolsUITests: XCTestCase {
         transport.tap(); app.buttons["openNowPlaying"].tap()
         return app
     }
+    @MainActor private func checkManualRefresh(large: Bool) {
+        let app = openPlayer(large: large)
+        let audioTools = app.buttons["openAudioTools"]
+        for _ in 0..<5 where !audioTools.isHittable { app.swipeUp() }
+        XCTAssertTrue(audioTools.isHittable); audioTools.tap()
+        let refresh = app.buttons["refreshSongMetadata"]
+        XCTAssertTrue(app.navigationBars["Sonido"].waitForExistence(timeout: 5))
+        for _ in 0..<10 where !refresh.exists || !refresh.isHittable { app.swipeUp(velocity: .slow) }
+        XCTAssertTrue(refresh.isHittable)
+        capture(large ? "refresh-control-accessibility" : "refresh-control", app)
+        refresh.tap()
+        let audio = app.descendants(matching: .any).matching(identifier: "refreshSongMetadata.audio").firstMatch
+        for _ in 0..<10 where !audio.exists || !audio.isHittable { app.swipeUp(velocity: .slow) }
+        let success = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "Actualizado"), object: audio)
+        XCTAssertEqual(XCTWaiter.wait(for: [success], timeout: 60), .completed)
+        let meaning = app.descendants(matching: .any).matching(identifier: "refreshSongMetadata.meaning").firstMatch
+        for _ in 0..<10 where !meaning.exists || !meaning.isHittable { app.swipeUp(velocity: .slow) }
+        let offline = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "Conecta con el servidor"), object: meaning)
+        XCTAssertEqual(XCTWaiter.wait(for: [offline], timeout: 15), .completed)
+        XCTAssertTrue(meaning.isHittable)
+        if meaning.frame.maxY > app.frame.maxY - 40 { app.swipeUp(velocity: .slow) }
+        XCTAssertLessThanOrEqual(meaning.frame.maxY, app.frame.maxY - 20, "The full error message must remain reachable")
+        capture(large ? "refresh-outcome-accessibility" : "refresh-outcome-offline", app)
+        // Returning to playback must preserve its paused transport and waveform.
+        app.navigationBars["Sonido"].buttons["Listo"].tap()
+        XCTAssertEqual(app.buttons["playerTransport"].label, "Reproducir")
+        XCTAssertTrue(app.staticTexts["playerBPM"].waitForExistence(timeout: 10))
+        app.terminate()
+    }
+
+    @MainActor func testManualRefreshControlAndOfflineOutcome() { checkManualRefresh(large: false) }
+    @MainActor func testManualRefreshAtAccessibilitySize() { checkManualRefresh(large: true) }
+
     @MainActor func testAudioToolsWaveformMarkerAndRestore() {
         let app = openPlayer()
         let audio = app.buttons["openAudioTools"]
@@ -51,10 +90,128 @@ final class MusicToolsUITests: XCTestCase {
         XCTAssertTrue(app.buttons["openNowPlaying"].waitForExistence(timeout: 15)); app.buttons["openNowPlaying"].tap()
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "songWaveform").firstMatch.waitForExistence(timeout: 10), "Saved analysis should restore without another full analysis")
     }
+    @MainActor func testPlayerAutomaticallyShowsBPMAndDynamicWaveform() {
+        let app = openPlayer(track: "05 - Dinámica 120 BPM QA.flac", refresh: true)
+        let bpm = app.staticTexts["playerBPM"]
+        XCTAssertTrue(bpm.waitForExistence(timeout: 45), "Opening the song must analyze it without visiting audio tools")
+        XCTAssertEqual(bpm.label, "120 BPM")
+        let waveform = app.descendants(matching: .any).matching(identifier: "songWaveform").firstMatch
+        XCTAssertTrue(waveform.waitForExistence(timeout: 5))
+        capture("automatic-waveform-dynamics", app)
+        waveform.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5)).tap()
+        let elapsed = app.staticTexts["playerElapsedTime"]
+        XCTAssertEqual(elapsed.label, "1:00")
+        XCTAssertEqual(app.buttons["playerTransport"].label, "Reproducir")
+        capture("automatic-waveform-seek", app)
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["openNowPlaying"].waitForExistence(timeout: 15)); app.buttons["openNowPlaying"].tap()
+        XCTAssertTrue(waveform.waitForExistence(timeout: 15))
+        XCTAssertEqual(bpm.label, "120 BPM")
+        XCTAssertEqual(elapsed.label, "1:00")
+        XCTAssertEqual(app.buttons["playerTransport"].label, "Reproducir")
+        capture("automatic-waveform-restored", app)
+    }
+    @MainActor func testContextualTranslationRendersFromCacheAndKeepsOriginalSeekTimes() {
+        let app = openPlayer(track: "06 - Traducción contextual QA.flac", refresh: true)
+        app.buttons["expandLyrics"].tap()
+        let translation = app.staticTexts["Cuando finalmente deje de llover,"].firstMatch
+        XCTAssertTrue(translation.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["lyricLine0"].exists)
+        XCTAssertTrue(app.buttons["lyricLine1"].exists)
+        XCTAssertTrue(app.buttons["lyricLine1"].staticTexts["saldremos."].exists)
+        XCTAssertTrue(app.staticTexts["lyricsTranslationSource"].exists)
+        capture("contextual-translation-cached", app)
+        app.buttons["lyricLine1"].tap()
+        app.navigationBars["Letra"].buttons["Listo"].tap()
+        XCTAssertEqual(app.staticTexts["playerElapsedTime"].label, "0:03")
+        XCTAssertEqual(app.buttons["playerTransport"].label, "Reproducir")
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["openNowPlaying"].waitForExistence(timeout: 15))
+        app.buttons["openNowPlaying"].tap(); app.buttons["expandLyrics"].tap()
+        XCTAssertTrue(translation.waitForExistence(timeout: 10))
+        capture("contextual-translation-restored", app)
+    }
+    @MainActor func testFinalTranslatedLineRemainsVisibleAndSeeksAtItsOwnTime() {
+        for large in [false, true] {
+            let app = openPlayer(large: large, track: "08 - Última traducción QA.flac", refresh: true)
+            app.buttons["expandLyrics"].tap()
+            XCTAssertTrue(app.staticTexts["lyricsTranslationSource"].waitForExistence(timeout: 15))
+            let reader = app.scrollViews["lyricsReader"], last = app.buttons["lyricLine5"]
+            for _ in 0..<8 where !last.isHittable || last.frame.maxY > reader.frame.maxY { reader.swipeUp() }
+            XCTAssertTrue(last.staticTexts["and you"].exists)
+            XCTAssertTrue(last.staticTexts["y a ti"].exists)
+            XCTAssertEqual(last.staticTexts.count, 2)
+            XCTAssertGreaterThanOrEqual(last.frame.minY, reader.frame.minY)
+            XCTAssertLessThanOrEqual(last.frame.maxY, reader.frame.maxY)
+            XCTAssertLessThanOrEqual(last.frame.maxY, app.staticTexts["lyricsTranslationSource"].frame.minY)
+            capture(large ? "final-translation-accessibility" : "final-translation", app)
+            last.tap()
+            app.navigationBars["Letra"].buttons["Listo"].tap()
+            XCTAssertEqual(app.staticTexts["playerElapsedTime"].label, "0:15")
+            XCTAssertEqual(app.buttons["playerTransport"].label, "Reproducir")
+            app.terminate()
+        }
+    }
+    @MainActor func testFastPulseShowsRoundedHalfTimeAndRestoresIt() {
+        let app = openPlayer(track: "09 - Pulso 180 BPM QA.flac", refresh: true)
+        let bpm = app.staticTexts["playerBPM"]
+        XCTAssertTrue(bpm.waitForExistence(timeout: 45))
+        XCTAssertEqual(bpm.label, "90 BPM")
+        capture("half-time-bpm", app)
+        app.buttons["openAudioTools"].tap()
+        app.buttons["openSongAnalysis"].tap()
+        XCTAssertTrue(app.staticTexts["songBPM"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["songBPM"].label.contains("90"))
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["openNowPlaying"].waitForExistence(timeout: 15))
+        app.buttons["openNowPlaying"].tap()
+        XCTAssertTrue(bpm.waitForExistence(timeout: 15))
+        XCTAssertEqual(bpm.label, "90 BPM")
+    }
+    @MainActor func testTranslatedSentencesStayBesideTheirOriginalLines() {
+        let pairs = [
+            ("The sun rises over the mountains", "El sol sale sobre las montañas."),
+            ("A bird sings in the garden", "Un pájaro canta en el jardín."),
+            ("The train arrives at noon", "El tren llega al mediodía."),
+            ("We will meet by the river", "Nos encontraremos junto al río."),
+            ("The evening brings a gentle breeze", "La noche trae una suave brisa."),
+            ("Tomorrow we begin again", "Mañana comenzamos de nuevo.")
+        ]
+        let app = openPlayer(track: "07 - Traducción por frases QA.flac", refresh: true)
+        app.buttons["expandLyrics"].tap()
+        XCTAssertTrue(app.staticTexts[pairs[0].1].waitForExistence(timeout: 15))
+        capture("translation-aligned-sentences", app)
+        let reader = app.scrollViews["lyricsReader"]
+        for (index, pair) in pairs.enumerated() {
+            let row = app.buttons["lyricLine\(index)"]
+            for _ in 0..<6 where !row.isHittable || row.frame.maxY > reader.frame.maxY { reader.swipeUp() }
+            XCTAssertTrue(row.isHittable)
+            XCTAssertTrue(row.staticTexts[pair.0].exists)
+            XCTAssertTrue(row.staticTexts[pair.1].exists)
+            XCTAssertEqual(row.staticTexts.count, 2, "Each original line should contain only its own translated fragment")
+        }
+        capture("translation-aligned-last-sentence", app)
+        app.buttons["lyricLine5"].tap()
+        app.navigationBars["Letra"].buttons["Listo"].tap()
+        XCTAssertEqual(app.staticTexts["playerElapsedTime"].label, "0:15")
+        XCTAssertEqual(app.buttons["playerTransport"].label, "Reproducir")
+    }
     @MainActor func testLyricsUnderstandingAndTranslationAvailability() {
         let app = openPlayer()
         app.buttons["expandLyrics"].tap()
         XCTAssertTrue(app.buttons["understandLyrics"].waitForExistence(timeout: 10)); capture("lyrics-understanding-entry", app)
+        let translationStatus = app.buttons["lyricsTranslationStatus"]
+        XCTAssertTrue(translationStatus.waitForExistence(timeout: 10))
+        translationStatus.tap()
+        let translationTab = app.segmentedControls.buttons["Traducción"]
+        XCTAssertTrue(translationTab.waitForExistence(timeout: 5))
+        capture("translation-status-destination", app)
+        XCTAssertTrue(translationTab.isSelected, "The translation status should open its own controls")
+        let translate = app.buttons["translateLyrics"]
+        XCTAssertTrue(translate.waitForExistence(timeout: 10))
+        XCTAssertFalse(translate.isEnabled, "This Spanish fixture does not need translating to Spanish again")
+        capture("automatic-translation-language-status", app)
+        app.navigationBars["Comprender letra"].buttons["Listo"].tap()
         app.buttons["understandLyrics"].tap()
         XCTAssertTrue(app.buttons["interpretLyrics"].waitForExistence(timeout: 5))
         // A launch-argument default would override subsequent Picker changes.
@@ -78,6 +235,32 @@ final class MusicToolsUITests: XCTestCase {
         XCTAssertTrue(app.buttons["draftSongAnalysis"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["openDraftPreview"].isHittable)
         capture("editor-audio-tools-compact", app)
+    }
+    @MainActor func testQueuePreparationSettingsAndPendingMeaning() {
+        let app = openPlayer()
+        app.buttons["Cerrar reproductor"].tap()
+        app.buttons["Ajustes"].tap()
+        let settings = app.buttons["queuePreparationSettings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 5)); settings.tap()
+        for identifier in ["prepareQueueAudio", "prepareQueueTranslation", "prepareQueueMeaning"] {
+            let toggle = app.switches[identifier]
+            XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+            XCTAssertEqual(toggle.value as? String, "1")
+        }
+        capture("queue-preparation-defaults", app)
+        let meaning = app.switches["prepareQueueMeaning"]
+        meaning.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        XCTAssertEqual(meaning.value as? String, "0")
+        meaning.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        XCTAssertEqual(meaning.value as? String, "1")
+        app.buttons["Reintentar pendientes"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.navigationBars["Ajustes"].buttons["Listo"].tap()
+        app.buttons["openNowPlaying"].tap(); app.buttons["expandLyrics"].tap()
+        app.buttons["understandLyrics"].tap()
+        XCTAssertTrue(app.staticTexts["interpretationState"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["interpretLyrics"].isEnabled)
+        capture("meaning-offline-queue", app)
     }
     @MainActor func testMarkerAuditionStartsPausedPlayback() {
         let app = openPlayer()
@@ -107,6 +290,18 @@ final class MusicToolsUITests: XCTestCase {
         audition.swipeLeft()
         app.buttons["Eliminar"].firstMatch.tap()
         XCTAssertEqual(outcome, .completed, "The marker's Escuchar action must start playback from its saved position")
+    }
+    @MainActor func testEstimatedBPMShowsANumberAndConfidence() {
+        let app = openPlayer(track: "04 - Pulso 120 BPM QA.flac", refresh: true)
+        capture("player-speaker-icon", app)
+        app.buttons["openAudioTools"].tap()
+        app.buttons["openSongAnalysis"].tap()
+        let bpm = app.staticTexts["songBPM"]
+        XCTAssertTrue(bpm.waitForExistence(timeout: 45))
+        XCTAssertTrue(bpm.label.hasSuffix(" BPM"))
+        XCTAssertNotNil(Double(bpm.label.replacingOccurrences(of: " BPM", with: "")))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Confianza")).firstMatch.exists)
+        capture("estimated-bpm-number", app)
     }
     @MainActor func testAudioToolsInLightAndLargeText() {
         let app = openPlayer(theme: "papel", large: true)

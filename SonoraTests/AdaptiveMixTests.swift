@@ -24,6 +24,29 @@ import XCTest
         defer { try? FileManager.default.removeItem(at: root) }
         try await body(root, root.appendingPathComponent("01.wav"), root.appendingPathComponent("02.wav"))
     }
+    private func musicalSignal(_ url: URL) throws {
+        var energy = [Double](repeating: 0.02, count: 1200)
+        for beat in 0..<24 {
+            for (fraction, amplitude) in [(0.0, 0.4), (0.5, 0.22), (0.75, 0.11)] {
+                let time = Double(beat) * 0.5 + fraction * 0.5 + 0.025 * sin(Double(beat) * 1.7)
+                let center = Int(time * 100)
+                for i in max(0, center - 4)...min(1199, center + 4) {
+                    energy[i] += amplitude * (0.8 + 0.2 * cos(Double(beat))) * exp(-pow((Double(i) / 100 - time) / 0.018, 2))
+                }
+            }
+        }
+        let format = NormalizedPCMDecoder.format
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 48000)!
+        buffer.frameLength = 48000
+        for second in 0..<12 {
+            for frame in 0..<48000 {
+                let value = Float(energy[second * 100 + frame / 480] * sin(Double(frame) * 2 * .pi * 440 / 48000))
+                for channel in 0..<2 { buffer.floatChannelData![channel][frame] = value }
+            }
+            try file.write(from: buffer)
+        }
+    }
     func testPCMAnalysisFindsSteadyPulseWithinBoundedBudgetAndRejectsUnpulsedAudio() async throws {
         try await withFolder { _, first, second in
             try signal(first, phase: 0.1, duration: 12.1)
@@ -35,6 +58,61 @@ import XCTest
             try signal(second, phase: 0, duration: 12, pulsed: false)
             let rejected = try AudioRhythmAnalyzer.analyze(second)
             XCTAssertNil(rejected.head); XCTAssertNil(rejected.tail)
+            XCTAssertNil(rejected.headBPM); XCTAssertNil(rejected.tailBPM)
+        }
+    }
+    func testEstimatedPCMAlignsTheIncomingBeatAndTransfersItsConsumedHead() async throws {
+        try await withFolder { _, first, second in
+            try musicalSignal(first)
+            try signal(second, phase: 0.25, duration: 16)
+            let analysis = try AudioRhythmAnalyzer.analyze(first)
+            let grid = try XCTUnwrap(analysis.tail, "Offbeats and timing variation still provide a useful estimated phase")
+            XCTAssertLessThan(grid.confidence, 0.72)
+            XCTAssertEqual(try XCTUnwrap(analysis.tailBPM), 120, accuracy: 2)
+            XCTAssertLessThan(analysis.milliseconds, 500)
+            let incoming = try NormalizedPCMDecoder(AudioDecoders.open(second))
+            defer { try? incoming.close() }
+            var details = TrackDetails(title: "Incoming", artist: "Sonora Tests", album: "Tests",
+                duration: 16, format: "WAV", sampleRate: 48000, artwork: nil)
+            details.rhythm = try AudioRhythmAnalyzer.analyze(second)
+            let handoff = CrossfadeHandoff()
+            XCTAssertTrue(handoff.beginPreparation())
+            handoff.supply(TransitionTrack(id: "02", prepared: PreparedTrack(decoder: incoming, details: details)))
+            let decoder = CrossfadeDecoder(try NormalizedPCMDecoder(AudioDecoders.open(first)),
+                handoff: handoff, duration: 5, adaptive: analysis)
+            defer { try? decoder.close() }
+            let buffer = AVAudioPCMBuffer(pcmFormat: decoder.processingFormat, frameCapacity: 997)!
+            var frames = 0
+            repeat {
+                try decoder.decode(into: buffer, length: buffer.frameCapacity)
+                frames += Int(buffer.frameLength)
+                XCTAssertTrue(UnsafeBufferPointer(start: buffer.floatChannelData![0],
+                    count: Int(buffer.frameLength)).allSatisfy { $0.isFinite && abs($0) <= 1 })
+            } while buffer.frameLength == buffer.frameCapacity
+            let transfer = try XCTUnwrap(handoff.takeForEnqueue())
+            guard case .adaptiveEstimate(let seconds, let bpm) = transfer.1 else {
+                return XCTFail("The estimated beat phase must align the incoming audio")
+            }
+            XCTAssertEqual(bpm, 120, accuracy: 2)
+            XCTAssertGreaterThan(seconds, 4); XCTAssertLessThanOrEqual(seconds, 5)
+            let skip = Double(incoming.position) / 48000 - seconds
+            XCTAssertEqual(skip, 0.25, accuracy: 0.03, "Start at the incoming beat, not at the unaligned file origin")
+            XCTAssertLessThanOrEqual(skip, 1)
+            var alignedBeats = 0
+            for beat in 0..<32 {
+                let sourceTime = 0.25 + Double(beat) * 0.5
+                let outputTime = 12 - seconds + sourceTime - skip
+                guard sourceTime >= skip, sourceTime < skip + seconds, outputTime < 11.95 else { continue }
+                let outgoingBeat = (outputTime / 0.5).rounded()
+                let actualBeatTime = outgoingBeat * 0.5 + 0.025 * sin(outgoingBeat * 1.7)
+                XCTAssertEqual(outputTime, actualBeatTime, accuracy: 0.065,
+                               "Incoming beats should meet the main attacks, not the offbeats")
+                alignedBeats += 1
+            }
+            XCTAssertGreaterThanOrEqual(alignedBeats, 4)
+            XCTAssertTrue(transfer.1.description.contains("alineada por estimación"))
+            XCTAssertEqual(frames, 12 * 48000)
+            XCTAssertNil(handoff.takeForEnqueue())
         }
     }
     func testAdaptivePCMAlignsBeatsAndTransfersTheIncomingDecoderAfterItsConsumedHead() async throws {

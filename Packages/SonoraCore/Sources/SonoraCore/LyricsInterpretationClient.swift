@@ -30,7 +30,7 @@ public enum LyricsInterpretationError: LocalizedError {
     }
 }
 
-/// Only an explicit request sends lyrics. Exact text, language and prompt version
+/// Callers choose whether to generate or read offline. Text, language and prompt version
 /// identify reusable results; credentials never participate in the cache key.
 public actor LyricsInterpretationClient {
     private let connection: MetadataProxyConnection
@@ -40,21 +40,23 @@ public actor LyricsInterpretationClient {
                 transport: any MetadataLookupTransport = MetadataURLSessionTransport(requestTimeout: 225, resourceTimeout: 240)) {
         self.connection = connection; self.cache = cache; self.transport = transport
     }
-    public func interpret(lyrics: String, language: String, offline: Bool) async throws -> LyricsInterpretation {
+    /// Refresh bypasses both caches, replacing the saved result only after success.
+    public func interpret(lyrics: String, language: String, offline: Bool, refresh: Bool = false) async throws -> LyricsInterpretation {
         guard !lyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, lyrics.utf8.count <= 65536,
               ["es", "en", "fr", "de", "it", "pt"].contains(language) else { throw MetadataLookupError.invalidSearch }
-        struct Input: Encodable { let lyrics: String; let language: String }
+        struct Input: Encodable { let lyrics: String; let language: String; var refresh: Bool? }
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
         let body = try encoder.encode(Input(lyrics: lyrics, language: language))
         var request = try connection.request(path: "v1/lyrics/interpret")
         let key = "codex-meaning-v1:gpt-6-astra:xhigh:\(connection.endpoint.absoluteString):" + SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
         try Task.checkCancellation()
-        if let old = try await cache.read(key: key), old.status == 200,
+        if !refresh, let old = try await cache.read(key: key), old.status == 200,
            let value = try? JSONDecoder().decode(LyricsInterpretation.self, from: old.data), value.isValid {
             try Task.checkCancellation(); return value
         }
         guard !offline else { throw MetadataLookupError.notCached }
-        request.httpMethod = "POST"; request.httpBody = body
+        request.httpMethod = "POST"
+        request.httpBody = refresh ? try encoder.encode(Input(lyrics: lyrics, language: language, refresh: true)) : body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let response = try await transport.send(request)
         try Task.checkCancellation()

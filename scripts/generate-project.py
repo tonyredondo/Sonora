@@ -48,15 +48,12 @@ def target_config(name, identifier, extra):
         settings.update(extra)
         if name=='app':
             settings.update(SWIFT_OBJC_BRIDGING_HEADER='Sonora/Sonora-Bridging-Header.h', CLANG_CXX_LANGUAGE_STANDARD='c++17')
-            # Pin the explicit App ID profile; automatic signing can select the
-            # team's wildcard profile while CarPlay approval is pending.
+            # Pin the explicit App ID profile carrying the approved CarPlay
+            # audio entitlement instead of the team's wildcard profile.
             settings['CODE_SIGN_STYLE[sdk=iphoneos*]']='Manual'
             settings['CODE_SIGN_IDENTITY[sdk=iphoneos*]']='Apple Development'
             settings['PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]']='Sonora Development'
-            # Simulator can use an ad-hoc CarPlay entitlement. Device builds keep
-            # ordinary signing until Apple grants CarPlay for this App ID; pass
-            # CODE_SIGN_ENTITLEMENTS=Sonora/CarPlay.entitlements after approval.
-            settings['CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]']='Sonora/CarPlay.entitlements'
+            settings['CODE_SIGN_ENTITLEMENTS']='Sonora/CarPlay.entitlements'
         refs.append(add(name+'-'+mode, 'XCBuildConfiguration', name=mode, buildSettings=settings))
     return add(name+'-configs', 'XCConfigurationList', buildConfigurations=refs, defaultConfigurationIsVisible=0, defaultConfigurationName='Release')
 
