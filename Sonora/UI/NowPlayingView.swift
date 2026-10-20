@@ -92,8 +92,6 @@ struct NowPlayingView: View {
             HStack {
                 Button { dismiss() } label: { Image(systemName: "chevron.down").frame(width: 44, height: 44).playerControlGlass(in: Circle()) }.accessibilityLabel("Cerrar reproductor")
                 Spacer(minLength: 8)
-                Text(player.currentDetails?.album ?? player.folderName).font(.subheadline).lineLimit(1)
-                Spacer(minLength: 8)
                 Button { expandedPage = selectedPage } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                         .frame(width: 44, height: 44)
@@ -118,8 +116,13 @@ struct NowPlayingView: View {
             Text(player.currentDetails?.title ?? player.current?.displayName ?? "Sonora")
                 .font(.system(compact ? .title3 : .title, design: theme.heading, weight: .bold))
                 .lineLimit(compact ? 1 : 2).textSelection(.enabled).accessibilityIdentifier("playerTitle")
-            Text(player.currentDetails?.artist ?? "Artista desconocido")
-                .font(compact ? .subheadline : .title3).foregroundStyle(.secondary).lineLimit(1)
+            Group {
+                Text(player.currentDetails?.artist ?? "Artista desconocido")
+                    .accessibilityIdentifier("playerArtist")
+                Text(player.currentDetails?.album ?? player.folderName)
+                    .accessibilityIdentifier("playerAlbum")
+            }
+            .font(compact ? .subheadline : .title3).foregroundStyle(.secondary).lineLimit(1)
             if let format = player.currentDetails?.format {
                 HStack {
                     Text(format).lineLimit(1).layoutPriority(-1)

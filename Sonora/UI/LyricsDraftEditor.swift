@@ -7,10 +7,11 @@ struct LyricsDraftEditor: View {
     let track: AudioTrack
     let duration: Double
     @Binding var text: String
+    @FocusState.Binding var editingText: Bool
+    @Binding var textFrame: CGRect
     @State private var mode = Mode.text
     @State private var draft = LyricsDraft(text: "")
     let editPhrase: (LyricsDraft, LyricsDraft.Line) -> Void
-    @FocusState private var editingText: Bool
     private enum Mode: String, CaseIterable { case text = "Texto", phrases = "Frases" }
 
     var body: some View {
@@ -22,6 +23,8 @@ struct LyricsDraftEditor: View {
                 TextEditor(text: $text)
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 240).focused($editingText).accessibilityLabel("Texto de la letra").accessibilityIdentifier("metadata-lyrics")
+                    .scrollDismissesKeyboard(.never)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { textFrame = $0 }
                 Text("En Frases puedes editar cada línea y su inicio. Previsualizar sigue este borrador con la música; solo Guardar cambia el archivo.")
                     .font(.footnote).foregroundStyle(.secondary)
             } else if draft.lines.isEmpty {
@@ -39,7 +42,7 @@ struct LyricsDraftEditor: View {
                 }
             }
         }
-        .toolbar { ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Ocultar teclado") { editingText = false } } }
+        .onChange(of: mode) { editingText = false }
         .onChange(of: text, initial: true) { draft = LyricsDraft(text: text) }
     }
 }

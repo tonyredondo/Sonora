@@ -34,6 +34,8 @@ struct MetadataEditorView: View {
     @State private var sidecarLyrics = ""
     @State private var issue: String?
     @State private var saveIssue: String?
+    @FocusState private var editingLyrics: Bool
+    @State private var lyricsTextFrame = CGRect.null
 
     private var patch: MetadataPatch {
         if lyricsOnly {
@@ -124,7 +126,8 @@ struct MetadataEditorView: View {
                         if !lyricsOnly {
                             NavigationLink("Editar letra") {
                                 Form { lyricsTextEditor }.navigationTitle("Editar letra")
-                                    .safeAreaInset(edge: .bottom) { LyricsEditingTransport(player: player, track: track, duration: snapshot.duration, preview: { previewRequest = PreviewRequest(draft: LyricsDraft(text: existingLyrics)) }) }
+                                    .scrollDismissesKeyboard(.interactively)
+                                    .safeAreaInset(edge: .bottom) { lyricsTransport }
                             }
                                 .accessibilityIdentifier("editLyrics")
                         }
@@ -143,8 +146,9 @@ struct MetadataEditorView: View {
                 } else if issue == nil { ProgressView("Leyendo información…") }
             }
             .compactContentSpacing()
+            .scrollDismissesKeyboard(.interactively)
             .safeAreaInset(edge: .bottom) {
-                if lyricsOnly, let snapshot { LyricsEditingTransport(player: player, track: track, duration: snapshot.duration, preview: { previewRequest = PreviewRequest(draft: LyricsDraft(text: existingLyrics)) }).disabled(saving) }
+                if lyricsOnly, snapshot != nil { lyricsTransport.disabled(saving) }
             }
             .navigationTitle(lyricsOnly ? "Editar texto" : "Información").navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -245,10 +249,22 @@ struct MetadataEditorView: View {
                 }
             }
         }
+        .contentShape(.rect)
+        .simultaneousGesture(SpatialTapGesture(coordinateSpace: .global).onEnded { event in
+            // Keep text selection and cursor placement inside the editor intact.
+            if editingLyrics, !lyricsTextFrame.contains(event.location) { editingLyrics = false }
+        }, including: editingLyrics ? .all : .subviews)
+    }
+    private var lyricsTransport: some View {
+        LyricsEditingTransport(player: player, track: track, duration: snapshot?.duration ?? 0,
+                               preview: { previewRequest = PreviewRequest(draft: LyricsDraft(text: existingLyrics)) })
+            .simultaneousGesture(TapGesture().onEnded { editingLyrics = false },
+                                 including: editingLyrics ? .all : .subviews)
     }
     private var lyricsTextEditor: some View {
         Group {
-            LyricsDraftEditor(player: player, track: track, duration: snapshot?.duration ?? 0, text: binding(.lyrics)) { draft, line in
+            LyricsDraftEditor(player: player, track: track, duration: snapshot?.duration ?? 0,
+                              text: binding(.lyrics), editingText: $editingLyrics, textFrame: $lyricsTextFrame) { draft, line in
                 phraseRequest = PhraseRequest(draft: draft, line: line)
             }
             Section { Button("Importar .lrc o .txt") { importLyrics = true } }

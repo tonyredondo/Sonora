@@ -25,31 +25,33 @@ struct NowPlayingArtwork: View {
     var body: some View {
         GeometryReader { geometry in
             // Keep the full width even when controls or large text limit the height.
-            let artworkHeight = max(0, min(geometry.size.width, geometry.size.height - 28))
-            carousel.frame(width: geometry.size.width, height: artworkHeight + 28)
+            let artworkHeight = max(0, min(geometry.size.width, geometry.size.height))
+            carousel.frame(width: geometry.size.width, height: artworkHeight)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
     private var carousel: some View {
-        VStack(spacing: 0) {
-            ZStack {
-                ArtworkView(image: player.currentDetails?.artwork, cornerRadius: 14)
-                TabView(selection: $selection) {
-                    ForEach(NowPlayingPage.allCases) { page in
-                        pageContent(page)
-                            .tag(page)
-                            .accessibilityHidden(selection != page)
-                    }
+        ZStack {
+            ArtworkView(image: player.currentDetails?.artwork, cornerRadius: 0)
+            TabView(selection: $selection) {
+                ForEach(NowPlayingPage.allCases) { page in
+                    pageContent(page)
+                        .tag(page)
+                        .accessibilityHidden(selection != page)
                 }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                .accessibilityIdentifier("playerCarousel")
             }
-            .clipShape(.rect(cornerRadius: 14))
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .accessibilityIdentifier("playerCarousel")
+        }
+        .clipped()
+        .overlay(alignment: .bottom) {
             PlayerPageControl(selection: Binding(get: { selection }, set: { page in
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { selection = page }
             }))
-            .frame(height: 28)
+            .fixedSize(horizontal: true, vertical: false)
+            .frame(height: 44)
+            .padding(.bottom, 4)
         }
     }
 
@@ -79,9 +81,8 @@ struct NowPlayingArtwork: View {
     }
 }
 
-/// SwiftUI's page style places its indicators over the content. A standalone
-/// native control keeps the dots below the artwork, with UIKit's scrubbing and
-/// VoiceOver behavior and readable colors in both Sonora themes.
+/// A compact native control preserves UIKit's scrubbing and VoiceOver behavior.
+/// Its background keeps the dots readable over both light and dark album art.
 private struct PlayerPageControl: UIViewRepresentable {
     @Binding var selection: NowPlayingPage
     func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
@@ -90,7 +91,7 @@ private struct PlayerPageControl: UIViewRepresentable {
         control.numberOfPages = NowPlayingPage.allCases.count
         control.currentPageIndicatorTintColor = .label
         control.pageIndicatorTintColor = .tertiaryLabel
-        control.backgroundStyle = .minimal
+        control.backgroundStyle = .prominent
         control.accessibilityLabel = "Vistas del reproductor"
         control.accessibilityIdentifier = "playerPages"
         control.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .valueChanged)
