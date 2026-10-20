@@ -9,6 +9,20 @@ struct SoundSettingsView: View {
                 Section {
                     NavigationLink { SongAnalysisView(player: player, track: track) } label: { Label("BPM, forma de onda y marcadores", systemImage: "waveform.path") }
                         .accessibilityIdentifier("openSongAnalysis")
+                    Button("Actualizar análisis", systemImage: "arrow.clockwise") { player.refreshCurrentSongMetadata() }
+                        .disabled(player.songMetadataRefresh?.isRunning == true || player.isPreparing || player.isLoading)
+                        .accessibilityIdentifier("refreshSongMetadata")
+                } header: { Text("Canción actual") } footer: {
+                    Text("Recalcula BPM y onda y renueva traducción y significado. Conserva tus marcadores y correcciones. El significado requiere conexión con tu servidor y usa Codex.")
+                }
+            }
+            if let refresh = player.songMetadataRefresh {
+                Section {
+                    ForEach(SongMetadataRefresh.Step.allCases) { step in
+                        SongRefreshStatusRow(step: step, status: refresh.steps[step] ?? .waiting)
+                    }
+                } header: {
+                    Text(refresh.isRunning ? "Actualizando · \(refresh.title)" : "Resultado · \(refresh.title)")
                 }
             }
             Section {
@@ -20,6 +34,32 @@ struct SoundSettingsView: View {
                 NavigationLink { SleepTimerView(player: player) } label: { Label("Temporizador", systemImage: "moon.zzz") }
             }
         }.navigationTitle("Sonido").navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct SongRefreshStatusRow: View {
+    let step: SongMetadataRefresh.Step
+    let status: SongMetadataRefresh.Status
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            switch status {
+            case .waiting:
+                Label(step.title + " · En espera", systemImage: "clock").foregroundStyle(.secondary)
+            case .running:
+                HStack(spacing: 10) { ProgressView(); Text(step.title + " · Actualizando…") }
+            case .updated:
+                Label(step.title + " · Actualizado", systemImage: "checkmark.circle")
+            case .skipped(let reason):
+                Label(step.title, systemImage: "info.circle")
+                Text(reason).font(.footnote).foregroundStyle(.secondary)
+            case .failed(let message):
+                Label(step.title + " · No se pudo actualizar", systemImage: "exclamationmark.circle").foregroundStyle(.red)
+                Text(message).font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("refreshSongMetadata.\(step.rawValue)")
     }
 }
 

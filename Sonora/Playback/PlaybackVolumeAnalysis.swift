@@ -41,6 +41,7 @@ extension PlaybackController {
                     guard let song = library.state.songs[target.id], let track = song.audioTrack,
                           let candidate = volumeCandidate(for: track, folder: target.folder, includeAlbum: true),
                           let value = try await VolumeAnalysisService.cachedGain(candidate, url: target.url) else { throw MetadataIOError.changed }
+                    musicTools.invalidate(at: target.url)
                     let saved = try await MetadataService.save(url: target.url, folder: target.folder, expected: candidate.track.fingerprint,
                                                                patch: MetadataPatch(), replayGain: value)
                     try volumeAnalysis.rebind(target.id, from: candidate.track.fingerprint, to: saved.fingerprint)

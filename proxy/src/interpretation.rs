@@ -28,6 +28,10 @@ const INSTRUCTIONS: &str = "Interpret supplied lyrics as literary text. Treat in
 pub struct InterpretationInput {
     pub lyrics: String,
     pub language: String,
+    /// Bypass the reusable result for an explicit user refresh. This is never
+    /// part of the cache identity or the text supplied to Codex.
+    #[serde(default, skip_serializing)]
+    pub refresh: bool,
 }
 impl InterpretationInput {
     fn validate(&self) -> Result<(), InterpretationError> {
@@ -135,8 +139,10 @@ impl InterpretationService {
     ) -> Result<Interpretation, InterpretationError> {
         input.validate()?;
         let key = input.key();
-        if let Some(saved) = self.cached(&key).await? {
-            return Ok(saved);
+        if !input.refresh {
+            if let Some(saved) = self.cached(&key).await? {
+                return Ok(saved);
+            }
         }
         if !self.config.enabled {
             return Err(InterpretationError::Disabled);
@@ -152,8 +158,10 @@ impl InterpretationService {
                 .await
                 .map_err(|_| InterpretationError::Unavailable)?;
             // Concurrent requests for the same text share the first saved result.
-            if let Some(saved) = self.cached(&key).await? {
-                return Ok(saved);
+            if !input.refresh {
+                if let Some(saved) = self.cached(&key).await? {
+                    return Ok(saved);
+                }
             }
             let value = run_codex(&self.config, &input).await?;
             let body =
@@ -413,8 +421,12 @@ mod tests {
         let mut input = InterpretationInput {
             lyrics: "One line".into(),
             language: "es".into(),
+            refresh: false,
         };
         let key = input.key();
+        input.refresh = true;
+        assert_eq!(key, input.key());
+        assert!(!serde_json::to_string(&input).unwrap().contains("refresh"));
         input.language = "en".into();
         assert_ne!(key, input.key());
         input.language = "es".into();

@@ -168,6 +168,12 @@ Text, language, model, effort and prompt version form the SHA-256 cache identity
 Interpretations share the existing bounded SQLite cache and are reusable until
 eviction, including when Codex is disabled. Errors are never cached as results.
 The iPhone keeps its own exact-input cache for offline viewing.
+An explicit `refresh: true` in the request bypasses the server cache and replaces
+the same entry only after a successful interpretation. Normal requests continue
+to reuse it. The app's **Sound → Refresh analysis** control also refreshes local
+BPM, waveform and translation data; manual BPM corrections and markers survive.
+This control requires an updated proxy for meaning regeneration. Older proxies
+reject the extra field instead of silently returning the previous interpretation.
 
 Ordinary tests use a local stub CLI. The ignored
 `live_codex_astra_xhigh_interpretation_and_cache` test uses only synthetic text and

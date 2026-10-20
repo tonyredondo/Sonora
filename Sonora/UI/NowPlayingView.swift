@@ -15,6 +15,7 @@ struct NowPlayingView: View {
     @State private var lyricsScrollRequest = 0
     @State private var showListening = false
     @State private var showTimer = false
+    @State private var showAnalysisIssue = false
     @State private var songAction: SongActionRequest?
     @GestureState private var downwardDrag: CGFloat = 0
     @State private var completedDrag: CGFloat?
@@ -50,11 +51,10 @@ struct NowPlayingView: View {
                 .animation(downwardDrag == 0 && completedDrag == nil && !reduceMotion ? .spring(response:0.3,dampingFraction:0.85) : nil,value:downwardDrag)
             }.background(theme.background).toolbar(.hidden, for: .navigationBar)
         }.tint(theme.accent)
-            .task(id: "\(player.current?.id ?? ""):\(String(describing: player.currentDetails?.fingerprint))") {
-                if let track = player.current, let fingerprint = player.currentDetails?.fingerprint, let folder = try? player.folderAccess(for: track) {
-                    try? await player.musicTools.restore(track: track, folder: folder, expected: fingerprint)
-                }
-            }
+            .alert("No se pudo analizar el audio", isPresented: $showAnalysisIssue) {
+                Button("Reintentar") { player.retrySongAnalysis() }
+                Button("Cancelar", role: .cancel) { }
+            } message: { Text(player.songAnalysisIssue ?? "") }
             .sheet(isPresented: $showQueue) { QueueView(player: player) }
             .sheet(isPresented: $showLyrics, onDismiss: { lyricsScrollRequest += 1 }) { LyricsView(player: player) }
             .sheet(item: $songAction) { SongActionSheet(player: player, request: $0) }
@@ -116,8 +116,16 @@ struct NowPlayingView: View {
                 .font(compact ? .subheadline : .title3).foregroundStyle(.secondary).lineLimit(1)
             if let format = player.currentDetails?.format {
                 HStack {
-                    Text(format).lineLimit(1)
-                    if let bpm = player.currentSongTools?.bpm { Text("\(bpm, specifier: "%.0f") BPM").monospacedDigit() }
+                    Text(format).lineLimit(1).layoutPriority(-1)
+                    if let result = player.currentSongTools {
+                        Text(result.bpm.map { String(format: "%.0f BPM", $0.rounded()) } ?? "BPM no detectado")
+                            .monospacedDigit().accessibilityIdentifier("playerBPM")
+                    } else if player.songAnalysisIssue != nil {
+                        Button("Análisis pendiente", systemImage: "exclamationmark.circle") { showAnalysisIssue = true }
+                            .accessibilityIdentifier("songAnalysisError")
+                    } else if player.songAnalysisProgress != nil {
+                        Text("Analizando audio…").accessibilityIdentifier("songAnalysisProgress")
+                    }
                 }.font(.caption).foregroundStyle(.secondary)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)

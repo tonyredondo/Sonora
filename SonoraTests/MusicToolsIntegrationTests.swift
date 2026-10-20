@@ -11,7 +11,43 @@ private struct InterpretationResponseFixture: MetadataLookupTransport {
     }
 }
 
+/// Hold real decoding at a cancellable boundary to exercise overlapping clients.
+private final class AnalysisGate: @unchecked Sendable {
+    private let lock = NSCondition()
+    private var allowed = false
+    private var count = 0
+    private var active = 0
+    private var maximumActive = 0
+    private let failFirst: Bool
+    init(failFirst: Bool = false) { self.failFirst = failFirst }
+    var calls: Int { lock.lock(); defer { lock.unlock() }; return count }
+    var maximumConcurrentCalls: Int { lock.lock(); defer { lock.unlock() }; return maximumActive }
+    func open() { lock.lock(); allowed = true; lock.broadcast(); lock.unlock() }
+    func close() { lock.lock(); allowed = false; lock.unlock() }
+    func analyze(_ url: URL, _ track: AudioTrack, _ progress: @Sendable (Double) -> Void) throws -> SongAnalysis {
+        lock.lock(); count += 1; let call = count; active += 1; maximumActive = max(maximumActive, active); lock.unlock()
+        defer { lock.lock(); active -= 1; lock.unlock() }
+        let deadline = Date().addingTimeInterval(10)
+        while true {
+            try Task.checkCancellation()
+            lock.lock()
+            let ready = allowed
+            if !ready { _ = lock.wait(until: Date().addingTimeInterval(0.01)) }
+            lock.unlock()
+            if ready { break }
+            guard Date() < deadline else { throw URLError(.timedOut) }
+        }
+        if failFirst && call == 1 { throw CocoaError(.fileReadCorruptFile) }
+        return try SongAudioAnalyzer.analyze(url: url, track: track, progress: progress)
+    }
+}
+
 final class MusicToolsIntegrationTests: XCTestCase {
+    @MainActor private func waitUntil(_ predicate: () -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+        while !predicate(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(predicate())
+    }
     private func fixture(_ root: URL, seconds: Int = 24) throws -> URL {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let url = root.appendingPathComponent("pulse.wav")
@@ -28,6 +64,127 @@ final class MusicToolsIntegrationTests: XCTestCase {
         return url
     }
 
+    @MainActor func testExplicitAudioRefreshCoalescesKeepsAnnotationsAndRetainsCacheOnFailure() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = try fixture(root), track = try XCTUnwrap(AudioTrack(relativePath: "pulse.wav"))
+        let folder = try ScopedFolder(root), fingerprint = try FileFingerprint(url)
+        let cache = MusicToolsCache(root: root.appendingPathComponent("derived")), gate = AnalysisGate()
+        let store = MusicToolsStore(cache: cache, analyze: { try gate.analyze($0, $1, $2) })
+        gate.open()
+        let original = try await store.load(track: track, folder: folder, expected: fingerprint)
+        let marker = SongMarker(time: 8.5, title: "Estribillo")
+        _ = try await store.save(SongAnnotations(bpm: 180, markers: [marker]), for: track, folder: folder, result: original)
+        gate.close(); defer { gate.open() }
+        let first = Task { try await store.load(track: track, folder: folder, expected: fingerprint, refresh: true) }
+        try await waitUntil { gate.calls == 2 }
+        let joined = expectation(description: "Audio refresh joined")
+        let second = Task {
+            try await store.load(track: track.withSource("alias"), folder: folder, expected: fingerprint, refresh: true) { _ in joined.fulfill() }
+        }
+        joined.assertForOverFulfill = false
+        await fulfillment(of: [joined], timeout: 3)
+        let displayed = try await store.load(track: track, folder: folder, expected: fingerprint)
+        XCTAssertEqual(displayed.annotations.bpm, 180)
+        // Changes made during the refresh must also survive.
+        _ = try await store.save(SongAnnotations(bpm: 88, markers: [marker]), for: track, folder: folder, result: original)
+        first.cancel(); gate.open()
+        do { _ = try await first.value; XCTFail() } catch is CancellationError { }
+        let result = try await second.value
+        XCTAssertEqual(gate.calls, 2); XCTAssertEqual(gate.maximumConcurrentCalls, 1)
+        XCTAssertEqual(result.annotations.bpm, 88); XCTAssertEqual(result.annotations.markers, [marker])
+        let failing = MusicToolsStore(cache: cache) { _, _, _ in throw CocoaError(.fileReadCorruptFile) }
+        do {
+            _ = try await failing.load(track: track, folder: folder, expected: fingerprint, refresh: true)
+            XCTFail("A failed refresh must not be reported as a cached success")
+        } catch { }
+        let preserved = try await failing.load(track: track, folder: folder, expected: fingerprint)
+        XCTAssertEqual(preserved.analysis, result.analysis)
+        XCTAssertEqual(preserved.annotations, result.annotations)
+        XCTAssertEqual(try FileFingerprint(url), fingerprint)
+    }
+
+    @MainActor func testManualSongRefreshSurvivesSelectionChangeAndReportsIndependentFailures() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "MusicTools.ManualRefresh.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        for key in ["prepareQueueAudio", "prepareQueueTranslation", "prepareQueueMeaning"] { defaults.set(false, forKey: key) }
+        let originalFolder = root.appendingPathComponent("original"), otherFolder = root.appendingPathComponent("other")
+        let url = try fixture(originalFolder); _ = try fixture(otherFolder, seconds: 12)
+        let text = "[00:01]A tree grows.\n[00:04]Spring returns."
+        try text.write(to: url.deletingPathExtension().appendingPathExtension("lrc"), atomically: true, encoding: .utf8)
+        let document = LyricsDocument(text: text), fingerprint = try FileFingerprint(url)
+        let cache = MusicToolsCache(root: root.appendingPathComponent("derived")), gate = AnalysisGate()
+        gate.open(); defer { gate.open() }
+        let tools = MusicToolsStore(cache: cache, analyze: { try gate.analyze($0, $1, $2) })
+        var translationCalls = 0, meaningCalls = 0, failLyrics = false
+        let translations = LyricTranslationStore(cache: cache) { doc, _, _ in
+            XCTAssertEqual(doc, document)
+            translationCalls += 1
+            if failLyrics { throw LyricTranslationIssue.needsLanguages }
+            return try LyricTranslation(lines: [0: "Árbol \(translationCalls)", 1: "Vuelve la primavera."], document: doc)
+        }
+        let meanings = LyricInterpretationStore { doc, _, mode in
+            if mode == .cachedOnly { throw MetadataLookupError.notCached }
+            XCTAssertEqual(doc, document)
+            meaningCalls += 1
+            if meaningCalls > 1 { XCTAssertEqual(mode, .refresh) }
+            if failLyrics { throw URLError(.cannotConnectToHost) }
+            let data = try JSONSerialization.data(withJSONObject: ["explanation": "Reading \(meaningCalls)", "model": "gpt-6-astra", "effort": "xhigh"])
+            return try JSONDecoder().decode(LyricsInterpretation.self, from: data)
+        }
+        let player = PlaybackController(defaults: defaults, musicTools: tools, lyricTranslations: translations, lyricInterpretations: meanings)
+        defer { player.stop() }
+        await player.loadFolder(originalFolder, autoPlay: false)
+        let track = try XCTUnwrap(player.current), folder = try player.folderAccess(for: track)
+        let before = try await tools.load(track: track, folder: folder, expected: fingerprint)
+        let marker = SongMarker(time: 8, title: "Personal")
+        _ = try await tools.save(SongAnnotations(bpm: 180, markers: [marker]), for: track, folder: folder, result: before)
+        _ = try await translations.load(document, source: "auto", target: "es")
+        _ = try await meanings.load(document, language: "es")
+        player.seek(to: 4.25); player.setPlaybackAdjustment(rate: 1.25, semitones: 2)
+        gate.close()
+        player.refreshCurrentSongMetadata(); player.refreshCurrentSongMetadata()
+        try await waitUntil { gate.calls == 2 }
+        XCTAssertEqual(player.songMetadataRefresh?.steps[.audio], .running)
+        XCTAssertEqual(player.currentTime, 4.25, accuracy: 0.05); XCTAssertFalse(player.isPlaying)
+        await player.loadFolder(otherFolder, autoPlay: false)
+        player.seek(to: 2.25)
+        gate.open()
+        try await waitUntil { player.songMetadataRefresh?.isRunning == false }
+        XCTAssertEqual(player.songMetadataRefresh?.trackID, track.id)
+        for step in SongMetadataRefresh.Step.allCases { XCTAssertEqual(player.songMetadataRefresh?.steps[step], .updated) }
+        XCTAssertEqual(translationCalls, 2); XCTAssertEqual(meaningCalls, 2); XCTAssertEqual(gate.calls, 2)
+        XCTAssertEqual(player.currentTime, 2.25, accuracy: 0.05); XCTAssertFalse(player.isPlaying)
+        XCTAssertEqual(player.equalizer.playback.rate, 1.25); XCTAssertEqual(player.equalizer.playback.semitones, 2)
+        XCTAssertNil(player.currentSongTools, "Refreshing the previous song must not attach its analysis to the new song")
+        let saved = try await tools.load(track: track, folder: folder, expected: fingerprint)
+        XCTAssertEqual(saved.annotations.bpm, 180); XCTAssertEqual(saved.annotations.markers, [marker])
+        XCTAssertEqual(try FileFingerprint(url), fingerprint)
+
+        failLyrics = true
+        await player.loadFolder(originalFolder, autoPlay: false)
+        player.refreshCurrentSongMetadata()
+        try await waitUntil { player.songMetadataRefresh?.isRunning == false }
+        XCTAssertEqual(player.songMetadataRefresh?.steps[.audio], .updated)
+        guard case .failed = player.songMetadataRefresh?.steps[.translation],
+              case .failed = player.songMetadataRefresh?.steps[.meaning] else {
+            return XCTFail("Both independent errors must be visible")
+        }
+        XCTAssertEqual(translationCalls, 3); XCTAssertEqual(meaningCalls, 3)
+        let preserved = try await translations.load(document, source: "auto", target: "es")
+        XCTAssertEqual(preserved.lines[0], "Árbol 2")
+        XCTAssertEqual(meanings.results[meanings.key(document, language: "es")]?.explanation, "Reading 2")
+
+        await player.loadFolder(otherFolder, autoPlay: false)
+        player.refreshCurrentSongMetadata()
+        try await waitUntil { player.songMetadataRefresh?.isRunning == false }
+        XCTAssertEqual(player.songMetadataRefresh?.steps[.audio], .updated)
+        XCTAssertEqual(player.songMetadataRefresh?.steps[.translation], .skipped("Esta canción no tiene letra."))
+        XCTAssertEqual(player.songMetadataRefresh?.steps[.meaning], .skipped("Esta canción no tiene letra."))
+        XCTAssertEqual(translationCalls, 3); XCTAssertEqual(meaningCalls, 3)
+    }
+
     @MainActor func testAnalysisCacheMarkersAndChangedFileProtection() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -39,7 +196,8 @@ final class MusicToolsIntegrationTests: XCTestCase {
         XCTAssertTrue(result.analysis.isValid)
         XCTAssertEqual(result.analysis.duration, 24, accuracy: 0.02)
         XCTAssertEqual(try XCTUnwrap(result.bpm), 120, accuracy: 1)
-        XCTAssertGreaterThan(result.analysis.waveform.max() ?? 0, 0.6)
+        XCTAssertEqual(try XCTUnwrap(result.analysis.waveform.max()), Float(0.7 / sqrt(2)), accuracy: 0.005,
+                       "A sine burst's RMS is its peak amplitude divided by sqrt(2)")
         let marker = SongMarker(time: 8.5, title: "Estribillo")
         let scoped = track.withSource("library-source")
         let saved = try await store.save(SongAnnotations(bpm: 60, markers: [marker]), for: scoped, folder: folder, result: result)
@@ -58,6 +216,38 @@ final class MusicToolsIntegrationTests: XCTestCase {
         do { _ = try await store.load(track: track, folder: folder, expected: fingerprint); XCTFail("Stale file must be rejected") } catch { }
         let changedTags = try await store.load(track: track, folder: folder, expected: FileFingerprint(url))
         XCTAssertEqual(changedTags.contentID, result.contentID); XCTAssertEqual(changedTags.annotations.markers, [marker])
+    }
+
+    @MainActor func testCachedFastTempoUsesHalfTimeWithoutDecodingOrChangingPersonalBPM() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = try fixture(root), track = try XCTUnwrap(AudioTrack(relativePath: "pulse.wav"))
+        let folder = try ScopedFolder(root), fingerprint = try FileFingerprint(url)
+        let contentID = try await AudioContentIdentity.read(track: track, folder: folder, expected: fingerprint)
+        let cache = MusicToolsCache(root: root.appendingPathComponent("derived"))
+        struct Identity: Encodable { let fingerprint: FileFingerprint; let contentID: String }
+        struct ExistingAnalysis: Encodable {
+            struct Tempo: Encodable { let bpm = 180.0; let confidence = 0.8; let variable = false }
+            let duration = 24.0; let waveform: [Float] = [0.1, 0.4]; let tempo = Tempo()
+        }
+        try await cache.write(Identity(fingerprint: fingerprint, contentID: contentID),
+                              key: "identity-v1:\(track.localID):\(url.standardizedFileURL.absoluteString)")
+        try await cache.write(ExistingAnalysis(), key: "analysis:\(SongAnalysis.version):\(contentID)")
+        let store = MusicToolsStore(cache: cache) { _, _, _ in
+            XCTFail("Changing the tempo preference must reuse the measured audio")
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let result = try await store.load(track: track, folder: folder, expected: fingerprint)
+        XCTAssertEqual(result.bpm, 90)
+        XCTAssertEqual(result.analysis.waveform, [0.1, 0.4])
+        let marker = SongMarker(time: 3.5, title: "Verse")
+        let saved = try await store.save(SongAnnotations(bpm: 180, markers: [marker]), for: track, folder: folder, result: result)
+        XCTAssertEqual(saved.bpm, 180, "An explicit personal tempo overrides the estimate")
+        let fresh = MusicToolsStore(cache: cache)
+        try await fresh.restore(track: track, folder: folder, expected: fingerprint)
+        XCTAssertEqual(fresh.summary(for: track, folder: folder)?.bpm, 180)
+        XCTAssertEqual(fresh.summary(for: track, folder: folder)?.analysis.tempo.bpm, 90)
+        XCTAssertEqual(fresh.summary(for: track, folder: folder)?.annotations.markers, [marker])
     }
 
     @MainActor func testMusicalTempoReplacesOldAnalysisAndPreservesPersonalAnnotations() async throws {
@@ -101,6 +291,7 @@ final class MusicToolsIntegrationTests: XCTestCase {
             let duration = 20.0; let waveform: [Float] = [0.4]; let tempo = Tempo()
         }
         try await cache.write(LegacyAnalysis(), key: "analysis:energy-v1:\(contentID)")
+        try await cache.write(LegacyAnalysis(), key: "analysis:energy-v2:\(contentID)")
         let marker = SongMarker(time: 3.5, title: "Verse")
         try await cache.write(SongAnnotations(bpm: 118, markers: [marker]), key: contentID, personal: true)
         let store = MusicToolsStore(cache: cache)
@@ -108,11 +299,253 @@ final class MusicToolsIntegrationTests: XCTestCase {
         XCTAssertNil(store.summary(for: track, folder: folder), "An old analysis must not suppress the new estimate")
         let result = try await store.load(track: track, folder: folder, expected: fingerprint)
         XCTAssertEqual(try XCTUnwrap(result.analysis.tempo.bpm), 120, accuracy: 2)
+        XCTAssertEqual(result.analysis.waveform.count, 1024, "The old peak waveform must be recomputed")
         XCTAssertEqual(result.bpm, 118, "A personal BPM correction survives reanalysis")
         XCTAssertEqual(result.annotations.markers, [marker])
         let reused = try await MusicToolsStore(cache: cache).load(track: track, folder: folder, expected: fingerprint)
         XCTAssertEqual(reused.analysis, result.analysis)
         XCTAssertEqual(reused.annotations, result.annotations)
+    }
+
+    func testRMSWaveformKeepsQuietPassagesDespiteFullScaleTransientsAndHasNoFalseTail() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("dynamics.wav")
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 48000))
+            buffer.frameLength = 48000
+            for amplitude in [0.04, 0.04, 0.2, 0.2, 0.7, 0.7, 0.12, 0.12] {
+                for frame in 0..<48000 {
+                    // Equally high transients throughout: peaks would erase the dynamics.
+                    let value = frame % 240 == 0 ? Float(0.95) : Float(amplitude * sin(Double(frame) * 2 * .pi * 440 / 48000))
+                    buffer.floatChannelData![0][frame] = value
+                    buffer.floatChannelData![1][frame] = -value
+                }
+                try file.write(from: buffer)
+            }
+        }
+        let result = try SongAudioAnalyzer.analyze(url: url, track: XCTUnwrap(AudioTrack(relativePath: "dynamics.wav")), progress: { _ in })
+        let sections = stride(from: 0, to: 1024, by: 256).map { start in
+            result.waveform[start..<(start + 256)].reduce(0, +) / 256
+        }
+        XCTAssertLessThan(sections[0], 0.09)
+        XCTAssertGreaterThan(sections[1], sections[0] * 1.8)
+        XCTAssertGreaterThan(sections[2], 0.48)
+        XCTAssertLessThan(sections[3], 0.13)
+        XCTAssertGreaterThan(try XCTUnwrap(result.waveform.last), 0.07, "Rounding bin sizes must not add a silent tail")
+        let bars = result.waveformLevels(count: 120)
+        XCTAssertLessThan(bars[0], 0.2)
+        XCTAssertGreaterThan(bars[75], 0.9)
+    }
+
+    @MainActor func testOpeningPausedSongAutomaticallyAnalyzesAndSharesWorkWithTools() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "MusicTools.Automatic.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        _ = try fixture(root)
+        let gate = AnalysisGate()
+        let store = MusicToolsStore(cache: MusicToolsCache(root: root.appendingPathComponent("derived")), analyze: { try gate.analyze($0, $1, $2) })
+        let player = PlaybackController(defaults: defaults, musicTools: store); defer { player.stop(); gate.open() }
+        await player.loadFolder(root, autoPlay: false)
+        try await waitUntil { gate.calls == 1 }
+        XCTAssertNotNil(player.songAnalysisProgress)
+        XCTAssertFalse(player.isPlaying)
+        let track = try XCTUnwrap(player.current), fingerprint = try XCTUnwrap(player.currentDetails?.fingerprint)
+        let folder = try player.folderAccess(for: track)
+        let joined = expectation(description: "Tools joined automatic analysis")
+        let manual = Task {
+            try await store.load(track: track.withSource("alias"), folder: folder, expected: fingerprint) { _ in joined.fulfill() }
+        }
+        joined.assertForOverFulfill = false
+        await fulfillment(of: [joined], timeout: 3)
+        manual.cancel() // Dismissing tools must not cancel the player's request.
+        player.seek(to: 4.25)
+        gate.open()
+        try await waitUntil { player.currentSongTools != nil && player.songAnalysisProgress == nil }
+        do { _ = try await manual.value; XCTFail("Dismissed tools must remain cancelled") } catch is CancellationError { }
+        XCTAssertEqual(gate.calls, 1)
+        XCTAssertEqual(try XCTUnwrap(player.currentSongTools?.bpm), 120, accuracy: 1)
+        XCTAssertEqual(player.currentTime, 4.25, accuracy: 0.05)
+        XCTAssertFalse(player.isPlaying)
+        XCTAssertNil(player.songAnalysisIssue)
+        player.retrySongAnalysis()
+        try await waitUntil { player.songAnalysisProgress == nil }
+        XCTAssertEqual(gate.calls, 1, "Reopening unchanged audio reuses its analysis")
+    }
+
+    @MainActor func testChangingSongsAndStoppingStillCompletesAndPersistsEveryAnalysis() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "MusicTools.Background.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        let folders = ["first", "second", "third"].map { root.appendingPathComponent($0) }
+        let urls = try folders.enumerated().map { try fixture($0.element, seconds: 8 + $0.offset * 2) }
+        let cache = MusicToolsCache(root: root.appendingPathComponent("derived"))
+        let gate = AnalysisGate()
+        let store = MusicToolsStore(cache: cache, analyze: { try gate.analyze($0, $1, $2) })
+        let player = PlaybackController(defaults: defaults, musicTools: store); defer { player.stop(); gate.open() }
+        await player.loadFolder(folders[0], autoPlay: false)
+        try await waitUntil { gate.calls == 1 }
+        await player.loadFolder(folders[1], autoPlay: false)
+        await player.loadFolder(folders[2], autoPlay: false)
+        player.stop()
+        XCTAssertNil(player.currentSongTools)
+        XCTAssertNil(player.songAnalysisProgress)
+        gate.open()
+        let track = try XCTUnwrap(AudioTrack(relativePath: "pulse.wav"))
+        let scopes = try folders.map { try ScopedFolder($0) }
+        try await waitUntil { scopes.allSatisfy { store.summary(for: track, folder: $0) != nil } }
+        XCTAssertEqual(gate.calls, 3)
+        XCTAssertEqual(gate.maximumConcurrentCalls, 1, "Skipping songs must not start parallel decoders")
+        XCTAssertEqual(try XCTUnwrap(player.currentSongTools?.analysis.duration), 12, accuracy: 0.01,
+                       "An earlier song finishing must not replace the current waveform")
+        XCTAssertNil(player.songAnalysisIssue)
+        XCTAssertFalse(player.isPlaying)
+        let restored = MusicToolsStore(cache: cache)
+        for index in folders.indices {
+            try await restored.restore(track: track, folder: scopes[index], expected: FileFingerprint(urls[index]))
+            XCTAssertEqual(try XCTUnwrap(restored.summary(for: track, folder: scopes[index])?.analysis.duration),
+                           Double(8 + index * 2), accuracy: 0.01, "Each result must survive a new store instance")
+        }
+        await player.loadFolder(folders[0], autoPlay: false)
+        try await waitUntil { player.songAnalysisProgress == nil }
+        XCTAssertEqual(gate.calls, 3, "Returning to an earlier song must reuse its cached analysis")
+    }
+
+    @MainActor func testAutomaticTranslationFollowsAnalysisAndSurvivesSongChanges() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "MusicTools.Translation.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        let folders = ["first", "second"].map { root.appendingPathComponent($0) }
+        for (index, folder) in folders.enumerated() {
+            _ = try fixture(folder, seconds: 8 + index * 2)
+            try "[00:01]When the rain stops \(index)\n[00:03]we will go outside.".write(
+                to: folder.appendingPathComponent("pulse.lrc"), atomically: true, encoding: .utf8)
+        }
+        let gate = AnalysisGate()
+        let cache = MusicToolsCache(root: root.appendingPathComponent("derived"))
+        let store = MusicToolsStore(cache: cache, analyze: { try gate.analyze($0, $1, $2) })
+        let scopes = try folders.map { try ScopedFolder($0) }
+        let track = try XCTUnwrap(AudioTrack(relativePath: "pulse.wav"))
+        var translated: [String] = []
+        let translations = LyricTranslationStore(cache: cache) { document, _, target in
+            let index = document.lines[0].text.hasSuffix("0") ? 0 : 1
+            XCTAssertNotNil(store.summary(for: track, folder: scopes[index]), "Translation must follow this song's audio analysis")
+            translated.append(document.lines[0].text + ":" + target)
+            return try LyricTranslation(lines: [0: "Cuando pare la lluvia", 1: "saldremos."], document: document)
+        }
+        let player = PlaybackController(defaults: defaults, musicTools: store, lyricTranslations: translations)
+        defer { player.stop(); gate.open() }
+        await player.loadFolder(folders[0], autoPlay: false)
+        let firstLyrics = try XCTUnwrap(player.currentDetails?.lyrics)
+        try await waitUntil { gate.calls == 1 }
+        XCTAssertTrue(translated.isEmpty)
+        await player.loadFolder(folders[1], autoPlay: false)
+        player.stop(); gate.open()
+        try await waitUntil { translated.count == 2 }
+        XCTAssertFalse(player.isPlaying)
+        XCTAssertEqual(gate.calls, 2)
+        XCTAssertEqual(translated, ["When the rain stops 0:es", "When the rain stops 1:es"])
+        let fresh = LyricTranslationStore(cache: cache) { _, _, _ in XCTFail("Finished translation must be cached"); throw URLError(.unknown) }
+        _ = try await fresh.load(firstLyrics, source: "auto", target: "es")
+        defaults.set("fr", forKey: "lyricTranslationTarget")
+        player.translationPreferencesDidChange()
+        try await waitUntil { translated.count == 3 }
+        XCTAssertEqual(translated.last, "When the rain stops 1:fr")
+        XCTAssertEqual(gate.calls, 2, "Changing translation language must reuse the audio analysis")
+    }
+
+    @MainActor func testCancelledOnlyObserverStillCachesAnalysis() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = try fixture(root, seconds: 8), track = try XCTUnwrap(AudioTrack(relativePath: "pulse.wav"))
+        let folder = try ScopedFolder(root), fingerprint = try FileFingerprint(url)
+        let gate = AnalysisGate(); defer { gate.open() }
+        let cache = MusicToolsCache(root: root.appendingPathComponent("derived"))
+        let store = MusicToolsStore(cache: cache, analyze: { try gate.analyze($0, $1, $2) })
+        let observer = Task { try await store.load(track: track, folder: folder, expected: fingerprint) }
+        try await waitUntil { gate.calls == 1 }
+        observer.cancel()
+        gate.open()
+        do { _ = try await observer.value; XCTFail("The observer should cancel, without cancelling the analysis") } catch is CancellationError { }
+        let restored = MusicToolsStore(cache: cache)
+        try await restored.restore(track: track, folder: folder, expected: fingerprint)
+        XCTAssertNotNil(restored.summary(for: track, folder: folder))
+        XCTAssertEqual(gate.calls, 1)
+    }
+
+    @MainActor func testCachedSongDoesNotWaitForQueuedAnalysis() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("first"), second = root.appendingPathComponent("second")
+        let a = try fixture(first, seconds: 8), b = try fixture(second, seconds: 10)
+        let track = try XCTUnwrap(AudioTrack(relativePath: "pulse.wav"))
+        let firstScope = try ScopedFolder(first), secondScope = try ScopedFolder(second)
+        let firstFingerprint = try FileFingerprint(a), secondFingerprint = try FileFingerprint(b)
+        let cache = MusicToolsCache(root: root.appendingPathComponent("derived"))
+        let gate = AnalysisGate(); gate.open(); defer { gate.open() }
+        let store = MusicToolsStore(cache: cache, analyze: { try gate.analyze($0, $1, $2) })
+        let cached = try await store.load(track: track, folder: firstScope, expected: firstFingerprint)
+        // A new instance exercises the disk cache, not just the in-memory summary.
+        let fresh = MusicToolsStore(cache: cache, analyze: { try gate.analyze($0, $1, $2) })
+        gate.close()
+        let pending = Task { try await fresh.load(track: track, folder: secondScope, expected: secondFingerprint) }
+        try await waitUntil { gate.calls == 2 }
+        let reused = try await fresh.load(track: track, folder: firstScope, expected: firstFingerprint)
+        XCTAssertEqual(reused.analysis, cached.analysis)
+        gate.open()
+        _ = try await pending.value
+        XCTAssertEqual(gate.calls, 2)
+    }
+
+    @MainActor func testInvalidatingOneSourcePreservesOtherQueuedAnalyses() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("first"), second = root.appendingPathComponent("second")
+        let a = try fixture(first, seconds: 8), b = try fixture(second, seconds: 10)
+        let track = try XCTUnwrap(AudioTrack(relativePath: "pulse.wav"))
+        let firstScope = try ScopedFolder(first), secondScope = try ScopedFolder(second)
+        let firstFingerprint = try FileFingerprint(a), secondFingerprint = try FileFingerprint(b)
+        let gate = AnalysisGate(); defer { gate.open() }
+        let store = MusicToolsStore(cache: MusicToolsCache(root: root.appendingPathComponent("derived")), analyze: { try gate.analyze($0, $1, $2) })
+        let invalidated = Task { try await store.load(track: track, folder: firstScope, expected: firstFingerprint) }
+        try await waitUntil { gate.calls == 1 }
+        let next = Task { try await store.load(track: track, folder: secondScope, expected: secondFingerprint) }
+        store.invalidate(at: first)
+        gate.open()
+        do { _ = try await invalidated.value; XCTFail("File mutation must cancel reads of the old source") } catch is CancellationError { }
+        let result = try await next.value
+        XCTAssertEqual(result.analysis.duration, 10, accuracy: 0.01)
+        XCTAssertNil(store.summary(for: track, folder: firstScope))
+        XCTAssertNotNil(store.summary(for: track, folder: secondScope))
+        _ = try await store.load(track: track, folder: firstScope, expected: firstFingerprint)
+        XCTAssertEqual(gate.calls, 3, "Invalidating one source must not stall the queue or poison later requests")
+        XCTAssertEqual(gate.maximumConcurrentCalls, 1)
+    }
+
+    @MainActor func testAutomaticAnalysisFailureIsVisibleAndCanRetryWithoutInterruptingPlayback() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "MusicTools.Retry.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        _ = try fixture(root, seconds: 8)
+        let gate = AnalysisGate(failFirst: true); gate.open()
+        let store = MusicToolsStore(cache: MusicToolsCache(root: root.appendingPathComponent("derived")), analyze: { try gate.analyze($0, $1, $2) })
+        let player = PlaybackController(defaults: defaults, musicTools: store); defer { player.stop() }
+        await player.loadFolder(root)
+        try await waitUntil { player.songAnalysisIssue != nil && player.isPlaying }
+        XCTAssertNil(player.songAnalysisProgress)
+        XCTAssertNil(player.currentSongTools)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(gate.calls, 1, "A failed analysis must not loop on playback ticks")
+        let position = player.currentTime
+        player.retrySongAnalysis()
+        try await waitUntil { player.currentSongTools != nil && player.songAnalysisProgress == nil }
+        XCTAssertNil(player.songAnalysisIssue)
+        XCTAssertEqual(gate.calls, 2)
+        XCTAssertTrue(player.isPlaying)
+        XCTAssertGreaterThanOrEqual(player.currentTime, position)
     }
 
     @MainActor func testLibraryAndQueueAliasesSharePlaybackAnalysis() async throws {
@@ -168,60 +601,60 @@ final class MusicToolsIntegrationTests: XCTestCase {
         XCTAssertEqual(restored.summary(for: tracks[1], folder: folder)?.bpm, 90)
     }
 
-    @MainActor func testInterpretationRequiresANewRequestForEachLanguageAndRetry() async throws {
-        let model = LyricInterpretationModel(), document = LyricsDocument(text: "A tree grows")
+    @MainActor func testInterpretationCacheReadsDoNotGenerateAndLanguagesStaySeparate() async throws {
+        let document = LyricsDocument(text: "A tree grows")
         let value = try JSONDecoder().decode(LyricsInterpretation.self, from: Data(#"{"explanation":"A possible reading.","model":"gpt-6-astra","effort":"xhigh"}"#.utf8))
         var requests: [String] = [], cachedLanguages: Set<String> = [], fail = false
-        let interpret: @MainActor (LyricsDocument, String, Bool) async throws -> LyricsInterpretation = { _, language, cachedOnly in
-            if cachedOnly {
-                guard cachedLanguages.contains(language) else { throw URLError(.resourceUnavailable) }
+        let store = LyricInterpretationStore { _, language, cachedOnly in
+            if cachedOnly == .cachedOnly {
+                guard cachedLanguages.contains(language) else { throw MetadataLookupError.notCached }
             } else {
                 requests.append(language)
                 if fail { throw URLError(.cannotConnectToHost) }
             }
             return value
         }
-        await model.load(document, language: "es", request: nil, interpret: interpret)
+        await store.restore(document, language: "es")
         XCTAssertTrue(requests.isEmpty)
-        let request = LyricInterpretationModel.Request(language: "es")
-        await model.load(document, language: "es", request: request, interpret: interpret)
-        XCTAssertEqual(requests, ["es"]); XCTAssertEqual(model.explanation, value.explanation)
-        await model.load(document, language: "en", request: request, interpret: interpret)
-        XCTAssertNil(model.explanation)
-        await model.load(document, language: "es", request: request, interpret: interpret)
-        XCTAssertEqual(requests, ["es"], "Changing language and returning must not reuse a consumed button press")
+        _ = try await store.load(document, language: "es")
+        XCTAssertEqual(requests, ["es"])
+        await store.restore(document, language: "en")
+        XCTAssertNil(store.results[store.key(document, language: "en")])
+        _ = try await store.load(document, language: "es")
+        XCTAssertEqual(requests, ["es"], "Reopening a completed interpretation must reuse its result")
         cachedLanguages.insert("fr")
-        await model.load(document, language: "fr", request: request, interpret: interpret)
-        XCTAssertEqual(model.explanation, value.explanation); XCTAssertEqual(requests, ["es"])
+        await store.restore(document, language: "fr")
+        XCTAssertEqual(store.results[store.key(document, language: "fr")], value)
         fail = true
-        let failedRequest = LyricInterpretationModel.Request(language: "en")
-        await model.load(document, language: "en", request: failedRequest, interpret: interpret)
-        XCTAssertNotNil(model.issue); XCTAssertFalse(model.running)
-        await model.load(document, language: "de", request: failedRequest, interpret: interpret)
-        XCTAssertNil(model.issue); XCTAssertEqual(requests, ["es", "en"])
+        do { _ = try await store.load(document, language: "en"); XCTFail() } catch { }
+        XCTAssertNotNil(store.automaticIssue)
+        await store.restore(document, language: "de")
+        XCTAssertNil(store.statuses[store.key(document, language: "de")])
+        XCTAssertEqual(requests, ["es", "en"])
         fail = false
-        await model.load(document, language: "en", request: .init(language: "en"), interpret: interpret)
-        XCTAssertEqual(requests, ["es", "en", "en"]); XCTAssertEqual(model.explanation, value.explanation)
+        _ = try await store.load(document, language: "en")
+        XCTAssertEqual(requests, ["es", "en", "en"])
     }
 
-    @MainActor func testCancelledInterpretationCannotReplaceAnotherLanguage() async throws {
-        let model = LyricInterpretationModel(), document = LyricsDocument(text: "A tree grows")
+    @MainActor func testCancelledInterpretationObserverKeepsResultWithoutReplacingAnotherLanguage() async throws {
+        let document = LyricsDocument(text: "A tree grows")
         let value = try JSONDecoder().decode(LyricsInterpretation.self, from: Data(#"{"explanation":"Old language.","model":"gpt-6-astra","effort":"xhigh"}"#.utf8))
         var pending: CheckedContinuation<LyricsInterpretation, Never>?
-        let task = Task { @MainActor in
-            await model.load(document, language: "es", request: .init(language: "es")) { _, _, cachedOnly in
-                if cachedOnly { throw URLError(.resourceUnavailable) }
-                return await withCheckedContinuation { pending = $0 }
-            }
+        let store = LyricInterpretationStore { _, _, cachedOnly in
+            if cachedOnly == .cachedOnly { throw MetadataLookupError.notCached }
+            return await withCheckedContinuation { pending = $0 }
         }
-        for _ in 0..<100 where pending == nil { try await Task.sleep(for: .milliseconds(10)) }
-        guard let completion = pending else { task.cancel(); return XCTFail("Generation did not start") }
-        XCTAssertTrue(model.running)
+        let task = Task { try await store.load(document, language: "es") }
+        try await waitUntil { pending != nil }
+        let completion = try XCTUnwrap(pending)
+        XCTAssertEqual(store.statuses[store.key(document, language: "es")], .interpreting)
         task.cancel()
-        await model.load(document, language: "en", request: nil) { _, _, _ in throw URLError(.resourceUnavailable) }
+        await store.restore(document, language: "en")
         completion.resume(returning: value)
-        await task.value
-        XCTAssertNil(model.explanation); XCTAssertNil(model.issue); XCTAssertFalse(model.running)
+        do { _ = try await task.value; XCTFail("The dismissed observer stays cancelled") } catch is CancellationError { }
+        XCTAssertEqual(store.results[store.key(document, language: "es")], value)
+        XCTAssertNil(store.results[store.key(document, language: "en")])
+        XCTAssertNil(store.statuses[store.key(document, language: "en")])
     }
 
     func testAnalysisHandlesFractionalResamplingLengths() throws {

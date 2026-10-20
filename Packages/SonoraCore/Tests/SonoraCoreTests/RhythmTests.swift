@@ -43,6 +43,24 @@ final class RhythmTests: XCTestCase {
         }
     }
 
+    func testFastDetectedPulseUsesHalfTimeForTempoAndAlignedMixing() throws {
+        let samples = energy(bpm: 180)
+        let detected = try XCTUnwrap(RhythmAnalyzer.estimate(energy: samples, start: 10))
+        let outgoing = try XCTUnwrap(RhythmAnalyzer.estimateForMixing(energy: samples, start: 10))
+        XCTAssertEqual(outgoing.bpm, 90, accuracy: 0.4)
+        XCTAssertEqual(try XCTUnwrap(TempoEstimate.estimate(energy: samples).bpm), outgoing.bpm, accuracy: 0.0001)
+        XCTAssertEqual(outgoing.period, detected.period * 2, accuracy: 0.0001)
+        XCTAssertEqual(outgoing.anchor, detected.anchor, accuracy: 0.0001)
+        let incoming = try XCTUnwrap(RhythmAnalyzer.estimateForMixing(energy: energy(bpm: 90)))
+        guard case .matched(let plan) = AdaptiveMixPlanner.plan(outgoing: outgoing, incoming: incoming,
+            end: 18, earliestStart: 13, incomingPosition: 0, incomingDuration: 24, maximumOverlap: 5) else {
+            return XCTFail("A detected double-time pulse must mix with its half-time counterpart")
+        }
+        XCTAssertEqual(plan.bpm, 90, accuracy: 0.4)
+        XCTAssertEqual(plan.fadeStart, outgoing.nextBeat(at: plan.fadeStart), accuracy: 0.001)
+        XCTAssertEqual(plan.incomingSkip, incoming.anchor, accuracy: 0.001)
+    }
+
     func testReferenceTempoShapesTheFadeWithoutSkippingOrClaimingBeatAlignment() throws {
         let plan = try XCTUnwrap(AdaptiveMixPlanner.estimated(outgoingBPM: 100, incomingBPM: 135,
             end: 12, earliestStart: 7, incomingPosition: 0.25, incomingDuration: 20, maximumOverlap: 5))
@@ -81,7 +99,7 @@ final class RhythmTests: XCTestCase {
     }
 
     func testMixingEstimatesBeatPhaseDespiteOffbeatsAndHumanTiming() throws {
-        for bpm in [100.0, 120, 150] {
+        for bpm in [100.0, 120, 150, 180] {
             let period = 60 / bpm
             var values = [Double](repeating: 0.02, count: 800)
             for beat in 0..<Int(8 / period) {
@@ -95,10 +113,12 @@ final class RhythmTests: XCTestCase {
                     }
                 }
             }
-            if bpm == 120 { XCTAssertNil(RhythmAnalyzer.estimate(energy: values), "Exercise the formerly rejected phase") }
+            if bpm == 120 || bpm == 180 { XCTAssertNil(RhythmAnalyzer.estimate(energy: values), "Exercise the formerly rejected phase") }
             let grid = try XCTUnwrap(RhythmAnalyzer.estimateForMixing(energy: values, start: 10), "\(bpm) BPM")
-            XCTAssertEqual(grid.bpm, bpm, accuracy: 2)
-            let expected = 10 + 0.15 + ceil((3 - 0.15) / period) * period
+            let preferredBPM = bpm > 170 ? bpm / 2 : bpm
+            XCTAssertEqual(grid.bpm, preferredBPM, accuracy: 2)
+            let preferredPeriod = 60 / preferredBPM
+            let expected = 10 + 0.15 + ceil((3 - 0.15) / preferredPeriod) * preferredPeriod
             XCTAssertEqual(grid.nextBeat(at: 13), expected, accuracy: 0.06, "The estimate must recover phase, not only tempo")
             XCTAssertGreaterThanOrEqual(grid.confidence, 0.35)
         }

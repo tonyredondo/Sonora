@@ -45,6 +45,9 @@ final class FolderPlaybackTests: XCTestCase {
         XCTAssertEqual(player.queue.current?.relativePath, "CD 2/02.wav")
         XCTAssertTrue(player.isPlaying)
         XCTAssertGreaterThan(player.currentTime, 0)
+        try await waitUntil { player.currentSongTools != nil }
+        XCTAssertEqual(try XCTUnwrap(player.currentSongTools?.analysis.duration), 2, accuracy: 0.01,
+                       "An automatic queue handoff must analyze the newly playing song")
     }
 
     func testEmptyFolderDoesNotReplaceExistingQueue() async throws {

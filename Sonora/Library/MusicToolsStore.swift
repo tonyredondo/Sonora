@@ -55,10 +55,26 @@ struct SongToolsResult: Sendable {
 
 @MainActor @Observable
 final class MusicToolsStore {
+    typealias Analyzer = @Sendable (URL, AudioTrack, @Sendable (Double) -> Void) throws -> SongAnalysis
     private var summaries: [String: SongToolsResult] = [:]
     @ObservationIgnored private let cache: MusicToolsCache
+    @ObservationIgnored private let analyze: Analyzer
+    @ObservationIgnored private var pending: [String: PendingAnalysis] = [:]
+    @ObservationIgnored private var analysisTail: Task<SongToolsResult, Error>?
+    @ObservationIgnored private var analysisTailID: UUID?
+    private struct PendingAnalysis {
+        let id: UUID
+        let url: URL
+        let fingerprint: FileFingerprint
+        let refresh: Bool
+        let task: Task<SongToolsResult, Error>
+        var consumers: [UUID: @Sendable (Double) -> Void]
+        var progress = 0.0
+    }
     private struct Identity: Codable, Sendable { let fingerprint: FileFingerprint; let contentID: String }
-    init(cache: MusicToolsCache = .shared) { self.cache = cache }
+    init(cache: MusicToolsCache = .shared, analyze: @escaping Analyzer = { url, track, progress in
+        try SongAudioAnalyzer.analyze(url: url, track: track, progress: progress)
+    }) { self.cache = cache; self.analyze = analyze }
 
     private func identityKey(track: AudioTrack, folder: ScopedFolder) -> String {
         // Queue and library entries may have different source-qualified IDs.
@@ -69,7 +85,7 @@ final class MusicToolsStore {
         summaries[identityKey(track: track, folder: folder)]
     }
 
-    /// Restore only an already measured, unchanged file; never start analysis on playback.
+    /// Restore an already measured, unchanged file without decoding it.
     func restore(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint) async throws {
         let key = identityKey(track: track, folder: folder)
         if summaries[key]?.fingerprint == expected { return }
@@ -81,8 +97,76 @@ final class MusicToolsStore {
         summaries[key] = SongToolsResult(contentID: binding.contentID, fingerprint: expected, analysis: analysis, annotations: try annotations.validated(duration: analysis.duration))
     }
 
-    func load(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint,
+    func load(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint, refresh: Bool = false,
               progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws -> SongToolsResult {
+        try Task.checkCancellation()
+        // Cached songs need not wait behind unfinished, unrelated decoding.
+        if !refresh {
+            try await restore(track: track, folder: folder, expected: expected)
+            if let result = summary(for: track, folder: folder), result.fingerprint == expected {
+                return try await CoordinatedAudioRead.read(track: track, folder: folder, expected: expected) { _, _ in result }
+            }
+        }
+        try Task.checkCancellation()
+        let key = identityKey(track: track, folder: folder), consumer = UUID()
+        if pending[key]?.fingerprint != expected || pending[key]?.task.isCancelled == true {
+            pending.removeValue(forKey: key)?.task.cancel()
+        }
+        if pending[key] == nil || (refresh && pending[key]?.refresh == false) {
+            let id = UUID(), predecessor = analysisTail
+            let task = Task { [self] in
+                defer {
+                    if pending[key]?.id == id { pending[key] = nil }
+                    if analysisTailID == id { analysisTail = nil; analysisTailID = nil }
+                }
+                // Keep opened songs queued independently of their UI observers.
+                // Serialize hashing/decoding so rapid skipping cannot fan out I/O.
+                _ = await predecessor?.result
+                try Task.checkCancellation()
+                return try await self.compute(track: track, folder: folder, expected: expected, refresh: refresh) { [weak self] value in
+                    Task { @MainActor in self?.reportProgress(value, key: key, id: id) }
+                }
+            }
+            pending[key] = PendingAnalysis(id: id, url: track.url(in: folder.url), fingerprint: expected, refresh: refresh, task: task, consumers: [:])
+            analysisTail = task; analysisTailID = id
+        }
+        pending[key]?.consumers[consumer] = progress
+        let request = pending[key]!
+        progress(request.progress)
+        defer { release(consumer, key: key, id: request.id) }
+        return try await withTaskCancellationHandler {
+            let result = try await request.task.value
+            try Task.checkCancellation()
+            return result
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.release(consumer, key: key, id: request.id) }
+        }
+    }
+
+    private func reportProgress(_ value: Double, key: String, id: UUID) {
+        guard let request = pending[key], request.id == id else { return }
+        pending[key]?.progress = value
+        for progress in request.consumers.values { progress(value) }
+    }
+    private func release(_ consumer: UUID, key: String, id: UUID) {
+        guard pending[key]?.id == id else { return }
+        pending[key]?.consumers[consumer] = nil
+    }
+
+    /// File edits/deletion invalidate pending reads; navigating away does not.
+    /// Completed content-addressed analyses and personal annotations stay cached.
+    func invalidate(at url: URL) {
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        for (key, request) in pending {
+            let candidate = request.url.standardizedFileURL.resolvingSymlinksInPath().path
+            if candidate == path || candidate.hasPrefix(path + "/") {
+                pending.removeValue(forKey: key)?.task.cancel()
+            }
+        }
+    }
+
+    private func compute(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint, refresh: Bool,
+                         progress: @escaping @Sendable (Double) -> Void) async throws -> SongToolsResult {
         let identityKey = identityKey(track: track, folder: folder)
         // Bound work before hashing a potentially very long source.
         try await CoordinatedAudioRead.read(track: track, folder: folder, expected: expected) { url, _ in
@@ -93,6 +177,8 @@ final class MusicToolsStore {
                 throw MusicTextError.invalid("El análisis admite canciones de hasta dos horas.")
             }
         }
+        // The coordinated preflight above still rejects a changed or missing file.
+        if !refresh, let result = summaries[identityKey], result.fingerprint == expected { return result }
         let previous = try await cache.read(Identity.self, key: identityKey)
         let contentID: String
         if let previous, previous.fingerprint == expected {
@@ -103,17 +189,26 @@ final class MusicToolsStore {
         }
         let key = "analysis:\(SongAnalysis.version):\(contentID)"
         let analysis: SongAnalysis
-        if let cached = try await cache.read(SongAnalysis.self, key: key), cached.isValid { analysis = cached }
+        if !refresh, let cached = try await cache.read(SongAnalysis.self, key: key), cached.isValid { analysis = cached }
         else {
+            let analyze = analyze
             analysis = try await CoordinatedAudioRead.read(track: track, folder: folder, expected: expected) { url, _ in
-                try SongAudioAnalyzer.analyze(url: url, track: track, progress: progress)
+                try analyze(url, track, progress)
             }
+            guard analysis.isValid else { throw CocoaError(.fileReadCorruptFile) }
             try Task.checkCancellation()
             try await cache.write(analysis, key: key)
         }
         let annotations = try await cache.read(SongAnnotations.self, key: contentID, personal: true) ?? SongAnnotations()
         let result = SongToolsResult(contentID: contentID, fingerprint: expected, analysis: analysis, annotations: try annotations.validated(duration: analysis.duration))
         try Task.checkCancellation()
+        // A refresh updates already loaded copies of the same audio, while each
+        // copy keeps its own file fingerprint and the shared personal annotations.
+        for key in summaries.keys where summaries[key]?.contentID == contentID {
+            guard let old = summaries[key] else { continue }
+            summaries[key] = SongToolsResult(contentID: contentID, fingerprint: old.fingerprint,
+                                            analysis: analysis, annotations: result.annotations)
+        }
         summaries[identityKey] = result
         return result
     }
@@ -143,8 +238,9 @@ enum SongAudioAnalyzer {
               let buffer = AVAudioPCMBuffer(pcmFormat: decoder.processingFormat, frameCapacity: 8192) else {
             throw MusicTextError.invalid("El análisis admite canciones de hasta dos horas.")
         }
-        let total = Int(decoder.length), bucketSize = max(1, Int(ceil(Double(total) / 1024)))
-        var waveform = [Float](repeating: 0, count: min(1024, total))
+        let total = Int(decoder.length), buckets = min(1024, total)
+        var waveformEnergy = [Double](repeating: 0, count: buckets)
+        var waveformFrames = [Int](repeating: 0, count: buckets)
         var energy: [Double] = [], windows: [TempoEstimate] = []
         var frame = 0, count = 0, sum = 0.0
         let clock = ContinuousClock(), deadline = clock.now.advanced(by: .seconds(180))
@@ -158,16 +254,16 @@ enum SongAudioAnalyzer {
             guard frame + frames <= total, let channels = buffer.floatChannelData else { throw CocoaError(.fileReadCorruptFile) }
             var offset = 0
             while offset < frames {
-                let bucket = min(waveform.count - 1, frame / bucketSize)
-                let size = min(frames - offset, 480 - count, bucketSize - frame % bucketSize)
-                var left: Float = 0, right: Float = 0, peakL: Float = 0, peakR: Float = 0
+                let bucket = min(buckets - 1, frame * buckets / total)
+                let bucketEnd = ((bucket + 1) * total + buckets - 1) / buckets
+                let size = min(frames - offset, 480 - count, bucketEnd - frame)
+                var left: Float = 0, right: Float = 0
                 vDSP_svesq(channels[0] + offset, 1, &left, vDSP_Length(size))
                 vDSP_svesq(channels[1] + offset, 1, &right, vDSP_Length(size))
-                vDSP_maxmgv(channels[0] + offset, 1, &peakL, vDSP_Length(size))
-                vDSP_maxmgv(channels[1] + offset, 1, &peakR, vDSP_Length(size))
-                guard left.isFinite, right.isFinite, peakL.isFinite, peakR.isFinite else { throw CocoaError(.fileReadCorruptFile) }
-                waveform[bucket] = max(waveform[bucket], min(1, max(peakL, peakR)))
-                sum += Double(left + right) / 2; count += size; offset += size; frame += size
+                guard left.isFinite, right.isFinite else { throw CocoaError(.fileReadCorruptFile) }
+                let chunkEnergy = (Double(left) + Double(right)) / 2
+                waveformEnergy[bucket] += chunkEnergy; waveformFrames[bucket] += size
+                sum += chunkEnergy; count += size; offset += size; frame += size
                 if count == 480 {
                     energy.append(sqrt(sum / 480)); sum = 0; count = 0
                     if energy.count == 2000 { windows.append(TempoEstimate.estimate(energy: energy)); energy.removeAll(keepingCapacity: true) }
@@ -179,6 +275,9 @@ enum SongAudioAnalyzer {
         // decoder already rejects a genuinely truncated tail.
         guard frame > 0, total - frame <= 1 else { throw CocoaError(.fileReadCorruptFile) }
         if energy.count >= 600 { windows.append(TempoEstimate.estimate(energy: energy)) }
+        let waveform = zip(waveformEnergy, waveformFrames).map { energy, frames in
+            Float(min(1, sqrt(energy / Double(max(1, frames)))))
+        }
         progress(1)
         return SongAnalysis(duration: duration, waveform: waveform, tempo: .combine(estimates: windows))
     }

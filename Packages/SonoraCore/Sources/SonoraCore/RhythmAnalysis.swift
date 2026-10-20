@@ -7,6 +7,9 @@ public struct BeatGrid: Sendable, Equatable {
     public var bpm: Double { 60 / period }
     public init(period: Double, anchor: Double, confidence: Double) { self.period = period; self.anchor = anchor; self.confidence = confidence }
     public func nextBeat(at time: Double) -> Double { anchor + max(0, ceil((time - anchor - 0.000001) / period)) * period }
+    var preferredTempo: Self {
+        Self(period: 60 / TempoEstimate.preferredBPM(bpm), anchor: anchor, confidence: confidence)
+    }
 }
 
 public enum RhythmAnalyzer {
@@ -14,9 +17,11 @@ public enum RhythmAnalyzer {
     /// is available, emphasize stronger attacks to estimate a usable beat phase.
     public static func estimateForMixing(energy: [Double], hop: Double = 0.01, start: Double = 0) -> BeatGrid? {
         guard start.isFinite else { return nil }
-        if let grid = estimate(energy: energy, hop: hop, start: start) { return grid }
+        if let grid = estimate(energy: energy, hop: hop, start: start) { return grid.preferredTempo }
         let tempo = TempoEstimate.estimate(energy: energy, hop: hop)
-        guard let bpm = tempo.bpm else { return nil }
+        // Fit phase at the detected pulse first: alternating attacks would
+        // cancel one another if phase were fitted at half-time.
+        guard let bpm = tempo.detectedBPM else { return nil }
         let period = 60 / bpm
         let onsets = energy.indices.map { max(0, energy[$0] - ($0 == 0 ? 0 : energy[$0 - 1])) }
         guard let peak = onsets.max(), peak > 0.00001 else { return nil }
@@ -32,7 +37,7 @@ public enum RhythmAnalyzer {
         var phase = atan2(imaginary, real) / (2 * .pi) * period
         if phase < 0 { phase += period }
         let anchor = start + phase + ((Double(first) * hop - phase) / period).rounded() * period
-        return BeatGrid(period: period, anchor: anchor, confidence: confidence)
+        return BeatGrid(period: period, anchor: anchor, confidence: confidence).preferredTempo
     }
 
     /// Positive changes in 10 ms RMS energy, not raw waveform correlation. A weak

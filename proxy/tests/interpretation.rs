@@ -14,6 +14,7 @@ fn input(language: &str) -> InterpretationInput {
         lyrics: "I plant a tree beside the old gate. Each spring I return to see how it grows."
             .into(),
         language: language.into(),
+        refresh: false,
     }
 }
 fn cache(root: &Path) -> Cache {
@@ -49,6 +50,83 @@ print(json.dumps({{'type':'turn.completed'}}))
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
     bin
 }
+#[cfg(unix)]
+#[tokio::test]
+async fn explicit_refresh_bypasses_cache_and_failure_preserves_last_good_result() {
+    let tmp = TempDir::new().unwrap();
+    let binary = stub(tmp.path(), false);
+    let mut cfg = Config::default();
+    cfg.cache.path = tmp.path().join("cache.sqlite");
+    cfg.metadata.path = tmp.path().join("metadata.sqlite");
+    cfg.server.api_token = Some("test-token".into());
+    cfg.codex = CodexConfig {
+        enabled: true,
+        binary: binary.clone(),
+    };
+    let app = sonora_proxy::api::router(cfg).unwrap();
+    for (body, expected) in [
+        (
+            json!({"lyrics":"A tree grows","language":"es"}),
+            "Interpretation in es",
+        ),
+        (
+            json!({"lyrics":"A tree grows","language":"es","refresh":true}),
+            "Updated in es",
+        ),
+        (
+            json!({"lyrics":"A tree grows","language":"es"}),
+            "Updated in es",
+        ),
+    ] {
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/lyrics/interpret")
+            .header("Authorization", "Bearer test-token")
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["explanation"],
+            expected
+        );
+        let script = std::fs::read_to_string(&binary).unwrap();
+        std::fs::write(&binary, script.replace("Interpretation in ", "Updated in ")).unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("calls"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+    std::fs::write(&binary, "#!/usr/bin/python3\nimport sys\nsys.exit(1)\n").unwrap();
+    drop(app); // Release the router's exclusive cache lease before reopening it.
+    let service = InterpretationService::new(
+        CodexConfig {
+            enabled: true,
+            binary,
+        },
+        cache(tmp.path()),
+    );
+    let request = InterpretationInput {
+        lyrics: "A tree grows".into(),
+        language: "es".into(),
+        refresh: true,
+    };
+    assert!(service.interpret(request.clone()).await.is_err());
+    let cached = service
+        .interpret(InterpretationInput {
+            refresh: false,
+            ..request
+        })
+        .await
+        .unwrap();
+    assert_eq!(cached.explanation, "Updated in es");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn identical_requests_share_cached_result_and_cache_survives_restart() {

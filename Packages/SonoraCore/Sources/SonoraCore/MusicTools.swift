@@ -13,9 +13,20 @@ public struct PlaybackAdjustment: Codable, Equatable, Sendable {
 }
 
 public struct TempoEstimate: Codable, Equatable, Sendable {
-    public let bpm: Double?
+    // Keep the measured value in the existing cache format. Applying the
+    // metrical preference on read also updates previously cached analyses.
+    let detectedBPM: Double?
+    public var bpm: Double? { detectedBPM.map(Self.preferredBPM) }
     public let confidence: Double
     public let variable: Bool
+
+    private enum CodingKeys: String, CodingKey { case detectedBPM = "bpm", confidence, variable }
+    public init(bpm: Double?, confidence: Double, variable: Bool) {
+        detectedBPM = bpm; self.confidence = confidence; self.variable = variable
+    }
+    static func preferredBPM(_ bpm: Double) -> Double {
+        bpm > 170 && bpm <= 300 ? bpm / 2 : bpm
+    }
 
     /// Display estimates need a representative tempo; alignment also needs beat
     /// phase. Weak agreement lowers confidence, not visibility.
@@ -108,7 +119,7 @@ public struct TempoEstimate: Codable, Equatable, Sendable {
 }
 
 public struct SongAnalysis: Codable, Equatable, Sendable {
-    public static let version = "energy-v2"
+    public static let version = "rms-v3"
     public let duration: Double
     public let waveform: [Float]
     public let tempo: TempoEstimate
@@ -120,6 +131,27 @@ public struct SongAnalysis: Codable, Equatable, Sendable {
         && waveform.allSatisfy { $0.isFinite && $0 >= 0 && $0 <= 1 }
         && tempo.confidence.isFinite && (0...1).contains(tempo.confidence)
         && (tempo.bpm.map { $0.isFinite && (40...300).contains($0) } ?? true)
+    }
+
+    /// Reduce RMS energy to the visible bars, using one linear scale for the
+    /// whole song. A peak in a quiet passage must not fill that passage's bar.
+    public func waveformLevels(count: Int) -> [Float] {
+        guard count > 0, !waveform.isEmpty else { return [] }
+        let count = min(count, 1024)
+        let span = Double(waveform.count) / Double(count)
+        // Do not magnify near-silence into a full-height waveform.
+        let reference = max(0.05, Double(waveform.max() ?? 0))
+        return (0..<count).map { column in
+            let start = Double(column) * span
+            let end = min(Double(waveform.count), Double(column + 1) * span)
+            var energy = 0.0
+            for index in Int(start)..<Int(ceil(end)) {
+                let overlap = min(end, Double(index + 1)) - max(start, Double(index))
+                let level = Double(waveform[index])
+                energy += level * level * overlap
+            }
+            return Float(min(1, sqrt(energy / span) / reference))
+        }
     }
 }
 
@@ -159,14 +191,39 @@ public enum TapTempo {
     }
 }
 
-/// Translation is attached by line identifier, never by response order or generated timing.
+/// Translation is attached to original lines. A contextual phrase can cover
+/// several consecutive lines and appears at the first line's existing time.
 public struct LyricTranslation: Codable, Equatable, Sendable {
+    public struct Phrase: Codable, Equatable, Sendable {
+        public let lineIDs: [Int]
+        public let text: String
+        public init(lineIDs: [Int], text: String) { self.lineIDs = lineIDs; self.text = text }
+    }
     public let lines: [Int: String]
+    public let phrases: [Phrase]?
     public init(lines: [Int: String], document: LyricsDocument) throws {
         let expected = Set(document.lines.filter { !$0.text.isEmpty }.map(\.id))
         guard Set(lines.keys) == expected, lines.values.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.count <= 10000 }) else {
             throw MusicTextError.invalid("La traducción está incompleta. Reintenta para conservar todas las frases.")
         }
         self.lines = lines
+        self.phrases = nil
+    }
+    public init(phrases: [Phrase], document: LyricsDocument) throws {
+        let expected = document.lines.filter { !$0.text.isEmpty }.map(\.id)
+        guard !expected.isEmpty, phrases.flatMap(\.lineIDs) == expected,
+              phrases.allSatisfy({ !$0.lineIDs.isEmpty && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.text.utf8.count <= 100000 }) else {
+            throw MusicTextError.invalid("La traducción está incompleta. Reintenta para conservar todas las frases.")
+        }
+        self.phrases = phrases
+        self.lines = Dictionary(uniqueKeysWithValues: phrases.map { ($0.lineIDs[0], $0.text) })
+    }
+    public func validated(for document: LyricsDocument) throws -> Self {
+        if let phrases {
+            let valid = try Self(phrases: phrases, document: document)
+            guard valid.lines == lines else { throw MusicTextError.invalid("La traducción guardada no coincide con sus frases.") }
+            return valid
+        }
+        return try Self(lines: lines, document: document)
     }
 }

@@ -224,7 +224,7 @@
 				"CODE_SIGN_STYLE[sdk=iphoneos*]" = "Manual";
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Development";
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "Sonora Development";
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Sonora/CarPlay.entitlements";
+				"CODE_SIGN_ENTITLEMENTS" = "Sonora/CarPlay.entitlements";
 			};
 		};
 		"F72D4F08E84CA4C7F809A7CF" = {
@@ -247,7 +247,7 @@
 				"CODE_SIGN_STYLE[sdk=iphoneos*]" = "Manual";
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Development";
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "Sonora Development";
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Sonora/CarPlay.entitlements";
+				"CODE_SIGN_ENTITLEMENTS" = "Sonora/CarPlay.entitlements";
 			};
 		};
 		"4867F1BF372A84237FA0A5A7" = {
