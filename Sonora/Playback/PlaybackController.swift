@@ -156,6 +156,7 @@ final class PlaybackController: NSObject {
         prepareCurrentSongTools()
     }
     func retryQueuePreparation() {
+        lyricTranslations.retryAutomatic()
         lyricInterpretations.retryAutomatic()
         refreshQueuePreparation(retry: true)
         retrySongAnalysis()
@@ -170,6 +171,7 @@ final class PlaybackController: NSObject {
             guard let access = try? folderAccess(for: track) else { return nil }
             return .init(track: track, folder: access)
         }
+        lyricTranslations.setAutomaticQueue(preferences.translation ? items.map(\.id) : [], source: preferences.source, target: preferences.target)
         lyricInterpretations.setAutomaticQueue(preferences.meaning ? items.map(\.id) : [], language: preferences.meaningLanguage)
         queuePreparation.update(
             preferences.audio || preferences.translation || preferences.meaning
@@ -198,10 +200,10 @@ final class PlaybackController: NSObject {
     }
     private func prepareLyrics(_ lyrics: LyricsDocument, owner: String, preferences: QueuePreparationPreferences) async {
         guard lyrics.lines.contains(where: { !$0.text.isEmpty }) else { return }
-        if preferences.translation && QueuePreparationPreferences(defaults: defaults).translation {
-            _ = try? await lyricTranslations.load(lyrics, source: preferences.source, target: preferences.target)
-        }
         let latest = QueuePreparationPreferences(defaults: defaults)
+        if preferences.translation && latest.translation && preferences.source == latest.source && preferences.target == latest.target {
+            await lyricTranslations.enqueue(lyrics, source: preferences.source, target: preferences.target, owner: owner, finishingPreparation: true)
+        }
         if preferences.meaning && latest.meaning && preferences.meaningLanguage == latest.meaningLanguage {
             await lyricInterpretations.enqueue(lyrics, language: preferences.meaningLanguage, owner: owner)
         }

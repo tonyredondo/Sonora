@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import SonoraCore
 
-/// The player and sheets share one serial Codex worker. Leaving a sheet never
+/// The player and sheets share bounded Codex capacity with translation. Leaving a sheet never
 /// cancels a request that could already be consuming the user's plan.
 @MainActor @Observable
 final class LyricInterpretationStore {
@@ -21,8 +21,10 @@ final class LyricInterpretationStore {
     @ObservationIgnored private let interpret: Interpreter
     @ObservationIgnored private var order: [String] = []
     @ObservationIgnored private var jobs: [String: Job] = [:]
-    @ObservationIgnored private var active: String?
-    @ObservationIgnored private var worker: Task<Void, Never>?
+    @ObservationIgnored private var active: Set<String> = []
+    @ObservationIgnored private var workers = 0
+    @ObservationIgnored private var issueRevision = 0
+    @ObservationIgnored private let requests: CodexRequestPool
     @ObservationIgnored private var ownerPriorities: [String: Int] = [:]
     @ObservationIgnored private var automaticLanguage: String?
     private struct Job {
@@ -35,8 +37,8 @@ final class LyricInterpretationStore {
         var refreshWaiters: [CheckedContinuation<LyricsInterpretation, Error>] = []
     }
 
-    init(settings: MetadataAssistantSettings = .shared, interpret: Interpreter? = nil) {
-        self.settings = settings
+    init(settings: MetadataAssistantSettings = .shared, requests: CodexRequestPool = .shared, interpret: Interpreter? = nil) {
+        self.settings = settings; self.requests = requests
         self.interpret = interpret ?? {
             try await LyricUnderstanding.interpret($0, language: $1, cachedOnly: $2 == .cachedOnly,
                                                    refresh: $2 == .refresh, settings: settings)
@@ -63,7 +65,7 @@ final class LyricInterpretationStore {
             if let job = jobs[key], (language != nil && job.language != language) || job.endpoint != settings.endpoint {
                 jobs[key]?.owners = []
             }
-            if key != active, let job = jobs[key], job.owners.isEmpty && job.waiters.isEmpty {
+            if !active.contains(key), let job = jobs[key], job.owners.isEmpty && job.waiters.isEmpty {
                 jobs[key] = nil; statuses[key] = results[key] == nil ? nil : .ready
             }
         }
@@ -94,7 +96,7 @@ final class LyricInterpretationStore {
                 jobs[key] = Job(document: document, language: language, endpoint: settings.endpoint, refresh: refresh)
                 order.append(key); statuses[key] = .queued
             }
-            if refresh && active == key && jobs[key]?.refresh == false {
+            if refresh && active.contains(key) && jobs[key]?.refresh == false {
                 // The active cache-using call cannot be promoted after it starts.
                 // Coalesce all explicit refreshes into one following request.
                 jobs[key]?.refreshWaiters.append(continuation)
@@ -108,6 +110,7 @@ final class LyricInterpretationStore {
         return value
     }
     func retryAutomatic() {
+        issueRevision += 1
         automaticIssue = nil
         for (key, status) in statuses {
             if case .failed = status { statuses[key] = jobs[key] == nil ? nil : .queued }
@@ -118,7 +121,7 @@ final class LyricInterpretationStore {
         withObservationTracking {
             _ = settings.effectiveOffline
             _ = settings.configurationRevision
-        } onChange: {
+        } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 retryAutomatic()
@@ -128,7 +131,7 @@ final class LyricInterpretationStore {
     }
     private func next() -> String? {
         // Explicit requests take priority, then the current playback order.
-        let candidates = order.filter { jobs[$0] != nil }
+        let candidates = order.filter { jobs[$0] != nil && !active.contains($0) }
         if let manual = candidates.first(where: { jobs[$0]?.waiters.isEmpty == false }) { return manual }
         guard automaticIssue == nil, !waitingForConnection else { return nil }
         return candidates.compactMap { key -> (key: String, priority: Int)? in
@@ -137,46 +140,61 @@ final class LyricInterpretationStore {
         }.min { $0.priority < $1.priority }?.key
     }
     private func start() {
-        guard worker == nil, next() != nil else { return }
-        worker = Task(priority: .utility) { [self] in
-            defer { active = nil; worker = nil }
-            while let key = next(), let job = jobs[key] {
-                active = key
-                statuses[key] = .interpreting
-                let connectionRevision = settings.configurationRevision
-                let result: Result<LyricsInterpretation, Error>
-                do {
-                    guard job.endpoint == settings.endpoint else { throw MetadataLookupError.invalidConnection }
-                    let value = try await interpret(job.document, job.language, job.refresh ? .refresh : .useCache)
-                    guard value.isValid else { throw MetadataLookupError.invalidResponse }
-                    results[key] = value; statuses[key] = .ready
-                    automaticIssue = nil
-                    result = .success(value)
-                } catch {
-                    statuses[key] = .failed(error.localizedDescription)
-                    // A disconnected server or exhausted plan affects the whole
-                    // remote queue, but must not block local audio or translation.
-                    if job.endpoint == settings.endpoint, connectionRevision == settings.configurationRevision,
-                       Self.blocksAutomaticQueue(error) { automaticIssue = error.localizedDescription }
-                    result = .failure(error)
+        while workers < CodexRequestPool.capacity, next() != nil {
+            workers += 1
+            Task(priority: .utility) { [self] in
+                defer { workers -= 1 }
+                while next() != nil {
+                    await requests.perform {
+                        guard let key = next(), let job = jobs[key] else { return }
+                        await run(key, job: job)
+                    }
                 }
-                let waiters = jobs[key]?.waiters ?? []
-                if let refreshWaiters = jobs[key]?.refreshWaiters, !refreshWaiters.isEmpty {
-                    jobs[key] = Job(document: job.document, language: job.language, endpoint: job.endpoint,
-                                    refresh: true, waiters: refreshWaiters)
-                    statuses[key] = .queued
-                } else if automaticIssue != nil, !job.refresh, jobs[key]?.owners.isEmpty == false {
-                    // Retain a failed automatic request for reconnect/retry,
-                    // without leaving explicit callers waiting indefinitely.
-                    jobs[key]?.waiters = []
-                } else {
-                    jobs[key] = nil
-                    order.removeAll { $0 == key }
-                }
-                active = nil
-                for waiter in waiters { waiter.resume(with: result) }
             }
         }
+    }
+    private func run(_ key: String, job: Job) async {
+        active.insert(key)
+        statuses[key] = .interpreting
+        let connectionRevision = settings.configurationRevision
+        let startedIssueRevision = issueRevision
+        var retryWhenConnected = false
+        let result: Result<LyricsInterpretation, Error>
+        do {
+            guard job.endpoint == settings.endpoint else { throw MetadataLookupError.invalidConnection }
+            let value = try await interpret(job.document, job.language, job.refresh ? .refresh : .useCache)
+            guard value.isValid else { throw MetadataLookupError.invalidResponse }
+            results[key] = value; statuses[key] = .ready
+            // Another in-flight request may have reported a newer outage.
+            if issueRevision == startedIssueRevision { automaticIssue = nil }
+            result = .success(value)
+        } catch {
+            statuses[key] = .failed(error.localizedDescription)
+            // A disconnected server or exhausted plan affects the whole
+            // remote queue, but must not block local audio or translation.
+            if job.endpoint == settings.endpoint, connectionRevision == settings.configurationRevision,
+               Self.blocksAutomaticQueue(error) {
+                issueRevision += 1
+                automaticIssue = error.localizedDescription
+                retryWhenConnected = true
+            }
+            result = .failure(error)
+        }
+        let waiters = jobs[key]?.waiters ?? []
+        if let refreshWaiters = jobs[key]?.refreshWaiters, !refreshWaiters.isEmpty {
+            jobs[key] = Job(document: job.document, language: job.language, endpoint: job.endpoint,
+                            refresh: true, waiters: refreshWaiters)
+            statuses[key] = .queued
+        } else if retryWhenConnected, !job.refresh, jobs[key]?.owners.isEmpty == false {
+            // Retain a failed automatic request for reconnect/retry,
+            // without leaving explicit callers waiting indefinitely.
+            jobs[key]?.waiters = []
+        } else {
+            jobs[key] = nil
+            order.removeAll { $0 == key }
+        }
+        active.remove(key)
+        for waiter in waiters { waiter.resume(with: result) }
     }
     private static func blocksAutomaticQueue(_ error: Error) -> Bool {
         if error is URLError { return true }

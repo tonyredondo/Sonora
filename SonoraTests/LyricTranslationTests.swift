@@ -6,219 +6,163 @@ import XCTest
 final class LyricTranslationTests: XCTestCase {
     private let lyric = LyricsDocument(text: "[00:01]When the rain stops\n[00:03]we will go outside.\n[00:06]\n[00:07]When the rain stops\n[00:09]we will go outside.")
 
-    func testWholeContextKeepsRepeatedLineIdentitiesAndOriginalTimes() throws {
-        let input = try ContextualLyricText.input(lyric)
-        XCTAssertEqual(String(input.characters), "When the rain stops we will go outside. When the rain stops we will go outside.")
-        XCTAssertEqual(input.runs.compactMap { $0[AttributeScopes.FoundationAttributes.LinkAttribute.self] }.map(\.absoluteString),
-                       [0, 1, 3, 4].map { "sonora-lyric://line/\($0)" })
-        var aligned = AttributedString()
-        for (id, text) in [(0, "Cuando pare la lluvia "), (1, "saldremos. "), (3, "Cuando pare la lluvia "), (4, "saldremos.")] {
-            var fragment = AttributedString(text)
-            fragment[AttributeScopes.FoundationAttributes.LinkAttribute.self] = URL(string: "sonora-lyric://line/\(id)")
-            aligned += fragment
-        }
-        let result = try ContextualLyricText.translation(aligned, document: lyric)
-        XCTAssertEqual(result.lines, [0: "Cuando pare la lluvia", 1: "saldremos.", 3: "Cuando pare la lluvia", 4: "saldremos."])
-        XCTAssertEqual(lyric.lines.map(\.time), [1, 3, 6, 7, 9])
-        XCTAssertEqual(lyric.lines[1].text, "we will go outside.")
+    @MainActor private func wait(_ predicate: () -> Bool) async throws {
+        let end = ContinuousClock.now.advanced(by: .seconds(5))
+        while !predicate(), ContinuousClock.now < end { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(predicate())
     }
 
-    func testUnknownOrAbsentAlignmentIsRejectedInsteadOfInventingTiming() throws {
-        XCTAssertThrowsError(try ContextualLyricText.translation(AttributedString("Toda la traducción sin correspondencias"), document: lyric))
-        var wrong = AttributedString("Texto")
-        wrong[AttributeScopes.FoundationAttributes.LinkAttribute.self] = URL(string: "sonora-lyric://line/99")
-        XCTAssertThrowsError(try ContextualLyricText.translation(wrong, document: lyric))
-        XCTAssertThrowsError(try ContextualLyricText.input(LyricsDocument(text: "")))
-        XCTAssertThrowsError(try ContextualLyricText.input(LyricsDocument(text: String(repeating: "word ", count: 25000))))
+    @MainActor func testAutomaticQueueWaitsOfflinePausesOnFailureAndResumesInPlaybackOrder() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "TranslationQueue.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        defaults.set("http://127.0.0.1:9", forKey: "metadata.endpoint")
+        let settings = MetadataAssistantSettings(defaults: defaults, tokens: MetadataTokenStore(service: suite),
+                                                 cache: MetadataLookupCache(directory: root.appendingPathComponent("metadata")))
+        settings.offline = true
+        var calls: [String] = [], fail = true
+        var held: CheckedContinuation<Void, Never>?
+        let store = LyricTranslationStore(cache: MusicToolsCache(root: root), settings: settings) { doc, _, _, _ in
+            if settings.effectiveOffline { throw MetadataLookupError.notCached }
+            calls.append(doc.lines[0].text)
+            if fail { throw URLError(.cannotConnectToHost) }
+            if doc.lines[0].text == "A" { await withCheckedContinuation { held = $0 } }
+            return try LyricTranslation(lines: [0: "Traducción " + doc.lines[0].text], document: doc)
+        }
+        let a = LyricsDocument(text: "A"), b = LyricsDocument(text: "B"), c = LyricsDocument(text: "C")
+        store.setAutomaticQueue(["a", "b", "c"], source: "en", target: "es")
+        await store.enqueue(a, source: "en", target: "es", owner: "a")
+        await store.enqueue(b, source: "en", target: "es", owner: "b")
+        await store.enqueue(c, source: "en", target: "es", owner: "c")
+        XCTAssertTrue(calls.isEmpty)
+        XCTAssertEqual(store.pendingCount, 3)
+        do { _ = try await store.load(a, source: "en", target: "es"); XCTFail("No uncached result is available offline") }
+        catch MetadataLookupError.notCached { }
+        XCTAssertEqual(store.pendingCount, 3, "An offline manual attempt must preserve the automatic job for reconnection")
+        XCTAssertTrue(calls.isEmpty)
+        settings.offline = false
+        try await wait { calls.count == 1 && store.automaticIssue != nil }
+        XCTAssertEqual(calls, ["A"], "One failed server request pauses the entire automatic translation queue")
+        await store.enqueue(a, source: "en", target: "es", owner: "a")
+        XCTAssertEqual(calls.count, 1)
+        fail = false; store.retryAutomatic()
+        try await wait { held != nil && calls.count == 4 }
+        store.setAutomaticQueue(["c", "a"], source: "en", target: "es")
+        held?.resume(); held = nil
+        try await wait { store.results.count == 3 }
+        XCTAssertEqual(calls, ["A", "A", "B", "C"])
+        XCTAssertEqual(store.statuses[LyricUnderstanding.translationKey(b, source: "en", target: "es")], .ready, "Already started work is retained after removal")
+        settings.offline = true
+        let reopened = LyricTranslationStore(cache: MusicToolsCache(root: root), settings: settings) { _, _, _, _ in
+            XCTFail("Offline results must come from disk"); throw URLError(.unknown)
+        }
+        let saved = try await reopened.load(c, source: "en", target: "es")
+        XCTAssertEqual(saved.lines[0], "Traducción C")
     }
 
-    func testContextualAlignmentJoinsReorderedWordsAndImplicitPronouns() throws {
-        let source = LyricsDocument(text: "[00:01]She bought a red\n[00:03]car yesterday.\n[00:06]\n[00:07]We\n[00:09]are free.")
-        var aligned = AttributedString()
-        // Real Apple output: the adjective moves after the noun, and the
-        // Spanish verb carries the pronoun without a separate aligned word.
-        for (id, text) in [(0, "Ella compró un "), (1, "coche "), (0, "rojo "), (1, "ayer. "), (4, "Somos libres.")] {
-            var part = AttributedString(text)
-            part[AttributeScopes.FoundationAttributes.LinkAttribute.self] = URL(string: "sonora-lyric://line/\(id)")
-            aligned += part
+    @MainActor func testRefreshDuringActiveAutomaticRequestUsesOneFollowingFreshRequest() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let document = LyricsDocument(text: "[00:01]A tree grows.")
+        var modes: [Bool] = [], held: CheckedContinuation<LyricTranslation, Never>?
+        let store = LyricTranslationStore(cache: MusicToolsCache(root: root)) { _, _, _, refresh in
+            modes.append(refresh)
+            return await withCheckedContinuation { held = $0 }
         }
-        let value = try ContextualLyricText.translation(aligned, document: source)
-        XCTAssertEqual(value.phrases?.map(\.lineIDs), [[0, 1], [3, 4]])
-        XCTAssertEqual(value.lines, [0: "Ella compró un coche rojo ayer.", 3: "Somos libres."])
-        XCTAssertEqual(value.phrases?.map(\.text).joined(separator: " "), String(aligned.characters))
-        XCTAssertEqual(source.lines.map(\.time), [1, 3, 6, 7, 9])
-        let restored = try JSONDecoder().decode(LyricTranslation.self, from: JSONEncoder().encode(value)).validated(for: source)
-        XCTAssertEqual(restored, value)
+        let normal = Task { try await store.load(document, source: "en", target: "es") }
+        try await wait { held != nil }
+        let refresh = Task { try await store.load(document, source: "en", target: "es", refresh: true) }
+        let second = Task { try await store.load(document, source: "en", target: "es", refresh: true) }
+        await Task.yield()
+        let old = try LyricTranslation(lines: [0: "Un árbol crece."], document: document)
+        held?.resume(returning: old); held = nil
+        let original = try await normal.value
+        XCTAssertEqual(original, old)
+        try await wait { modes.count == 2 && held != nil }
+        XCTAssertEqual(modes, [false, true])
+        let updated = try LyricTranslation(lines: [0: "Crece un árbol."], document: document)
+        held?.resume(returning: updated); held = nil
+        let firstValue = try await refresh.value, secondValue = try await second.value
+        XCTAssertEqual(firstValue, updated); XCTAssertEqual(secondValue, updated)
+        XCTAssertEqual(modes.count, 2)
+        XCTAssertEqual(document.lines[0].time, 1)
     }
 
-    func testBackwardAlignedConnectorDoesNotSwallowTheFinalTranslation() throws {
-        let source = LyricsDocument(text: "[00:01]I miss everyone\n[00:04]and you")
-        var aligned = AttributedString()
-        // Real Apple output sends the second "a" back to the verb "miss".
-        for (id, text) in [(0, "Echo de menos a todos "), (1, "y "), (0, "a "), (1, "ti")] {
-            var part = AttributedString(text)
-            part[AttributeScopes.FoundationAttributes.LinkAttribute.self] = URL(string: "sonora-lyric://line/\(id)")
-            aligned += part
-        }
-        let result = try ContextualLyricText.translation(aligned, document: source, targetLanguage: .init(identifier: "es"))
-        XCTAssertEqual(result.lines, [0: "Echo de menos a todos", 1: "y a ti"])
-        XCTAssertEqual(result.phrases?.map(\.lineIDs), [[0], [1]])
-        XCTAssertEqual(result.phrases?.map(\.text).joined(separator: " "), String(aligned.characters))
-        XCTAssertEqual(source.lines.map(\.time), [1, 4])
-        let restored = try JSONDecoder().decode(LyricTranslation.self, from: JSONEncoder().encode(result)).validated(for: source)
-        XCTAssertEqual(restored, result)
+    @MainActor func testGroupedProviderResultIsRejectedAndCannotPoisonTheNewCache() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = MusicToolsCache(root: root)
+        let doc = LyricsDocument(text: "A\nB")
+        let collapsed = try LyricTranslation(phrases: [.init(lineIDs: [0, 1], text: "All words here")], document: doc)
+        let key = LyricUnderstanding.translationKey(doc, source: "en", target: "es")
+        try await cache.write(collapsed, key: key)
+        let store = LyricTranslationStore(cache: cache) { _, _, _, _ in collapsed }
+        await store.restore(doc, source: "en", target: "es")
+        XCTAssertNil(store.results[key])
+        do { _ = try await store.load(doc, source: "en", target: "es"); XCTFail() }
+        catch MetadataLookupError.invalidResponse { }
+        XCTAssertNil(store.results[key])
     }
 
-    func testConnectorRepairPreservesTheWholeFinalPhraseAndRejectsUnknownLinks() throws {
-        let source = LyricsDocument(text: "[00:01]You gotta fake it through it all\n[00:04]Lovers over love")
-        var aligned = AttributedString()
-        for (id, text) in [(0, "Tienes que fingirlo todo "), (1, "Amantes por encima "), (0, "del "), (1, "amor")] {
-            var part = AttributedString(text)
-            part[AttributeScopes.FoundationAttributes.LinkAttribute.self] = URL(string: "sonora-lyric://line/\(id)")
-            aligned += part
+    @MainActor func testDisablingAutomaticTranslationDropsWaitingWorkButFinishesActiveRequests() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "TranslationDisable.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        defaults.set("http://127.0.0.1:9", forKey: "metadata.endpoint")
+        let settings = MetadataAssistantSettings(defaults: defaults, tokens: MetadataTokenStore(service: suite),
+                                                 cache: MetadataLookupCache(directory: root.appendingPathComponent("metadata")))
+        var calls = 0, held: [CheckedContinuation<Void, Never>] = []
+        defer { for continuation in held { continuation.resume() } }
+        let store = LyricTranslationStore(cache: MusicToolsCache(root: root), settings: settings, requests: CodexRequestPool()) { doc, _, _, _ in
+            calls += 1
+            await withCheckedContinuation { held.append($0) }
+            return try LyricTranslation(lines: [0: "Traducido"], document: doc)
         }
-        let result = try ContextualLyricText.translation(aligned, document: source, targetLanguage: .init(identifier: "es"))
-        XCTAssertEqual(result.lines, [0: "Tienes que fingirlo todo", 1: "Amantes por encima del amor"])
-        var unknown = AttributedString(" y ")
-        unknown[AttributeScopes.FoundationAttributes.LinkAttribute.self] = URL(string: "sonora-lyric://line/99")
-        XCTAssertThrowsError(try ContextualLyricText.translation(aligned + unknown, document: source))
-    }
-
-    func testConnectorBoundariesIgnoreSurroundingWhitespaceAndUnalignedSeparators() throws {
-        let source = LyricsDocument(text: "[00:01]I miss everyone\n[00:04]and you")
-        let cases: [[(Int?, String)]] = [
-            [(0, "Echo de menos a todos"), (1, " y"), (0, " a"), (1, " ti")],
-            [(0, "Echo de menos a todos"), (1, " y"), (0, " a "), (1, "ti")],
-            [(0, "Echo de menos a todos "), (1, "y"), (nil, " "), (0, "a"), (nil, " "), (1, "ti")],
-            [(0, "Echo de menos a todos "), (1, "y"), (0, "\u{00a0}a\n"), (1, "ti")]
-        ]
-        for runs in cases {
-            var aligned = AttributedString()
-            for (id, text) in runs {
-                var fragment = AttributedString(text)
-                if let id { fragment.link = URL(string: "sonora-lyric://line/\(id)") }
-                aligned += fragment
-            }
-            let result = try ContextualLyricText.translation(aligned, document: source, targetLanguage: .init(identifier: "es"))
-            XCTAssertEqual(result.phrases?.map(\.lineIDs), [[0], [1]])
-            XCTAssertEqual(result.lines[0], "Echo de menos a todos")
-            XCTAssertEqual(result.lines[1]?.split(whereSeparator: \.isWhitespace).joined(separator: " "), "y a ti")
-            XCTAssertEqual(result.phrases?.map(\.text).joined().filter { !$0.isWhitespace },
-                           String(aligned.characters).filter { !$0.isWhitespace })
+        let owners = ["a", "b", "c", "d", "e"]
+        store.setAutomaticQueue(owners, source: "en", target: "es")
+        for owner in owners {
+            await store.enqueue(LyricsDocument(text: owner), source: "en", target: "es", owner: owner, finishingPreparation: true)
         }
-    }
-
-    func testConnectorRepairNeverSplitsAWordAtAnAttributeBoundary() throws {
-        let source = LyricsDocument(text: "[00:01]I can see\n[00:04]the sea")
-        var aligned = AttributedString()
-        for (id, text) in [(0, "Veo el "), (1, "m"), (0, "a"), (1, "r")] {
-            var part = AttributedString(text)
-            part[AttributeScopes.FoundationAttributes.LinkAttribute.self] = URL(string: "sonora-lyric://line/\(id)")
-            aligned += part
-        }
-        let result = try ContextualLyricText.translation(aligned, document: source, targetLanguage: .init(identifier: "es"))
-        XCTAssertEqual(result.phrases?.map(\.text), ["Veo el mar"])
-        XCTAssertEqual(result.phrases?.map(\.lineIDs), [[0, 1]])
-    }
-
-    func testClosingPunctuationDoesNotMergeDistinctTranslatedLines() throws {
-        let source = LyricsDocument(text: """
-        [00:01]The sun rises over the mountains
-        [00:03]A bird sings in the garden
-        [00:06]The train arrives at noon
-        [00:09]We will meet by the river
-        [00:12]The evening brings a gentle breeze
-        [00:15]Tomorrow we begin again
-        """)
-        // Real Apple alignment: the next line's run starts with the previous
-        // sentence's period. Only that punctuation belongs to the previous line.
-        let runs = [
-            (0, "El sol sale sobre las montañas. "),
-            (1, "Un pájaro canta en el jardín"),
-            (2, ". El tren llega al mediodía"),
-            (3, ". Nos encontraremos junto al río"),
-            (4, ". La noche trae una suave brisa"),
-            (5, ". Mañana comenzamos de nuevo.")
-        ]
-        var aligned = AttributedString()
-        for (id, text) in runs {
-            var part = AttributedString(text)
-            part[AttributeScopes.FoundationAttributes.LinkAttribute.self] = URL(string: "sonora-lyric://line/\(id)")
-            aligned += part
-        }
-        let result = try ContextualLyricText.translation(aligned, document: source)
-        XCTAssertEqual(result.phrases?.map(\.lineIDs), [[0], [1], [2], [3], [4], [5]])
-        XCTAssertEqual(result.lines, [
-            0: "El sol sale sobre las montañas.",
-            1: "Un pájaro canta en el jardín.",
-            2: "El tren llega al mediodía.",
-            3: "Nos encontraremos junto al río.",
-            4: "La noche trae una suave brisa.",
-            5: "Mañana comenzamos de nuevo."
-        ])
-        XCTAssertEqual(result.phrases?.map(\.text).joined(separator: " "), String(aligned.characters))
-        XCTAssertEqual(source.lines.map(\.time), [1, 3, 6, 9, 12, 15])
-    }
-
-    func testPunctuationOnlyRunDoesNotConsumeNextLineOrOpeningPunctuation() throws {
-        let source = LyricsDocument(text: "[00:01]Night falls\n[00:03]We sing together\n[00:05]Will you return tomorrow")
-        var aligned = AttributedString()
-        let runs: [(Int?, String)] = [(0, "Cae la noche"), (1, "."), (nil, " "),
-                                      (1, "¡Cantamos juntos!"), (nil, "\n"), (2, "¿Volverás mañana?")]
-        for (id, text) in runs {
-            var part = AttributedString(text)
-            if let id { part[AttributeScopes.FoundationAttributes.LinkAttribute.self] = URL(string: "sonora-lyric://line/\(id)") }
-            aligned += part
-        }
-        let result = try ContextualLyricText.translation(aligned, document: source)
-        XCTAssertEqual(result.phrases?.map(\.lineIDs), [[0], [1], [2]])
-        XCTAssertEqual(result.lines, [0: "Cae la noche.", 1: "¡Cantamos juntos!", 2: "¿Volverás mañana?"])
-    }
-
-    func testCommaSeparatesAlignedClausesWithoutLosingSentenceContext() throws {
-        var aligned = AttributedString()
-        for (id, text) in [(0, "Cuando pare la lluvia"), (1, ", saldremos. "),
-                           (3, "Cuando pare la lluvia"), (4, ", saldremos.")] {
-            var part = AttributedString(text)
-            part[AttributeScopes.FoundationAttributes.LinkAttribute.self] = URL(string: "sonora-lyric://line/\(id)")
-            aligned += part
-        }
-        let result = try ContextualLyricText.translation(aligned, document: lyric)
-        XCTAssertEqual(result.phrases?.map(\.lineIDs), [[0], [1], [3], [4]])
-        XCTAssertEqual(result.lines, [0: "Cuando pare la lluvia,", 1: "saldremos.", 3: "Cuando pare la lluvia,", 4: "saldremos."])
-        XCTAssertEqual(result.phrases?.map(\.text).joined(separator: " "), String(aligned.characters))
+        try await wait { held.count == 4 }
+        XCTAssertEqual(calls, 4)
+        store.setAutomaticQueue([], source: "en", target: "es")
+        let remaining = held; held.removeAll()
+        for continuation in remaining { continuation.resume() }
+        try await wait { store.results.count == 4 && store.pendingCount == 0 }
+        XCTAssertEqual(calls, 4)
+        store.retryAutomatic()
+        XCTAssertEqual(store.pendingCount, 0)
     }
 
     func testCacheIdentityReusesTimingEditsButNotChangedTextLanguagesOrOldAlgorithm() throws {
-        guard #available(iOS 26.4, *) else { throw XCTSkip("Contextual translation requires iOS 26.4") }
         let original = LyricUnderstanding.translationKey(lyric, source: "auto", target: "es")
         let retimed = LyricsDocument(text: "[00:02]When the rain stops\n[00:05]we will go outside.\n[00:08]\n[00:11]When the rain stops\n[00:13]we will go outside.")
         XCTAssertEqual(original, LyricUnderstanding.translationKey(retimed, source: "auto", target: "es"))
         XCTAssertNotEqual(original, LyricUnderstanding.translationKey(LyricsDocument(text: "Changed words"), source: "auto", target: "es"))
         XCTAssertNotEqual(original, LyricUnderstanding.translationKey(lyric, source: "en", target: "es"))
         XCTAssertNotEqual(original, LyricUnderstanding.translationKey(lyric, source: "auto", target: "fr"))
-        XCTAssertNotEqual(original, LyricUnderstanding.legacyTranslationKey(lyric, source: "auto", target: "es"))
+        XCTAssertTrue(original.hasPrefix("codex-translation-v1:gpt-6-astra:xhigh:"))
     }
 
     @MainActor func testCollapsedCachesAreRecomputedAndNewAlignmentPersists() async throws {
-        guard #available(iOS 26.4, *) else { throw XCTSkip("Contextual translation requires iOS 26.4") }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let cache = MusicToolsCache(root: root)
         let source = LyricsDocument(text: "[00:01]Night falls\n[00:03]We sing together")
         let key = LyricUnderstanding.translationKey(source, source: "en", target: "es")
         let collapsed = try LyricTranslation(phrases: [.init(lineIDs: [0, 1], text: "Cae la noche. Cantamos juntos.")], document: source)
-        for version in [2, 3, 4] {
-            let oldKey = "apple-translation-context-v\(version):" + key.split(separator: ":").dropFirst().joined(separator: ":")
+        for version in [1, 2, 3, 4, 5] {
+            let oldKey = "apple-translation-context-v\(version):en:es:" + String(key.split(separator: ":").last!)
             try await cache.write(collapsed, key: oldKey)
         }
         let expected = try LyricTranslation(lines: [0: "Cae la noche.", 1: "Cantamos juntos."], document: source)
         var calls = 0
-        let store = LyricTranslationStore(cache: cache) { _, _, _ in calls += 1; return expected }
+        let store = LyricTranslationStore(cache: cache) { _, _, _, _ in calls += 1; return expected }
         let result = try await store.load(source, source: "en", target: "es")
         XCTAssertEqual(result, expected)
         XCTAssertEqual(calls, 1, "Old grouped translations must be regenerated")
-        let fresh = LyricTranslationStore(cache: cache) { _, _, _ in XCTFail("New alignment must be cached"); throw URLError(.unknown) }
+        let fresh = LyricTranslationStore(cache: cache) { _, _, _, _ in XCTFail("New alignment must be cached"); throw URLError(.unknown) }
         let restored = try await fresh.load(source, source: "en", target: "es")
         XCTAssertEqual(restored, expected)
     }
@@ -230,7 +174,7 @@ final class LyricTranslationTests: XCTestCase {
         let entered = expectation(description: "Translator entered"), joined = expectation(description: "Observer joined")
         var release: CheckedContinuation<Void, Never>?
         var calls = 0
-        let store = LyricTranslationStore(cache: cache) { document, _, _ in
+        let store = LyricTranslationStore(cache: cache) { document, _, _, _ in
             calls += 1
             await withCheckedContinuation { release = $0; entered.fulfill() }
             return try LyricTranslation(lines: [0: "Cuando pare la lluvia", 1: "saldremos.", 3: "Cuando pare la lluvia", 4: "saldremos."], document: document)
@@ -245,7 +189,7 @@ final class LyricTranslationTests: XCTestCase {
             do { _ = try await task.value; XCTFail("Observer cancellation must be retained") } catch is CancellationError { }
         }
         XCTAssertEqual(calls, 1)
-        let fresh = LyricTranslationStore(cache: cache) { _, _, _ in XCTFail("Must restore from disk"); throw URLError(.unknown) }
+        let fresh = LyricTranslationStore(cache: cache) { _, _, _, _ in XCTFail("Must restore from disk"); throw URLError(.unknown) }
         let result = try await fresh.load(lyric, source: "en", target: "es")
         XCTAssertEqual(result.lines[1], "saldremos.")
     }
@@ -260,9 +204,9 @@ final class LyricTranslationTests: XCTestCase {
         try await cache.write(old, key: key)
         var calls = 0, release: CheckedContinuation<Void, Never>?, fail = false
         let entered = expectation(description: "Refreshing translation"), joined = expectation(description: "Refresh observer joined")
-        let store = LyricTranslationStore(cache: cache) { _, _, _ in
+        let store = LyricTranslationStore(cache: cache) { _, _, _, _ in
             calls += 1
-            if fail { throw LyricTranslationIssue.needsLanguages }
+            if fail { throw URLError(.cannotConnectToHost) }
             await withCheckedContinuation { release = $0; entered.fulfill() }
             return new
         }
@@ -284,26 +228,26 @@ final class LyricTranslationTests: XCTestCase {
         XCTAssertEqual(refreshed, new); XCTAssertEqual(calls, 1)
         fail = true
         do { _ = try await store.load(document, source: "en", target: "es", refresh: true); XCTFail() }
-        catch LyricTranslationIssue.needsLanguages { }
+        catch let error as URLError { XCTAssertEqual(error.code, .cannotConnectToHost) }
         XCTAssertEqual(store.results[key], new)
-        let reopened = LyricTranslationStore(cache: cache) { _, _, _ in XCTFail("Must restore refreshed cache"); throw URLError(.unknown) }
+        let reopened = LyricTranslationStore(cache: cache) { _, _, _, _ in XCTFail("Must restore refreshed cache"); throw URLError(.unknown) }
         let persisted = try await reopened.load(document, source: "en", target: "es")
         XCTAssertEqual(persisted, new); XCTAssertEqual(calls, 2)
     }
 
-    @MainActor func testSerialQueueFailureRetryAndCachedBypass() async throws {
+    @MainActor func testParallelRequestsFailureRetryAndCachedBypass() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let first = LyricsDocument(text: "First song."), second = LyricsDocument(text: "Second song.")
         let entered = expectation(description: "Uncached translation blocked"), enqueued = expectation(description: "Next translation requested")
         var release: CheckedContinuation<Void, Never>?
         var calls = 0, active = 0, maximumActive = 0
-        let store = LyricTranslationStore(cache: MusicToolsCache(root: root)) { document, _, language in
+        let store = LyricTranslationStore(cache: MusicToolsCache(root: root)) { document, _, language, _ in
             calls += 1; active += 1; maximumActive = max(maximumActive, active)
             defer { active -= 1 }
             if calls == 2 {
                 await withCheckedContinuation { release = $0; entered.fulfill() }
-                throw LyricTranslationIssue.needsLanguages
+                throw URLError(.cannotConnectToHost)
             }
             return try LyricTranslation(lines: [0: "Translation \(language)"], document: document)
         }
@@ -312,14 +256,15 @@ final class LyricTranslationTests: XCTestCase {
         await fulfillment(of: [entered], timeout: 3)
         let later = Task { enqueued.fulfill(); return try await store.load(first, source: "en", target: "fr") }
         await fulfillment(of: [enqueued], timeout: 3)
+        try await wait { calls == 3 }
         let cached = try await store.load(first, source: "en", target: "es")
         XCTAssertEqual(cached.lines[0], "Translation es")
         release?.resume()
-        do { _ = try await blocked.value; XCTFail("Expected missing language status") } catch LyricTranslationIssue.needsLanguages { }
+        do { _ = try await blocked.value; XCTFail("Expected connection failure") } catch let error as URLError { XCTAssertEqual(error.code, .cannotConnectToHost) }
         _ = try await later.value
-        XCTAssertEqual(store.statuses[LyricUnderstanding.translationKey(second, source: "en", target: "es")], .needsLanguages)
+        XCTAssertEqual(store.statuses[LyricUnderstanding.translationKey(second, source: "en", target: "es")], .failed(URLError(.cannotConnectToHost).localizedDescription))
         _ = try await store.load(second, source: "en", target: "es")
-        XCTAssertEqual(calls, 4); XCTAssertEqual(maximumActive, 1)
+        XCTAssertEqual(calls, 4); XCTAssertEqual(maximumActive, 2)
         XCTAssertEqual(store.statuses[LyricUnderstanding.translationKey(second, source: "en", target: "es")], .ready)
     }
 }

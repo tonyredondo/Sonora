@@ -66,15 +66,24 @@ struct QueuePreparationSettingsView: View {
                 Toggle("Traducción", isOn: $translation).accessibilityIdentifier("prepareQueueTranslation")
                 Toggle("Significado con IA", isOn: $meaning).accessibilityIdentifier("prepareQueueMeaning")
             } header: { Text("Toda la cola de reproducción") } footer: {
-                Text("Damos prioridad a la canción actual y preparamos las demás una a una. Los resultados se guardan para reutilizarlos. Al desactivar una función, termina el análisis que ya haya empezado.")
+                Text("Damos prioridad a la canción actual. Traducción y significado comparten hasta cuatro solicitudes simultáneas; el análisis de audio se prepara canción a canción. Los resultados se guardan para reutilizarlos. Al desactivar una función, terminan los análisis que ya hayan empezado.")
             }
             Section {
-                Text("Significado envía la letra a Codex a través de tu servidor y consume uso de tu plan solo cuando falta un resultado guardado. La traducción necesita tener descargados los idiomas elegidos.")
+                Text("Traducción y significado envían la letra completa a Codex a través de tu servidor y consumen uso de tu plan cuando falta un resultado guardado. Los resultados guardados funcionan sin conexión.")
                     .font(.footnote).foregroundStyle(.secondary)
                 Text("La preparación avanza mientras iOS permite ejecutar Sonora. Si el sistema suspende la app, continúa al volver a abrirla.")
                     .font(.footnote).foregroundStyle(.secondary)
                 if player.queuePreparation.isRunning {
                     ProgressView("Preparando canciones · \(player.queuePreparation.pendingCount) pendientes")
+                }
+                if translation && player.lyricTranslations.pendingCount > 0 {
+                    Text("Traducciones pendientes: \(player.lyricTranslations.pendingCount)")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                if let issue = player.lyricTranslations.automaticIssue {
+                    Text("Traducción en pausa: \(issue)").foregroundStyle(.secondary)
+                } else if translation && player.lyricTranslations.waitingForConnection {
+                    Text("Traducción pendiente de conexión con el servidor.").foregroundStyle(.secondary)
                 }
                 if meaning && player.lyricInterpretations.pendingCount > 0 {
                     Text("Significados pendientes: \(player.lyricInterpretations.pendingCount)")

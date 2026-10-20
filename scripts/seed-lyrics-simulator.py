@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Seed isolated synthetic lyrics fixtures in one simulator's Sonora container."""
 import argparse
+import datetime
 import hashlib
 import json
 import os
+import plistlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -41,8 +43,8 @@ for number, title in [(1, 'Letra completa QA'), (2, 'Letra sincronizada QA'), (3
     subprocess.run(command + [str(root / f'{number:02d} - {title}.flac')], check=True)
 (root / '02 - Letra sincronizada QA.lrc').write_text(
     '\n'.join(f'[00:{n:02d}]Línea sincronizada {n:02d}' for n in range(40)), encoding='utf-8')
-# Recorded real Apple EN→ES output; the simulator cannot run the translation model.
-# This fixture verifies contextual phrase rendering and persistent cache restoration.
+# Synthetic per-line translations exercise rendering and persistent cache restoration.
+# Provider quality is validated separately against the real Codex worker.
 cache = container / 'Library' / 'Application Support' / 'MusicTools' / 'cache'
 cache.mkdir(parents=True, exist_ok=True)
 translations = [
@@ -56,19 +58,39 @@ translations = [
       'Nos encontraremos junto al río.', 'La noche trae una suave brisa.', 'Mañana comenzamos de nuevo.']),
     ('08 - Última traducción QA', [1, 3, 6, 9, 12, 15],
      ['I miss everyone', 'of you', 'I miss everyone', 'I miss everyone', 'I miss everyone', 'and you'],
-     ['Os echo de menos a todos,', None, 'echo de menos a todos,', 'echo de menos a todos,',
+     ['Echo de menos a todos,', 'vosotros', 'echo de menos a todos,', 'echo de menos a todos,',
       'echo de menos a todos', 'y a ti'])
 ]
 for title, times, text, translated in translations:
     (root / (title + '.lrc')).write_text(
         '\n'.join(f'[00:{time:02d}]{line}' for time, line in zip(times, text)), encoding='utf-8')
     source = json.dumps([dict(id=i, text=line) for i, line in enumerate(text)], sort_keys=True, separators=(',', ':'))
-    key = 'apple-translation-context-v5:auto:es:' + hashlib.sha256(source.encode()).hexdigest()
-    starts = [i for i, line in enumerate(translated) if line is not None]
-    value = dict(lines={str(i): translated[i] for i in starts},
-                 phrases=[dict(lineIDs=list(range(i, end)), text=translated[i])
-                          for i, end in zip(starts, starts[1:] + [len(text)])])
+    key = 'codex-translation-v1:gpt-6-astra:xhigh:auto:es:' + hashlib.sha256(source.encode()).hexdigest()
+    value = dict(lines={str(i): line for i, line in enumerate(translated)})
     (cache / (hashlib.sha256(key.encode()).hexdigest() + '.json')).write_text(json.dumps(value), encoding='utf-8')
+    if title.startswith('06'):
+        # The loopback loading-state test uses explicit English, separate from
+        # these offline display fixtures. Reset only that synthetic cached result.
+        live_key = key.replace(':auto:es:', ':en:es:')
+        (cache / (hashlib.sha256(live_key.encode()).hexdigest() + '.json')).unlink(missing_ok=True)
+    # Offline interpretation fixtures, scoped to the UI tests' unused loopback
+    # endpoint. No live provider or account is needed to inspect the carousel.
+    meaning_cache = container / 'Library' / 'Application Support' / 'Sonora' / 'MetadataCache'
+    meaning_cache.mkdir(parents=True, exist_ok=True)
+    request = json.dumps(dict(language='es', lyrics='\n'.join(text)),
+                         ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    meaning_key = 'codex-meaning-v1:gpt-6-astra:xhigh:http://127.0.0.1:9:' + hashlib.sha256(request.encode()).hexdigest()
+    explanation = ('La canción observa los pequeños cambios del día: la luz, los encuentros y la calma de la noche. '
+                   'El paisaje acompaña una sensación de esperanza y de empezar de nuevo.\n\n'
+                   'Las imágenes del camino y del río pueden leerse como momentos compartidos. '
+                   'No afirman una intención del autor; esta es una lectura posible del texto.\n\n'
+                   'El cierre invita a mirar hacia el mañana. Fin de la interpretación QA.')
+    if title.startswith('08'):
+        explanation = 'La repetición expresa la ausencia de varias personas y termina dirigiéndose a una en particular. Significado de la última traducción QA.'
+    body = json.dumps(dict(explanation=explanation, model='gpt-6-astra', effort='xhigh'), ensure_ascii=False).encode()
+    entry = dict(data=body, status=200, savedAt=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None), key=meaning_key)
+    (meaning_cache / (hashlib.sha256(meaning_key.encode()).hexdigest() + '.plist')).write_bytes(
+        plistlib.dumps(entry, fmt=plistlib.FMT_BINARY))
 icon = Path(__file__).resolve().parents[1] / 'Sonora/Assets.xcassets/AppIcon.appiconset/AppIcon.png'
 shutil.copyfile(icon, root / 'cover.png')
 print(root)

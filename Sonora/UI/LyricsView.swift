@@ -146,10 +146,10 @@ struct LyricsView: View {
                         .onChange(of: active, initial: true) { scroll(reader) }
                         .onChange(of: autoScroll) { scroll(reader) }
                     }
-                    if visibleTranslation != nil { Text("Traducción automática · Apple").font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("lyricsTranslationSource") }
+                    if visibleTranslation != nil { Text("Traducción automática · Codex").font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("lyricsTranslationSource") }
                     else if let status = player.lyricTranslations.statuses[translationKey], status != .ready {
                         Button { understanding = .translation } label: {
-                            Text(status.message).font(.caption).multilineTextAlignment(.center)
+                            Text(player.lyricTranslations.message(for: translationKey) ?? status.message).font(.caption).multilineTextAlignment(.center)
                         }.padding(.horizontal).padding(.vertical, 6).accessibilityIdentifier("lyricsTranslationStatus")
                     }
                     if let attribution = lyrics.attribution {

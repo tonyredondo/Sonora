@@ -118,10 +118,10 @@ final class MusicToolsIntegrationTests: XCTestCase {
         gate.open(); defer { gate.open() }
         let tools = MusicToolsStore(cache: cache, analyze: { try gate.analyze($0, $1, $2) })
         var translationCalls = 0, meaningCalls = 0, failLyrics = false
-        let translations = LyricTranslationStore(cache: cache) { doc, _, _ in
+        let translations = LyricTranslationStore(cache: cache) { doc, _, _, _ in
             XCTAssertEqual(doc, document)
             translationCalls += 1
-            if failLyrics { throw LyricTranslationIssue.needsLanguages }
+            if failLyrics { throw URLError(.cannotConnectToHost) }
             return try LyricTranslation(lines: [0: "Árbol \(translationCalls)", 1: "Vuelve la primavera."], document: doc)
         }
         let meanings = LyricInterpretationStore { doc, _, mode in
@@ -430,7 +430,11 @@ final class MusicToolsIntegrationTests: XCTestCase {
         let scopes = try folders.map { try ScopedFolder($0) }
         let track = try XCTUnwrap(AudioTrack(relativePath: "pulse.wav"))
         var translated: [String] = []
-        let translations = LyricTranslationStore(cache: cache) { document, _, target in
+        defaults.set("http://127.0.0.1:9", forKey: "metadata.endpoint")
+        defaults.set(false, forKey: "prepareQueueMeaning")
+        let translationSettings = MetadataAssistantSettings(defaults: defaults, tokens: MetadataTokenStore(service: suite),
+                                                            cache: MetadataLookupCache(directory: root.appendingPathComponent("metadata")))
+        let translations = LyricTranslationStore(cache: cache, settings: translationSettings) { document, _, target, _ in
             let index = document.lines[0].text.hasSuffix("0") ? 0 : 1
             XCTAssertNotNil(store.summary(for: track, folder: scopes[index]), "Translation must follow this song's audio analysis")
             translated.append(document.lines[0].text + ":" + target)
@@ -448,7 +452,7 @@ final class MusicToolsIntegrationTests: XCTestCase {
         XCTAssertFalse(player.isPlaying)
         XCTAssertEqual(gate.calls, 2)
         XCTAssertEqual(translated, ["When the rain stops 0:es", "When the rain stops 1:es"])
-        let fresh = LyricTranslationStore(cache: cache) { _, _, _ in XCTFail("Finished translation must be cached"); throw URLError(.unknown) }
+        let fresh = LyricTranslationStore(cache: cache) { _, _, _, _ in XCTFail("Finished translation must be cached"); throw URLError(.unknown) }
         _ = try await fresh.load(firstLyrics, source: "auto", target: "es")
         defaults.set("fr", forKey: "lyricTranslationTarget")
         player.translationPreferencesDidChange()

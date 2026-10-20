@@ -108,21 +108,24 @@ operations rewrites audio tags.
 
 **Ajustes → Preparación automática** enables BPM/waveform, translation and lyric
 meaning for the entire playback queue by default. The current song takes priority;
-other songs prepare one at a time and reuse persistent results. Queue edits update
+local audio analysis runs one song at a time, while translation and meaning share
+four concurrent requests and reuse persistent results. Queue edits update
 unstarted work while an active analysis finishes into its cache. The saved playback
 queue supplies pending work after relaunch. Execution can pause when iOS suspends
 the app and resumes when Sonora becomes active.
 
 In **Lyrics → Comprender**, **Significado** displays the shared interpretation from
 the [Codex proxy integration](proxy/README.md#lyric-interpretation-with-codex).
-Only one interpretation request runs at a time. Opening the sheet joins an existing
-request; it does not start a duplicate. An unavailable server or usage limit pauses
-automatic interpretations without blocking audio analysis or translation. Retry
-from automatic-preparation settings after restoring the connection.
+Translation and interpretation share four Codex process slots on the server. Opening a
+sheet joins existing work. An unavailable server or usage limit pauses automatic
+remote requests while local audio analysis continues. Retry from automatic-preparation
+settings after restoring the connection.
 
-**Traducción** automatically translates the full lyric context on iOS 26.4 or later
-with downloaded Apple language models, preserving phrase identity and original
-seek times. Missing models need a one-time download from the translation controls.
-Earlier systems retain manual translation on iOS 18 or later. Text or language
-changes need new results; timing-only edits reuse contextual translations and
-interpretations. These features never overwrite the original lyric or file tags.
+**Traducción** sends the complete lyric context through the same Codex connection.
+Each returned fragment must carry its original line ID; missing, duplicated or
+reordered IDs are rejected before caching. The original times stay on the device.
+New translations consume Codex plan usage, while saved translations work offline.
+Text or language changes need new results; timing-only edits reuse translations.
+Apple translation caches are ignored and regenerated as songs are prepared. Both
+the app and proxy must be updated for this route. These features never overwrite
+the original lyric or file tags.

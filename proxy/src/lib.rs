@@ -12,3 +12,4 @@ pub mod metadata_archive;
 pub mod providers;
 mod scheduler;
 pub mod transcription;
+pub mod translation;
