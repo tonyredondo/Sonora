@@ -18,6 +18,7 @@ struct TrackDetails {
     var replayGain = ReplayGain()
     var normalizationGain: Double = 1
     var rhythm: AudioRhythmAnalysis? = nil
+    var fingerprint: FileFingerprint? = nil
 }
 
 /// Immutable result transferred once from the I/O worker to the player owner.
@@ -70,7 +71,7 @@ private final class CoordinatedRead: @unchecked Sendable {
                     format: localURL.pathExtension.uppercased() + bits + String(format: " / %.1f kHz", decoder.processingFormat.sampleRate / 1000),
                     sampleRate: decoder.processingFormat.sampleRate,
                     artwork: (metadata?.attachedPictures(ofType: .frontCover).first?.imageData ?? data).flatMap(Self.thumbnail) ?? Self.sidecarArtwork(in: localURL.deletingLastPathComponent()),
-                    tags: tags, replayGain: replayGain, normalizationGain: gain, rhythm: rhythm
+                    tags: tags, replayGain: replayGain, normalizationGain: gain, rhythm: rhythm, fingerprint: try FileFingerprint(localURL)
                 ))
             }
         }

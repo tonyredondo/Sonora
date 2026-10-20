@@ -9,6 +9,12 @@ struct LyricsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var textSize
     @AppStorage("lyricsAutoScroll") private var autoScroll = true
+    @State private var showUnderstanding = false
+    @State private var translation: LyricTranslation?
+    @State private var translationSourceKey = ""
+    @AppStorage("lyricTranslationSource") private var translationSource = "auto"
+    @AppStorage("lyricTranslationTarget") private var translationTarget = "es"
+    @AppStorage("showLyricTranslation") private var showTranslation = true
     @State private var offset: Double = 0
     @State private var loadedLyrics: LyricsDocument?
     @State private var loadedTrackID: String?
@@ -38,15 +44,27 @@ struct LyricsView: View {
     }
     private var active: Int? { isCurrent ? lyrics.activeLine(at: player.currentTime, offset: offset) : nil }
 
+    private var translationKey: String { LyricUnderstanding.translationKey(lyrics, source: translationSource, target: translationTarget) }
+
     private var trackHeading: some View {
+        HStack(spacing: 12) {
         VStack(alignment: .leading, spacing: 4) {
             Text(title.isEmpty ? selectedTrack?.displayName ?? "Letra" : title).font(.headline).lineLimit(2)
             if !artist.isEmpty { Text(artist).font(.subheadline).foregroundStyle(.secondary) }
         }
+        Spacer(minLength: 0)
+        if !lyrics.lines.isEmpty {
+            Button { showUnderstanding = true } label: { CompactActionLabel(title: "Comprender letra", icon: "character.book.closed", caption: "Comprender") }
+                .buttonStyle(.plain).accessibilityIdentifier("understandLyrics")
+        }
+        }
     }
 
     var body: some View {
-        NavigationStack {
+        // Hash the complete document once per update, not for every visible row.
+        let translationKey = self.translationKey
+        let visibleTranslation = showTranslation && translationSourceKey == translationKey ? translation : nil
+        return NavigationStack {
             VStack(spacing: 0) {
                 ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -109,13 +127,21 @@ struct LyricsView: View {
                                 ForEach(lyrics.lines) { line in
                                     if let time = line.time, isCurrent {
                                         Button { player.seek(to: max(0, time + offset)) } label: {
+                                            VStack(alignment: .leading, spacing: 6) {
                                             Text(line.text.isEmpty ? "♪" : line.text)
                                                 .font(active == line.id ? .title.bold() : .title2.weight(.medium))
                                                 .foregroundStyle(active == line.id ? PlayerTheme(scheme).accent : .primary)
                                                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                            if let translated = visibleTranslation?.lines[line.id] { Text(translated).font(.body).foregroundStyle(.secondary) }
+                                            }
                                         }.buttonStyle(.plain).id(line.id).accessibilityIdentifier("lyricLine\(line.id)")
                                             .accessibilityValue(active == line.id ? "Línea actual" : playbackTime(time))
-                                    } else { Text(line.text).font(.title3).textSelection(.enabled) }
+                                    } else {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text(line.text).font(.title3).textSelection(.enabled)
+                                            if let translated = visibleTranslation?.lines[line.id] { Text(translated).font(.body).foregroundStyle(.secondary).textSelection(.enabled) }
+                                        }
+                                    }
                                 }
                             }.padding(24)
                         }
@@ -124,6 +150,7 @@ struct LyricsView: View {
                         .onChange(of: active, initial: true) { scroll(reader) }
                         .onChange(of: autoScroll) { scroll(reader) }
                     }
+                    if visibleTranslation != nil { Text("Traducción automática · Apple").font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("lyricsTranslationSource") }
                     if let attribution = lyrics.attribution {
                         Text(attribution).font(.caption).foregroundStyle(.secondary).padding(8).accessibilityIdentifier("lyricsSource")
                     } else if isCurrent, let source = player.currentDetails?.lyricsSource {
@@ -135,6 +162,21 @@ struct LyricsView: View {
             .navigationTitle("Letra").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Listo") { dismiss() } } }
             .task(id: "\(selectedTrack?.id ?? "")-\(refresh)") { await load() }
+            .task(id: translationKey) {
+                let key = translationKey
+                translation = nil
+                if let value = try? await MusicToolsCache.shared.read(LyricTranslation.self, key: key),
+                   let validated = try? LyricTranslation(lines: value.lines, document: lyrics), !Task.isCancelled {
+                    translation = validated; translationSourceKey = key
+                }
+            }
+            .sheet(isPresented: $showUnderstanding) {
+                let sourceKey = LyricUnderstanding.sourceKey(lyrics)
+                LyricUnderstandingView(document: lyrics, translation: visibleTranslation) { value in
+                    guard sourceKey == LyricUnderstanding.sourceKey(lyrics) else { return }
+                    translation = value; translationSourceKey = translationKey; showTranslation = value != nil
+                }.id(sourceKey)
+            }
             .onChange(of: offset) {
                 if let id = selectedTrack?.id, loadedTrackID == id { UserDefaults.standard.set(offset, forKey: "lyricsOffset.\(id)") }
             }

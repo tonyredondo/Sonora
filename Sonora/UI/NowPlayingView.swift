@@ -49,7 +49,13 @@ struct NowPlayingView: View {
                 .offset(y:completedDrag ?? downwardDrag)
                 .animation(downwardDrag == 0 && completedDrag == nil && !reduceMotion ? .spring(response:0.3,dampingFraction:0.85) : nil,value:downwardDrag)
             }.background(theme.background).toolbar(.hidden, for: .navigationBar)
-        }.tint(theme.accent).sheet(isPresented: $showQueue) { QueueView(player: player) }
+        }.tint(theme.accent)
+            .task(id: "\(player.current?.id ?? ""):\(String(describing: player.currentDetails?.fingerprint))") {
+                if let track = player.current, let fingerprint = player.currentDetails?.fingerprint, let folder = try? player.folderAccess(for: track) {
+                    try? await player.musicTools.restore(track: track, folder: folder, expected: fingerprint)
+                }
+            }
+            .sheet(isPresented: $showQueue) { QueueView(player: player) }
             .sheet(isPresented: $showLyrics, onDismiss: { lyricsScrollRequest += 1 }) { LyricsView(player: player) }
             .sheet(item: $songAction) { SongActionSheet(player: player, request: $0) }
             .sheet(isPresented: $showListening) {
@@ -109,7 +115,10 @@ struct NowPlayingView: View {
             Text(player.currentDetails?.artist ?? "Artista desconocido")
                 .font(compact ? .subheadline : .title3).foregroundStyle(.secondary).lineLimit(1)
             if let format = player.currentDetails?.format {
-                Text(format).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                HStack {
+                    Text(format).lineLimit(1)
+                    if let bpm = player.currentSongTools?.bpm { Text("\(bpm, specifier: "%.0f") BPM").monospacedDigit() }
+                }.font(.caption).foregroundStyle(.secondary)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -131,7 +140,9 @@ struct NowPlayingView: View {
     }
     private var output: some View {
         HStack(spacing: 12) {
-            Image(systemName: "speaker.wave.2.fill").accessibilityHidden(true)
+            Button { showListening = true } label: {
+                Label("Audio", systemImage: "slider.horizontal.3").font(.caption).padding(.horizontal, 10).frame(height: 44).playerControlGlass(in: Capsule())
+            }.accessibilityLabel("Herramientas de audio").accessibilityIdentifier("openAudioTools")
             SystemVolumeControl(tint: theme.accent)
                 .frame(maxWidth: .infinity).frame(height: 44)
                 .accessibilityIdentifier("playerVolume")
@@ -158,11 +169,15 @@ struct PlaybackTimeline: View {
     @State private var position: Double = 0
     var body: some View {
         VStack(spacing: 5) {
+            if let result = player.currentSongTools {
+                WaveformTimeline(analysis: result.analysis, markers: result.annotations.markers, position: player.currentTime) { player.seek(to: $0) }
+            } else {
             MediaSlider(value: Binding(get: { scrubbing ? position : min(player.currentTime, max(player.duration, 1)) }, set: { position = $0 }),
                    range: 0...max(player.duration, 1), tint: tint, label: "Posición de reproducción", onEditingChanged: { editing in
                 scrubbing = editing
                 if !editing { player.seek(to: position) }
             }).frame(height: 44).disabled(player.duration <= 0)
+            }
             HStack {
                 Text(playbackTime(scrubbing ? position : player.currentTime)).accessibilityIdentifier("playerElapsedTime")
                 Spacer(); Text(playbackTime(player.duration))

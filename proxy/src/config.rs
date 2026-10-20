@@ -211,6 +211,23 @@ impl Default for NetworkConfig {
     }
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CodexConfig {
+    /// Opt in to using this OS user's existing Codex ChatGPT session.
+    pub enabled: bool,
+    /// Prefer an absolute path when running the proxy through launchd.
+    pub binary: PathBuf,
+}
+impl Default for CodexConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            binary: PathBuf::from("codex"),
+        }
+    }
+}
+
 /// Secrets are intentionally excluded from Debug and all diagnostic output.
 #[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -225,6 +242,7 @@ pub struct Config {
     pub lrclib: ProviderConfig,
     pub cover_art: ProviderConfig,
     pub elevenlabs: ProviderConfig,
+    pub codex: CodexConfig,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -239,6 +257,7 @@ impl Default for Config {
             lrclib: ProviderConfig::default(),
             cover_art: ProviderConfig::default(),
             elevenlabs: ProviderConfig::default(),
+            codex: CodexConfig::default(),
         }
     }
 }
@@ -289,6 +308,13 @@ impl Config {
     }
     pub fn validate(&self) -> Result<(), ConfigError> {
         let invalid = ConfigError::Invalid;
+        if self.codex.binary.as_os_str().is_empty()
+            || (self.codex.binary.is_relative() && self.codex.binary.components().count() != 1)
+        {
+            return Err(invalid(
+                "codex binary must be an absolute path or a command name",
+            ));
+        }
         if config_paths_overlap(&self.cache.path, &self.metadata.path)
             || self.metadata.path.as_os_str().is_empty()
             || !(22_000_000..=1024 * 1024 * 1024 * 1024).contains(&self.metadata.max_bytes)

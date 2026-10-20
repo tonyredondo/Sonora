@@ -27,6 +27,7 @@ struct App {
     token: Option<Arc<[u8]>>,
     uploads: Arc<tokio::sync::Semaphore>,
     metadata: MetadataArchive,
+    interpretation: crate::interpretation::InterpretationService,
 }
 
 /// Must be constructed inside a Tokio runtime. Dropping the last router cancels its jobs.
@@ -40,6 +41,10 @@ pub fn router(config: Config) -> Result<Router, Error> {
     let metadata =
         MetadataArchive::open(&client.config().metadata).map_err(|_| Error::Configuration)?;
     let state = App {
+        interpretation: crate::interpretation::InterpretationService::new(
+            client.config().codex.clone(),
+            client.scheduler.cache(),
+        ),
         metadata,
         jobs: Jobs::new(client.clone()),
         uploads: Arc::new(tokio::sync::Semaphore::new(4)),
@@ -65,6 +70,10 @@ pub fn router(config: Config) -> Result<Router, Error> {
         .route("/v1/recordings/{id}", get(recording))
         .route("/v1/releases/{id}", get(release))
         .route("/v1/lyrics", get(lyrics))
+        .route(
+            "/v1/lyrics/interpret",
+            post(interpret).layer(DefaultBodyLimit::max(128 * 1024)),
+        )
         .route(
             "/v1/lyrics/align",
             post(align).layer(DefaultBodyLimit::max(
@@ -103,7 +112,16 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
             )
         })
         .collect();
-    Json(json!({"providers":providers,"metadata_archive_version":1}))
+    Json(json!({"providers":providers,"metadata_archive_version":1,
+        "lyric_interpretation":{"enabled":app.client.config().codex.enabled,"model":crate::interpretation::MODEL,"effort":crate::interpretation::EFFORT}}))
+}
+
+async fn interpret(
+    State(app): State<App>,
+    Json(input): Json<crate::interpretation::InterpretationInput>,
+) -> Result<Json<crate::interpretation::Interpretation>, crate::interpretation::InterpretationError>
+{
+    Ok(Json(app.interpretation.interpret(input).await?))
 }
 
 impl IntoResponse for ArchiveError {

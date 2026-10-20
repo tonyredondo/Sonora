@@ -117,7 +117,9 @@ struct LyricsEditingTransport: View {
     let track: AudioTrack
     let duration: Double
     var preview: (() -> Void)? = nil
+    var offersAnalysis = true
     @State private var scrub: Double?
+    @State private var showAnalysis = false
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dynamicTypeSize) private var textSize
     private var current: Bool { player.isEditingTrackCurrent(track) }
@@ -127,6 +129,8 @@ struct LyricsEditingTransport: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 transportButtons
+                if offersAnalysis { Button { showAnalysis = true } label: { Image(systemName: "waveform.path").frame(width: 44, height: 44) }
+                    .accessibilityLabel("Forma de onda y marcadores").accessibilityIdentifier("draftSongAnalysis") }
                 Spacer(minLength: 8)
                 if let preview {
                     Button(action: preview) {
@@ -155,6 +159,10 @@ struct LyricsEditingTransport: View {
             .playerGlassPanel()
             .padding(.horizontal, 12).padding(.vertical, 6)
             .disabled(duration <= 0 || player.isDeletingFiles)
+            .sheet(isPresented: $showAnalysis) {
+                NavigationStack { SongAnalysisView(player: player, track: track)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { showAnalysis = false } } } }
+            }
     }
     private var position: some View {
         Text("\(playbackTime(scrub ?? time)) / \(playbackTime(duration))").font(.caption.monospacedDigit())

@@ -7,6 +7,7 @@ import SonoraCore
 @MainActor @Observable
 final class PlaybackController: NSObject {
     let equalizer: AudioEqualizer
+    let musicTools: MusicToolsStore
     let library: MusicLibrary
     let volumeAnalysis: VolumeAnalysisStore
     let localImports: LocalImportController
@@ -67,7 +68,18 @@ final class PlaybackController: NSObject {
     }
     var current: AudioTrack? { queue.current }
     var currentDetails: TrackDetails? { current.flatMap { details[$0.id] } }
+    var currentSongTools: SongToolsResult? {
+        guard let track = current, let folder = try? folderAccess(for: track),
+              let result = musicTools.summary(for: track, folder: folder), result.fingerprint == currentDetails?.fingerprint else { return nil }
+        return result
+    }
     var duration: Double { currentDetails?.duration ?? 0 }
+    func setPlaybackAdjustment(rate: Float? = nil, semitones: Float? = nil) {
+        refresh()
+        equalizer.setPlayback(PlaybackAdjustment(rate: rate ?? equalizer.playback.rate, semitones: semitones ?? equalizer.playback.semitones))
+        updateNowPlaying()
+    }
+
     func setSleepTimer(_ timer: SleepTimer?) {
         let wasEnd = stopsAfterCurrent
         var timer = timer
@@ -173,8 +185,9 @@ final class PlaybackController: NSObject {
         return try await body(token)
     }
 
-    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil) {
+    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil, musicTools: MusicToolsStore? = nil) {
         self.defaults = defaults
+        self.musicTools = musicTools ?? MusicToolsStore()
         self.metadataArchive = metadataArchive
         player = audioPlayer
         library = MusicLibrary(defaults: defaults)
@@ -936,7 +949,7 @@ final class PlaybackController: NSObject {
         var info: [String: Any] = [MPMediaItemPropertyTitle: currentDetails?.title ?? current.displayName,
             MPMediaItemPropertyArtist: currentDetails?.artist ?? "", MPMediaItemPropertyAlbumTitle: currentDetails?.album ?? "",
             MPMediaItemPropertyPlaybackDuration: duration, MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0]
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? Double(equalizer.playback.rate) : 0.0]
         if let image = currentDetails?.artwork { info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image } }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
