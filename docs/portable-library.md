@@ -38,7 +38,11 @@ Importing a cloud-only file requests provider materialization through coordinate
 
 ## CarPlay
 
-The CarPlay scene uses four native tabs: Biblioteca, Playlists, Favoritos and Cola. Library browsing includes albums, artists, source folders and songs; favorites include songs, albums and artists. Lists paginate in place within CarPlay's item and navigation limits. Song selection uses the same transport, queue, Now Playing metadata and system remote commands as the iPhone. Provider failures produce a native CarPlay alert.
+The CarPlay scene uses four native tabs: Biblioteca, Listas, Favoritos and Cola. Library browsing includes album artwork, artists, source folders, songs and recent listening. Native search is available on iOS 27 and later; earlier versions do not permit the search template for audio apps ([template availability](https://developer.apple.com/download/files/CarPlay-Developer-Guide.pdf)). Favorites include songs, albums and artists. Lists paginate in place within CarPlay's item and navigation limits. Collections support playing in order, shuffling, playing next and adding to the queue. Open lists reflect library and queue changes made on the iPhone. Provider failures produce a native CarPlay alert.
+
+Now Playing has five additional controls: favorite, shuffle, repeat, playback speed and Audio. Shuffle and repeat use the system's native button states; speed cycles through 0.5×–2×. Album/artist and queue shortcuts open native lists. Audio offers speed selection, independent pitch adjustment in semitone steps (−12 to +12), EQ presets, transitions, volume normalization, balance and a sleep timer. Changing these settings preserves a paused song and uses the same settings and audio engine as the iPhone.
+
+Audio also shows the cached BPM and named markers; selecting a marker seeks to its time. These screens reuse the existing analysis and do not launch AI requests. Lyrics, translations, interpretation text and a custom waveform remain on the iPhone: standard CarPlay audio templates do not provide a custom scrolling lyrics or waveform surface.
 
 Both scenes share one player and one paused restoration task, including a launch initiated by the car. Cached browsing appears before provider-backed queue restoration finishes. Disconnecting releases CarPlay observers and templates while preserving the phone's transport.
 
