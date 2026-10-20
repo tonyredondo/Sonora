@@ -111,7 +111,7 @@ struct NowPlayingArtwork: View {
                         case .translation:
                             ArtworkTranslation(player: player, lyrics: lyrics, scrollRequest: scrollRequest, isVisible: selection == page)
                         case .meaning:
-                            ArtworkMeaning(lyrics: lyrics, store: player.lyricInterpretations)
+                            ArtworkMeaning(lyrics: lyrics, context: player.currentInterpretationContext, store: player.lyricInterpretations)
                         default:
                             ArtworkLyrics(player: player, lyrics: lyrics, scrollRequest: scrollRequest, isVisible: selection == page)
                         }
@@ -229,10 +229,11 @@ private struct ArtworkTranslation: View {
 
 private struct ArtworkMeaning: View {
     let lyrics: LyricsDocument
+    let context: LyricsInterpretationContext
     let store: LyricInterpretationStore
     @AppStorage("lyricMeaningLanguage") private var language = "es"
     @AppStorage("prepareQueueMeaning") private var automatic = true
-    private var key: String { store.key(lyrics, language: language) }
+    private var key: String { store.key(lyrics, language: language, context: context) }
     private var message: String {
         if case .failed(let issue) = store.statuses[key] { return issue }
         if store.statuses[key] == .interpreting { return "Preparando significado…" }
@@ -263,7 +264,7 @@ private struct ArtworkMeaning: View {
                     .accessibilityIdentifier("playerMeaningPreparation")
             }
         }
-        .task(id: key) { await store.restore(lyrics, language: language) }
+        .task(id: key) { await store.restore(lyrics, language: language, context: context) }
     }
 }
 

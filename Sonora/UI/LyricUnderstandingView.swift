@@ -5,13 +5,23 @@ struct LyricUnderstandingView: View {
     let translation: LyricTranslation?
     let translations: LyricTranslationStore
     let interpretations: LyricInterpretationStore
+    let context: LyricsInterpretationContext
+    let contextSourceID: String
+    let prepareContext: @MainActor () async -> LyricsInterpretationContext
     let applyTranslation: (LyricTranslation?) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var mode = 0
+    private struct PreparedContext { let id: String; let value: LyricsInterpretationContext }
+    @State private var preparedContext: PreparedContext?
+    private var contextRequestID: String { contextSourceID + ":" + context.cacheIdentity }
+    private var readyContext: LyricsInterpretationContext? { preparedContext?.id == contextRequestID ? preparedContext?.value : nil }
     init(document: LyricsDocument, translation: LyricTranslation?, translations: LyricTranslationStore, interpretations: LyricInterpretationStore,
+         context: LyricsInterpretationContext, contextSourceID: String,
+         prepareContext: @escaping @MainActor () async -> LyricsInterpretationContext,
          initialMode: Int = 0, applyTranslation: @escaping (LyricTranslation?) -> Void) {
         self.document = document; self.translation = translation; self.translations = translations
         self.interpretations = interpretations
+        self.context = context; self.contextSourceID = contextSourceID; self.prepareContext = prepareContext
         self.applyTranslation = applyTranslation; _mode = State(initialValue: initialMode)
     }
     var body: some View {
@@ -21,12 +31,18 @@ struct LyricUnderstandingView: View {
                     Text("Significado").tag(0)
                     Text("Traducción").tag(1)
                 }.pickerStyle(.segmented).padding()
-                if mode == 0 { LyricInterpretationView(document: document, store: interpretations) }
+                if mode == 0 { LyricInterpretationView(document: document, context: readyContext ?? context, preparingContext: readyContext == nil, store: interpretations) }
                 else {
                     CodexTranslationView(document: document, store: translations, hasTranslation: translation != nil) { value in applyTranslation(value); dismiss() }
                 }
             }.navigationTitle("Comprender letra").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Listo") { dismiss() } } }
+        }
+        .task(id: contextRequestID) {
+            let id = contextRequestID
+            let value = await prepareContext()
+            guard !Task.isCancelled else { return }
+            preparedContext = PreparedContext(id: id, value: value)
         }
     }
 }
@@ -94,9 +110,11 @@ private struct CodexTranslationView: View {
 
 private struct LyricInterpretationView: View {
     let document: LyricsDocument
+    let context: LyricsInterpretationContext
+    let preparingContext: Bool
     let store: LyricInterpretationStore
     @AppStorage("lyricMeaningLanguage") private var language = "es"
-    private var key: String { store.key(document, language: language) }
+    private var key: String { store.key(document, language: language, context: context) }
     private var status: LyricInterpretationStore.Status? { store.statuses[key] }
     private var explanation: String? { store.results[key]?.explanation }
     var body: some View {
@@ -106,8 +124,8 @@ private struct LyricInterpretationView: View {
                     Text("Español").tag("es"); Text("English").tag("en"); Text("Français").tag("fr")
                     Text("Deutsch").tag("de"); Text("Italiano").tag("it"); Text("Português").tag("pt")
                 }.accessibilityIdentifier("interpretationLanguage")
-                if status == .interpreting {
-                    ProgressView("Interpretando con Codex…")
+                if preparingContext || status == .interpreting {
+                    ProgressView(preparingContext ? "Preparando información de la canción…" : "Interpretando con Codex…")
                         .accessibilityIdentifier("interpretationState")
                 } else if explanation == nil {
                     if status == .queued {
@@ -115,16 +133,16 @@ private struct LyricInterpretationView: View {
                             .font(.footnote).foregroundStyle(.secondary).accessibilityIdentifier("interpretationState")
                     }
                     Button(status == .queued ? "Interpretar ahora" : "Interpretar letra", systemImage: "sparkles") {
-                        Task { _ = try? await store.load(document, language: language) }
+                        Task { _ = try? await store.load(document, language: language, context: context) }
                     }
                         .accessibilityIdentifier("interpretLyrics")
                 }
                 if case .failed(let issue) = status { Text(issue).foregroundStyle(.red).accessibilityIdentifier("interpretationIssue") }
-            } footer: { Text("Preparamos toda la cola con hasta cuatro solicitudes simultáneas entre significado y traducción. Puedes desactivarlo en Ajustes → Preparación automática. GPT Astra ofrece una lectura posible, no una explicación confirmada por su autor. Cada análisis nuevo envía la letra a Codex desde tu servidor y consume uso de tu plan. Los resultados guardados funcionan sin conexión.") }
+            } footer: { Text("Preparamos toda la cola con hasta cuatro solicitudes simultáneas entre significado y traducción. Puedes desactivarlo en Ajustes → Preparación automática. GPT Astra ofrece una lectura posible, no una explicación confirmada por su autor. Cada análisis nuevo envía la letra, los datos de la canción y sus etiquetas estimadas a Codex desde tu servidor y consume uso de tu plan. Los resultados guardados funcionan sin conexión.") }
             if document.isAITranscribed { Section { Text("Esta letra fue transcrita por IA y puede contener errores que afecten a la interpretación.").font(.footnote) } }
             if let explanation { Section("Sobre la canción") { Text(explanation).textSelection(.enabled).accessibilityIdentifier("lyricInterpretation") } }
         }
         .compactContentSpacing()
-        .task(id: key) { await store.restore(document, language: language) }
+        .task(id: key) { await store.restore(document, language: language, context: context) }
     }
 }

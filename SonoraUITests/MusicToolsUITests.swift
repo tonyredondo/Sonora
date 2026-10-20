@@ -85,6 +85,24 @@ final class MusicToolsUITests: XCTestCase {
         app.terminate()
     }
 
+    @MainActor func testMeaningFromLyricsReaderReusesTheSongContext() {
+        let app = openPlayer(track: "07 - Traducción por frases QA.flac")
+        app.selectPlayerPage(1)
+        app.buttons["expandLyrics"].tap()
+        XCTAssertTrue(app.navigationBars["Letra"].waitForExistence(timeout: 5))
+        app.buttons["understandLyrics"].tap()
+        XCTAssertTrue(app.navigationBars["Comprender letra"].waitForExistence(timeout: 5))
+        let explanation = app.staticTexts["lyricInterpretation"]
+        XCTAssertTrue(explanation.waitForExistence(timeout: 10))
+        XCTAssertTrue(explanation.label.contains("pequeños cambios del día"))
+        let state = app.descendants(matching: .any).matching(identifier: "interpretationState").firstMatch
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: state)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        XCTAssertFalse(app.buttons["interpretLyrics"].exists, "The contextual cached result must be reused without another request")
+        capture("meaning-from-lyrics-reader", app)
+        app.terminate()
+    }
+
     @MainActor func testPlayerLyricsContinueBehindHeaderWhileFollowing() {
         let app = openPlayer(additionalArguments: ["-lyricsAutoScroll", "YES"])
         let reader = app.scrollViews["playerLyrics"]

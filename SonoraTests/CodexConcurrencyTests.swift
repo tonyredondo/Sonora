@@ -50,7 +50,7 @@ final class CodexConcurrencyTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
         let config = settings(root, defaults: defaults), pool = CodexRequestPool(), probe = CodexProbe()
         let reading = try response()
-        let meanings = LyricInterpretationStore(settings: config, requests: pool) { doc, _, mode in
+        let meanings = LyricInterpretationStore(settings: config, requests: pool) { doc, _, _, mode in
             if mode == .cachedOnly { throw MetadataLookupError.notCached }
             try await probe.request("m" + doc.lines[0].text)
             return reading
@@ -102,7 +102,7 @@ final class CodexConcurrencyTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
         let config = settings(root, defaults: defaults), pool = CodexRequestPool(), probe = CodexProbe()
         let reading = try response()
-        let meanings = LyricInterpretationStore(settings: config, requests: pool) { doc, _, mode in
+        let meanings = LyricInterpretationStore(settings: config, requests: pool) { doc, _, _, mode in
             if mode == .cachedOnly { throw MetadataLookupError.notCached }
             try await probe.request(doc.lines[0].text)
             return reading

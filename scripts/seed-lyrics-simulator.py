@@ -79,9 +79,10 @@ for title, times, text, translated in translations:
     # endpoint. No live provider or account is needed to inspect the carousel.
     meaning_cache = container / 'Library' / 'Application Support' / 'Sonora' / 'MetadataCache'
     meaning_cache.mkdir(parents=True, exist_ok=True)
-    request = json.dumps(dict(language='es', lyrics='\n'.join(text)),
+    context = dict(title=title.split(' - ', 1)[-1], artist='Sonora Tests', album='Letras en portada', styles=[], moods=[])
+    request = json.dumps(dict(language='es', lyrics='\n'.join(text), context=context),
                          ensure_ascii=False, sort_keys=True, separators=(',', ':'))
-    meaning_key = 'codex-meaning-v1:gpt-6-astra:xhigh:http://127.0.0.1:9:' + hashlib.sha256(request.encode()).hexdigest()
+    meaning_key = 'codex-meaning-v2:gpt-6-astra:xhigh:http://127.0.0.1:9:' + hashlib.sha256(request.encode()).hexdigest()
     explanation = ('La canción observa los pequeños cambios del día: la luz, los encuentros y la calma de la noche. '
                    'El paisaje acompaña una sensación de esperanza y de empezar de nuevo.\n\n'
                    'Las imágenes del camino y del río pueden leerse como momentos compartidos. '

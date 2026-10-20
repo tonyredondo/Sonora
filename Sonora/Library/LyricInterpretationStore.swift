@@ -7,7 +7,7 @@ import SonoraCore
 @MainActor @Observable
 final class LyricInterpretationStore {
     enum RequestMode: Equatable { case cachedOnly, useCache, refresh }
-    typealias Interpreter = @MainActor (LyricsDocument, String, RequestMode) async throws -> LyricsInterpretation
+    typealias Interpreter = @MainActor (LyricsDocument, String, LyricsInterpretationContext, RequestMode) async throws -> LyricsInterpretation
     enum Status: Equatable {
         case queued, interpreting, ready, failed(String)
         var busy: Bool { self == .queued || self == .interpreting }
@@ -30,6 +30,7 @@ final class LyricInterpretationStore {
     private struct Job {
         let document: LyricsDocument
         let language: String
+        let context: LyricsInterpretationContext
         let endpoint: String
         var refresh = false
         var owners: Set<String> = []
@@ -40,18 +41,18 @@ final class LyricInterpretationStore {
     init(settings: MetadataAssistantSettings = .shared, requests: CodexRequestPool = .shared, interpret: Interpreter? = nil) {
         self.settings = settings; self.requests = requests
         self.interpret = interpret ?? {
-            try await LyricUnderstanding.interpret($0, language: $1, cachedOnly: $2 == .cachedOnly,
-                                                   refresh: $2 == .refresh, settings: settings)
+            try await LyricUnderstanding.interpret($0, language: $1, context: $2, cachedOnly: $3 == .cachedOnly,
+                                                   refresh: $3 == .refresh, settings: settings)
         }
         observeConnection()
     }
-    func key(_ document: LyricsDocument, language: String) -> String {
+    func key(_ document: LyricsDocument, language: String, context: LyricsInterpretationContext = .init()) -> String {
         // Same inputs as the existing disk cache; timing edits reuse meaning.
-        settings.endpoint + ":" + language + ":" + MusicToolsCache.digest(document.lines.map(\.text).joined(separator: "\n"))
+        LyricsInterpretationClient.version + ":" + settings.endpoint + ":" + language + ":" + context.cacheIdentity + ":" + MusicToolsCache.digest(document.lines.map(\.text).joined(separator: "\n"))
     }
-    func restore(_ document: LyricsDocument, language: String) async {
-        let key = key(document, language: language)
-        guard results[key] == nil, let value = try? await interpret(document, language, .cachedOnly),
+    func restore(_ document: LyricsDocument, language: String, context: LyricsInterpretationContext = .init()) async {
+        let key = key(document, language: language, context: context)
+        guard results[key] == nil, let value = try? await interpret(document, language, context, .cachedOnly),
               value.isValid, results[key] == nil else { return }
         results[key] = value
         if jobs[key] == nil { statuses[key] = .ready }
@@ -72,28 +73,28 @@ final class LyricInterpretationStore {
         order.removeAll { jobs[$0] == nil }
         start()
     }
-    func enqueue(_ document: LyricsDocument, language: String, owner: String) async {
-        await restore(document, language: language)
-        let key = key(document, language: language)
+    func enqueue(_ document: LyricsDocument, language: String, context: LyricsInterpretationContext = .init(), owner: String) async {
+        await restore(document, language: language, context: context)
+        let key = key(document, language: language, context: context)
         guard ownerPriorities[owner] != nil, automaticLanguage == nil || automaticLanguage == language,
               results[key] == nil,
               document.lines.contains(where: { !$0.text.isEmpty }) else { return }
         if case .failed = statuses[key] { return } // Explicit retry or connection recovery, never a skip-triggered retry storm.
         if jobs[key] == nil {
-            jobs[key] = Job(document: document, language: language, endpoint: settings.endpoint)
+            jobs[key] = Job(document: document, language: language, context: context, endpoint: settings.endpoint)
             order.append(key); statuses[key] = .queued
         }
         jobs[key]?.owners.insert(owner)
         start()
     }
-    func load(_ document: LyricsDocument, language: String, refresh: Bool = false) async throws -> LyricsInterpretation {
-        if !refresh { await restore(document, language: language) }
+    func load(_ document: LyricsDocument, language: String, context: LyricsInterpretationContext = .init(), refresh: Bool = false) async throws -> LyricsInterpretation {
+        if !refresh { await restore(document, language: language, context: context) }
         try Task.checkCancellation()
-        let key = key(document, language: language)
+        let key = key(document, language: language, context: context)
         if !refresh, let value = results[key] { return value }
         let value: LyricsInterpretation = try await withCheckedThrowingContinuation { continuation in
             if jobs[key] == nil {
-                jobs[key] = Job(document: document, language: language, endpoint: settings.endpoint, refresh: refresh)
+                jobs[key] = Job(document: document, language: language, context: context, endpoint: settings.endpoint, refresh: refresh)
                 order.append(key); statuses[key] = .queued
             }
             if refresh && active.contains(key) && jobs[key]?.refresh == false {
@@ -162,7 +163,7 @@ final class LyricInterpretationStore {
         let result: Result<LyricsInterpretation, Error>
         do {
             guard job.endpoint == settings.endpoint else { throw MetadataLookupError.invalidConnection }
-            let value = try await interpret(job.document, job.language, job.refresh ? .refresh : .useCache)
+            let value = try await interpret(job.document, job.language, job.context, job.refresh ? .refresh : .useCache)
             guard value.isValid else { throw MetadataLookupError.invalidResponse }
             results[key] = value; statuses[key] = .ready
             // Another in-flight request may have reported a newer outage.
@@ -182,7 +183,7 @@ final class LyricInterpretationStore {
         }
         let waiters = jobs[key]?.waiters ?? []
         if let refreshWaiters = jobs[key]?.refreshWaiters, !refreshWaiters.isEmpty {
-            jobs[key] = Job(document: job.document, language: job.language, endpoint: job.endpoint,
+            jobs[key] = Job(document: job.document, language: job.language, context: job.context, endpoint: job.endpoint,
                             refresh: true, waiters: refreshWaiters)
             statuses[key] = .queued
         } else if retryWhenConnected, !job.refresh, jobs[key]?.owners.isEmpty == false {

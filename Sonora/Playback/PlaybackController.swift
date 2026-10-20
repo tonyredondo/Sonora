@@ -83,6 +83,7 @@ final class PlaybackController: NSObject {
         let localID: String
         let fingerprint: FileFingerprint
         let translationKey: String
+        let meaningContext: LyricsInterpretationContext
         let preferences: QueuePreparationPreferences
     }
     var current: AudioTrack? { queue.current }
@@ -96,6 +97,27 @@ final class PlaybackController: NSObject {
         guard let track = current, let access = try? folderAccess(for: track), let fingerprint = currentDetails?.fingerprint else { return nil }
         return audioCharacter.summary(track, folder: access, expected: fingerprint)
     }
+    var currentInterpretationContext: LyricsInterpretationContext {
+        guard let track = current, let details = currentDetails else { return .init() }
+        return interpretationContext(for: track, folder: try? folderAccess(for: track), values: details.tags, expected: details.fingerprint)
+    }
+    func interpretationContext(for track: AudioTrack, folder: ScopedFolder?, values: [MetadataField: String], expected: FileFingerprint?) -> LyricsInterpretationContext {
+        let tags = track.tags(overriding: values)
+        let character: AudioCharacter?
+        if let expected, let folder {
+            character = audioCharacter.summary(track, folder: folder, expected: expected)
+        } else { character = nil }
+        let audible = character.flatMap { $0.silent ? nil : $0 }
+        let title = (tags[.title] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return LyricsInterpretationContext(title: title.isEmpty ? track.displayName : title, artist: tags[.artist] ?? "", album: tags[.album] ?? "",
+            styles: audible?.styles.prefix(2).map(\.label) ?? [], moods: audible?.prominentMoods ?? [])
+    }
+    func prepareInterpretationContext(for track: AudioTrack, folder: ScopedFolder, values: [MetadataField: String], expected: FileFingerprint) async -> LyricsInterpretationContext {
+        _ = try? await audioCharacter.load(track: track, folder: folder, expected: expected,
+            preparedAudio: musicTools.summary(for: track, folder: folder),
+            cachedOnly: !QueuePreparationPreferences(defaults: defaults).character)
+        return interpretationContext(for: track, folder: folder, values: values, expected: expected)
+    }
     var currentCharacterStatus: AudioCharacterStore.Status? {
         guard let track = current, let access = try? folderAccess(for: track) else { return nil }
         return audioCharacter.status(track, folder: access)
@@ -104,6 +126,7 @@ final class PlaybackController: NSObject {
         guard let track = current, let access = try? folderAccess(for: track), let fingerprint = currentDetails?.fingerprint else { return }
         _ = try await audioCharacter.load(track: track, folder: access, expected: fingerprint,
                                          preparedAudio: currentSongTools, refresh: refresh)
+        if current?.id == track.id { prepareCurrentSongTools() }
     }
     func retrySongAnalysis() {
         detachSongAnalysis()
@@ -166,7 +189,8 @@ final class PlaybackController: NSObject {
 
             songMetadataRefresh?.steps[.meaning] = .running
             do {
-                _ = try await lyricInterpretations.load(lyrics, language: preferences.meaningLanguage, refresh: true)
+                let context = interpretationContext(for: track, folder: access, values: snapshot.values, expected: snapshot.fingerprint)
+                _ = try await lyricInterpretations.load(lyrics, language: preferences.meaningLanguage, context: context, refresh: true)
                 songMetadataRefresh?.steps[.meaning] = .updated
             } catch { songMetadataRefresh?.steps[.meaning] = .failed(error.localizedDescription) }
         }
@@ -217,23 +241,23 @@ final class PlaybackController: NSObject {
             do { _ = try await musicTools.load(track: item.track, folder: item.folder, expected: snapshot.fingerprint) }
             catch { audioIssue = error }
         }
-        await prepareLyrics(lyrics, owner: item.id, preferences: preferences)
-        if preferences.character && QueuePreparationPreferences(defaults: defaults).character {
-            do {
-                _ = try await audioCharacter.load(track: item.track, folder: item.folder, expected: snapshot.fingerprint,
-                    preparedAudio: musicTools.summary(for: item.track, folder: item.folder))
-            } catch { audioIssue = audioIssue ?? error }
-        }
+        let prepareCharacter = preferences.character && QueuePreparationPreferences(defaults: defaults).character
+        do {
+            _ = try await audioCharacter.load(track: item.track, folder: item.folder, expected: snapshot.fingerprint,
+                preparedAudio: musicTools.summary(for: item.track, folder: item.folder), cachedOnly: !prepareCharacter)
+        } catch { if prepareCharacter { audioIssue = audioIssue ?? error } }
+        let context = interpretationContext(for: item.track, folder: item.folder, values: snapshot.values, expected: snapshot.fingerprint)
+        await prepareLyrics(lyrics, context: context, owner: item.id, preferences: preferences)
         if let audioIssue { throw audioIssue }
     }
-    private func prepareLyrics(_ lyrics: LyricsDocument, owner: String, preferences: QueuePreparationPreferences) async {
+    private func prepareLyrics(_ lyrics: LyricsDocument, context: LyricsInterpretationContext, owner: String, preferences: QueuePreparationPreferences) async {
         guard lyrics.lines.contains(where: { !$0.text.isEmpty }) else { return }
         let latest = QueuePreparationPreferences(defaults: defaults)
         if preferences.translation && latest.translation && preferences.source == latest.source && preferences.target == latest.target {
             await lyricTranslations.enqueue(lyrics, source: preferences.source, target: preferences.target, owner: owner, finishingPreparation: true)
         }
         if preferences.meaning && latest.meaning && preferences.meaningLanguage == latest.meaningLanguage {
-            await lyricInterpretations.enqueue(lyrics, language: preferences.meaningLanguage, owner: owner)
+            await lyricInterpretations.enqueue(lyrics, language: preferences.meaningLanguage, context: context, owner: owner)
         }
     }
     private func detachSongAnalysis() {
@@ -248,11 +272,13 @@ final class PlaybackController: NSObject {
         guard let track = current, let fingerprint = currentDetails?.fingerprint,
               let access = try? folderAccess(for: track) else { detachSongAnalysis(); return }
         let lyrics = currentDetails?.lyrics ?? LyricsDocument(text: "")
+        let metadata = currentDetails?.tags ?? [:]
         let preferences = QueuePreparationPreferences(defaults: defaults)
         let source = preferences.source, target = preferences.target
         let request = SongAnalysisRequest(url: track.url(in: access.url).standardizedFileURL,
                                           localID: track.localID, fingerprint: fingerprint,
                                           translationKey: LyricUnderstanding.translationKey(lyrics, source: source, target: target),
+                                          meaningContext: currentInterpretationContext,
                                           preferences: preferences)
         guard songAnalysisRequest != request else { return }
         detachSongAnalysis()
@@ -281,11 +307,14 @@ final class PlaybackController: NSObject {
             // Continue for this captured document even after the player changes
             // song. Translation errors belong to the lyric controls, not playback.
             guard !Task.isCancelled else { return }
-            await self?.prepareLyrics(lyrics, owner: QueuePreparationStore.Item.id(track, folder: access), preferences: preferences)
             do {
                 _ = try await self?.audioCharacter.load(track: track, folder: access, expected: fingerprint,
                     preparedAudio: store.summary(for: track, folder: access), cachedOnly: !preferences.character)
             } catch { /* The shared store exposes failures in the style/ambience detail, never as a playback error. */ }
+            if let self {
+                let context = interpretationContext(for: track, folder: access, values: metadata, expected: fingerprint)
+                await prepareLyrics(lyrics, context: context, owner: QueuePreparationStore.Item.id(track, folder: access), preferences: preferences)
+            }
         }
     }
     var duration: Double { currentDetails?.duration ?? 0 }
