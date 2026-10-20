@@ -60,6 +60,61 @@ final class MusicToolsIntegrationTests: XCTestCase {
         XCTAssertEqual(changedTags.contentID, result.contentID); XCTAssertEqual(changedTags.annotations.markers, [marker])
     }
 
+    @MainActor func testMusicalTempoReplacesOldAnalysisAndPreservesPersonalAnnotations() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var energy = [Double](repeating: 0.02, count: 2000)
+        for beat in 0..<40 {
+            for (fraction, amplitude) in [(0.0, 0.4), (0.5, 0.22), (0.75, 0.11)] {
+                let time = Double(beat) * 0.5 + fraction * 0.5 + 0.025 * sin(Double(beat) * 1.7)
+                let center = Int(time * 100)
+                for i in max(0, center - 4)...min(1999, center + 4) {
+                    energy[i] += amplitude * (0.8 + 0.2 * cos(Double(beat))) * exp(-pow((Double(i) / 100 - time) / 0.018, 2))
+                }
+            }
+        }
+        let url = root.appendingPathComponent("musical.wav")
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 48000))
+            buffer.frameLength = 48000
+            for second in 0..<20 {
+                for frame in 0..<48000 {
+                    let value = Float(energy[second * 100 + frame / 480] * sin(Double(frame) * 2 * .pi * 440 / 48000))
+                    buffer.floatChannelData![0][frame] = value
+                    buffer.floatChannelData![1][frame] = value
+                }
+                try file.write(from: buffer)
+            }
+        }
+        let track = try XCTUnwrap(AudioTrack(relativePath: "musical.wav")), folder = try ScopedFolder(root)
+        let fingerprint = try FileFingerprint(url)
+        let contentID = try await AudioContentIdentity.read(track: track, folder: folder, expected: fingerprint)
+        let cache = MusicToolsCache(root: root.appendingPathComponent("derived"))
+        struct LegacyIdentity: Encodable { let fingerprint: FileFingerprint; let contentID: String }
+        try await cache.write(LegacyIdentity(fingerprint: fingerprint, contentID: contentID),
+                              key: "identity-v1:\(track.localID):\(url.standardizedFileURL.absoluteString)")
+        struct LegacyAnalysis: Encodable {
+            struct Tempo: Encodable { let bpm: Double? = nil; let confidence = 0.0; let variable = true }
+            let duration = 20.0; let waveform: [Float] = [0.4]; let tempo = Tempo()
+        }
+        try await cache.write(LegacyAnalysis(), key: "analysis:energy-v1:\(contentID)")
+        let marker = SongMarker(time: 3.5, title: "Verse")
+        try await cache.write(SongAnnotations(bpm: 118, markers: [marker]), key: contentID, personal: true)
+        let store = MusicToolsStore(cache: cache)
+        try await store.restore(track: track, folder: folder, expected: fingerprint)
+        XCTAssertNil(store.summary(for: track, folder: folder), "An old analysis must not suppress the new estimate")
+        let result = try await store.load(track: track, folder: folder, expected: fingerprint)
+        XCTAssertEqual(try XCTUnwrap(result.analysis.tempo.bpm), 120, accuracy: 2)
+        XCTAssertEqual(result.bpm, 118, "A personal BPM correction survives reanalysis")
+        XCTAssertEqual(result.annotations.markers, [marker])
+        let reused = try await MusicToolsStore(cache: cache).load(track: track, folder: folder, expected: fingerprint)
+        XCTAssertEqual(reused.analysis, result.analysis)
+        XCTAssertEqual(reused.annotations, result.annotations)
+    }
+
     @MainActor func testLibraryAndQueueAliasesSharePlaybackAnalysis() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let suite = "MusicTools.Alias.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

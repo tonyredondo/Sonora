@@ -94,11 +94,12 @@ struct SongAnalysisView: View {
                 Section {
                     CompactActionHeader {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(result.bpm.map { String(format: "%.1f BPM", $0) } ?? "Sin pulso estable").font(.title2.bold()).monospacedDigit().accessibilityIdentifier("songBPM")
+                            Text(result.bpm.map { String(format: "%.1f BPM", $0) } ?? "BPM no detectado").font(.title2.bold()).monospacedDigit().accessibilityIdentifier("songBPM")
                             Text(result.annotations.bpm != nil ? "Corregido por ti" : result.analysis.tempo.variable ? "Estimado · ritmo variable" : "Estimado")
                                 .font(.caption).foregroundStyle(.secondary)
                             if result.annotations.bpm == nil, result.bpm != nil {
-                                Text("Confianza: \(Int(result.analysis.tempo.confidence * 100)) %").font(.caption).foregroundStyle(.secondary)
+                                Text(result.analysis.tempo.confidence >= 0.7 ? "Confianza alta" : result.analysis.tempo.confidence >= 0.4 ? "Confianza media" : "Confianza baja · aproximado")
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
                         }
                     } actions: {

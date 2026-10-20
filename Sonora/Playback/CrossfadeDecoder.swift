@@ -166,8 +166,18 @@ final class CrossfadeDecoder: NSObject, PCMDecoding {
             case .matched(let plan):
                 frames = min(frames, AVAudioFramePosition((plan.duration * rate).rounded()))
                 skip = AVAudioFramePosition((plan.incomingSkip * rate).rounded())
-                outcome = .adaptive(Double(frames) / rate, plan.bpm)
-            case .fallback(let reason): outcome = .adaptiveFallback(adaptive.reason ?? next.prepared.details.rhythm?.reason ?? reason)
+                let approximate = min(adaptive.tail?.confidence ?? 0, next.prepared.details.rhythm?.head?.confidence ?? 0) < 0.72
+                outcome = approximate ? .adaptiveEstimate(Double(frames) / rate, plan.bpm) : .adaptive(Double(frames) / rate, plan.bpm)
+            case .fallback(let reason):
+                if let plan = AdaptiveMixPlanner.estimated(outgoingBPM: adaptive.tailBPM,
+                    incomingBPM: next.prepared.details.rhythm?.headBPM, end: Double(length) / rate,
+                    earliestStart: Double(position) / rate, incomingPosition: Double(decoder.position) / rate,
+                    incomingDuration: Double(decoder.length) / rate, maximumOverlap: Double(frames) / rate) {
+                    frames = min(frames, AVAudioFramePosition((plan.duration * rate).rounded()))
+                    outcome = .estimated(Double(frames) / rate, plan.bpm)
+                } else {
+                    outcome = .adaptiveFallback(adaptive.reason ?? next.prepared.details.rhythm?.reason ?? reason)
+                }
             }
         }
         guard frames > 1, let buffer = AVAudioPCMBuffer(pcmFormat: processingFormat, frameCapacity: AVAudioFrameCount(frames)) else {

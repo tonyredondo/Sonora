@@ -2,6 +2,46 @@ import XCTest
 @testable import SonoraCore
 
 final class MusicToolsTests: XCTestCase {
+    func testTempoKeepsAnEstimateWhenWindowsAreUncertainOrVariable() throws {
+        let windows = [98.0, 112, 126, 140].map { BeatGrid(period: 60 / $0, anchor: 0, confidence: 0.6) }
+        let estimate = TempoEstimate.combine(windows)
+        let bpm = try XCTUnwrap(estimate.bpm, "Uncertain rhythmic audio still needs a numeric estimate")
+        XCTAssertTrue((98...140).contains(bpm))
+        XCTAssertTrue(estimate.variable)
+        XCTAssertGreaterThan(estimate.confidence, 0)
+        XCTAssertLessThan(estimate.confidence, 0.6)
+    }
+
+    func testEstimatedTempoHandlesOffbeatsAndHumanTimingWithoutInventingAStableGrid() throws {
+        for bpm in [85.0, 105, 120, 145, 170] {
+            let energy = musicalEnergy(bpm: bpm)
+            let estimate = TempoEstimate.estimate(energy: energy)
+            XCTAssertEqual(try XCTUnwrap(estimate.bpm, "\(bpm) BPM"), bpm, accuracy: 2)
+            XCTAssertGreaterThan(estimate.confidence, 0)
+        }
+        XCTAssertNil(RhythmAnalyzer.estimate(energy: musicalEnergy(bpm: 120)),
+                     "The strict detector may reject a signal that still has a useful tempo estimate")
+        for energy in [Array(repeating: 0.0, count: 2000), Array(repeating: 0.02, count: 2000),
+                       [Double.nan] + Array(repeating: 0, count: 1999)] {
+            XCTAssertNil(TempoEstimate.estimate(energy: energy).bpm)
+        }
+    }
+
+    private func musicalEnergy(bpm: Double) -> [Double] {
+        let period = 60 / bpm
+        var energy = [Double](repeating: 0.02, count: 2000)
+        for beat in 0..<Int(20 / period) {
+            for (fraction, amplitude) in [(0.0, 0.4), (0.5, 0.22), (0.75, 0.11)] {
+                let time = Double(beat) * period + fraction * period + 0.025 * sin(Double(beat) * 1.7)
+                let center = Int(time * 100)
+                for i in max(0, center - 4)...min(1999, center + 4) {
+                    energy[i] += amplitude * (0.8 + 0.2 * cos(Double(beat))) * exp(-pow((Double(i) / 100 - time) / 0.018, 2))
+                }
+            }
+        }
+        return energy
+    }
+
     func testTempoConsensusRejectsSilenceAndSparseIntroductions() {
         let beat = BeatGrid(period: 0.5, anchor: 0, confidence: 0.95)
         XCTAssertNil(TempoEstimate.combine([nil, nil]).bpm)

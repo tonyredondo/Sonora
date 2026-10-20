@@ -20,9 +20,12 @@ if root.exists() and not marker.exists():
     raise SystemExit('Refusing to overwrite an unmarked folder: ' + str(root))
 root.mkdir(parents=True, exist_ok=True)
 marker.write_text('Synthetic, regenerable lyrics fixtures. No user music.\n')
-for number, title in [(1, 'Letra completa QA'), (2, 'Letra sincronizada QA'), (3, 'Sin letra QA')]:
+for number, title in [(1, 'Letra completa QA'), (2, 'Letra sincronizada QA'), (3, 'Sin letra QA'), (4, 'Pulso 120 BPM QA')]:
+    source = f'sine=frequency={220 * number}:sample_rate=44100:duration=180'
+    if number == 4:
+        source = r'aevalsrc=0.12*sin(2*PI*880*t)*(0.04+0.96*lt(mod(t\,0.5)\,0.025)):s=44100:d=180'
     command = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i',
-               f'sine=frequency={220 * number}:sample_rate=44100:duration=180',
+               source,
                '-ac', '2', '-c:a', 'flac', '-metadata', 'title=' + title,
                '-metadata', 'artist=Sonora Tests', '-metadata', 'album=Letras en portada']
     if number == 1:

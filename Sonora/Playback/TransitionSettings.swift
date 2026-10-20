@@ -17,7 +17,7 @@ struct TransitionSettings: Codable, Equatable {
 
 enum TransitionOutcome: Sendable {
     case mixed(Double), notReady, tooShort, incompatible, sourceFailed, failed(String)
-    case adaptive(Double, Double), adaptiveFallback(String)
+    case adaptive(Double, Double), adaptiveEstimate(Double, Double), estimated(Double, Double), adaptiveFallback(String)
 
     var description: String {
         switch self {
@@ -28,6 +28,8 @@ enum TransitionOutcome: Sendable {
         case .sourceFailed: "Continua tras un error de lectura."
         case .failed(let message): message
         case .adaptive(let seconds, let bpm): String(format: "Mezcla alineada a %.0f BPM · %.1f s", bpm, seconds)
+        case .adaptiveEstimate(let seconds, let bpm): String(format: "Mezcla alineada por estimación · %.0f BPM · %.1f s", bpm, seconds)
+        case .estimated(let seconds, let bpm): String(format: "Fundido con tempo estimado de %.0f BPM · %.1f s", bpm, seconds)
         case .adaptiveFallback(let reason): "Crossfade: " + reason
         }
     }

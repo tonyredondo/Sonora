@@ -6,9 +6,11 @@ import SonoraCore
 struct AudioRhythmAnalysis: Sendable {
     let head: BeatGrid?
     let tail: BeatGrid?
+    let headBPM: Double?
+    let tailBPM: Double?
     let reason: String?
     let milliseconds: Double
-    static func unavailable(_ reason: String) -> Self { Self(head: nil, tail: nil, reason: reason, milliseconds: 0) }
+    static func unavailable(_ reason: String) -> Self { Self(head: nil, tail: nil, headBPM: nil, tailBPM: nil, reason: reason, milliseconds: 0) }
 }
 
 enum AudioRhythmAnalyzer {
@@ -26,7 +28,7 @@ enum AudioRhythmAnalyzer {
             let duration = Double(max(0, probe.length)) / probe.processingFormat.sampleRate, seeking = probe.supportsSeeking
             try probe.close()
             guard duration >= 8, seeking else { return .unavailable("La canción es demasiado breve o no permite analizar su final.") }
-            func window(_ seconds: Double) throws -> BeatGrid? {
+            func window(_ seconds: Double) throws -> (grid: BeatGrid?, bpm: Double?) {
                 try Task.checkCancellation()
                 let source = try AudioDecoders.open(url, cue: cue)
                 defer { try? source.close() }
@@ -54,13 +56,16 @@ enum AudioRhythmAnalyzer {
                     }
                     remaining -= Int(buffer.frameLength)
                 }
-                return RhythmAnalyzer.estimate(energy: energy, start: actualStart)
+                let grid = RhythmAnalyzer.estimateForMixing(energy: energy, start: actualStart)
+                return (grid, grid?.bpm ?? TempoEstimate.estimate(energy: energy).bpm)
             }
             let head = try window(0), tail = try window(max(0, duration - 8))
-            return AudioRhythmAnalysis(head: head, tail: tail, reason: head == nil || tail == nil ? "No se detectó un pulso estable." : nil, milliseconds: elapsed())
+            return AudioRhythmAnalysis(head: head.grid, tail: tail.grid, headBPM: head.bpm, tailBPM: tail.bpm,
+                reason: head.grid == nil || tail.grid == nil ? "No se detectó un pulso estable." : nil, milliseconds: elapsed())
         } catch is CancellationError { throw CancellationError() }
         catch {
-            return AudioRhythmAnalysis(head: nil, tail: nil, reason: error is Limit ? "El análisis alcanzó su límite de tiempo." : "No se pudo analizar el ritmo.", milliseconds: elapsed())
+            return AudioRhythmAnalysis(head: nil, tail: nil, headBPM: nil, tailBPM: nil,
+                reason: error is Limit ? "El análisis alcanzó su límite de tiempo." : "No se pudo analizar el ritmo.", milliseconds: elapsed())
         }
     }
 }

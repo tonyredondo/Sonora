@@ -10,6 +10,31 @@ public struct BeatGrid: Sendable, Equatable {
 }
 
 public enum RhythmAnalyzer {
+    /// Offbeats can cancel the fundamental in the strict estimator. Once a tempo
+    /// is available, emphasize stronger attacks to estimate a usable beat phase.
+    public static func estimateForMixing(energy: [Double], hop: Double = 0.01, start: Double = 0) -> BeatGrid? {
+        guard start.isFinite else { return nil }
+        if let grid = estimate(energy: energy, hop: hop, start: start) { return grid }
+        let tempo = TempoEstimate.estimate(energy: energy, hop: hop)
+        guard let bpm = tempo.bpm else { return nil }
+        let period = 60 / bpm
+        let onsets = energy.indices.map { max(0, energy[$0] - ($0 == 0 ? 0 : energy[$0 - 1])) }
+        guard let peak = onsets.max(), peak > 0.00001 else { return nil }
+        var real = 0.0, imaginary = 0.0, total = 0.0
+        for i in onsets.indices where onsets[i] >= peak * 0.1 {
+            let weight = pow(onsets[i] / peak, 2), phase = 2 * .pi * Double(i) * hop / period
+            real += weight * cos(phase); imaginary += weight * sin(phase); total += weight
+        }
+        let concentration = hypot(real, imaginary) / max(total, 0.000001)
+        let confidence = min(0.7, sqrt(tempo.confidence * concentration))
+        guard concentration >= 0.2, confidence >= 0.35,
+              let first = onsets.firstIndex(where: { $0 >= peak * 0.25 }) else { return nil }
+        var phase = atan2(imaginary, real) / (2 * .pi) * period
+        if phase < 0 { phase += period }
+        let anchor = start + phase + ((Double(first) * hop - phase) / period).rounded() * period
+        return BeatGrid(period: period, anchor: anchor, confidence: confidence)
+    }
+
     /// Positive changes in 10 ms RMS energy, not raw waveform correlation. A weak
     /// or ambiguous pulse is rejected; neither tempo nor phase is invented.
     public static func estimate(energy: [Double], hop: Double = 0.01, start: Double = 0) -> BeatGrid? {
@@ -74,25 +99,44 @@ public enum AdaptiveMixDecision: Sendable, Equatable {
     case fallback(String)
 }
 public enum AdaptiveMixPlanner {
+    /// A reference tempo can shape the fade even when beat phase is uncertain.
+    /// Prefer the outgoing tempo; never skip the incoming intro or claim alignment.
+    public static func estimated(outgoingBPM: Double?, incomingBPM: Double?, end: Double,
+                                 earliestStart: Double, incomingPosition: Double,
+                                 incomingDuration: Double, maximumOverlap: Double) -> AdaptiveMixPlan? {
+        guard [end, earliestStart, incomingPosition, incomingDuration, maximumOverlap].allSatisfy(\.isFinite),
+              earliestStart >= 0, incomingPosition >= 0,
+              let bpm = [outgoingBPM, incomingBPM].compactMap({ $0 })
+                .first(where: { $0.isFinite && (40...300).contains($0) }) else { return nil }
+        let maximum = min(12, maximumOverlap, end - earliestStart, (incomingDuration - incomingPosition) / 2)
+        guard maximum > 0 else { return nil }
+        let period = 60 / bpm, beats = floor(maximum / period)
+        let duration = beats >= 1 ? beats * period : maximum
+        return AdaptiveMixPlan(fadeStart: end - duration, duration: duration, incomingSkip: 0, bpm: bpm)
+    }
+
     public static func plan(outgoing: BeatGrid?, incoming: BeatGrid?, end: Double, earliestStart: Double,
                             incomingPosition: Double, incomingDuration: Double, maximumOverlap: Double) -> AdaptiveMixDecision {
-        guard let outgoing, let incoming, outgoing.confidence >= 0.72, incoming.confidence >= 0.72,
-              outgoing.period.isFinite, incoming.period.isFinite, (1.0 / 3...1).contains(outgoing.period), (1.0 / 3...1).contains(incoming.period),
+        guard let outgoing, let incoming, outgoing.confidence.isFinite, incoming.confidence.isFinite,
+              outgoing.confidence >= 0.35, incoming.confidence >= 0.35,
+              outgoing.period.isFinite, incoming.period.isFinite, (0.2...1.5).contains(outgoing.period), (0.2...1.5).contains(incoming.period),
               outgoing.anchor.isFinite, incoming.anchor.isFinite,
               [end, earliestStart, incomingPosition, incomingDuration, maximumOverlap].allSatisfy(\.isFinite) else {
             return .fallback("No se detectó un pulso estable en ambas canciones.")
         }
         let cue = incoming.nextBeat(at: incomingPosition), skip = max(0, cue - incomingPosition)
         guard skip <= 1, skip <= incoming.period * 2 else { return .fallback("La introducción no permite alinear el pulso sin recortarla demasiado.") }
-        // No time stretching: keep accumulated beat drift within 35 ms. Pairs
-        // requiring a tempo change use ordinary Crossfade instead.
+        // Estimated phases tolerate small timing differences. Shorten the overlap
+        // to bound drift instead of rejecting every pair below strict confidence.
+        let approximate = min(outgoing.confidence, incoming.confidence) < 0.72
+        let allowedDrift = approximate ? min(0.1, outgoing.period * 0.15) : 0.035
         let difference = abs(outgoing.period - incoming.period)
-        let driftLimit = difference < 0.000001 ? maximumOverlap : 0.035 * outgoing.period / difference
+        let driftLimit = difference < 0.000001 ? maximumOverlap : allowedDrift * outgoing.period / difference
         let maximum = min(12, maximumOverlap, driftLimit, max(0, (incomingDuration - cue) / 2))
         let start = outgoing.nextBeat(at: max(earliestStart, end - maximum))
         let duration = end - start
-        guard duration >= outgoing.period * 4, duration <= maximum + 0.000001 else {
-            return .fallback("Los ritmos necesitan un cambio de tempo o no dejan cuatro pulsos para mezclar.")
+        guard duration >= outgoing.period * (approximate ? 2 : 4), duration <= maximum + 0.000001 else {
+            return .fallback("Los ritmos difieren demasiado o no dejan suficientes pulsos para mezclar.")
         }
         return .matched(AdaptiveMixPlan(fadeStart: start, duration: duration, incomingSkip: skip, bpm: outgoing.bpm))
     }

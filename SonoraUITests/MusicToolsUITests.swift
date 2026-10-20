@@ -5,13 +5,14 @@ final class MusicToolsUITests: XCTestCase {
         let attachment = XCTAttachment(screenshot: app.screenshot()); attachment.name = name
         attachment.lifetime = .keepAlways; add(attachment)
     }
-    @MainActor private func openPlayer(theme: String = "noche", large: Bool = false) -> XCUIApplication {
+    @MainActor private func openPlayer(theme: String = "noche", large: Bool = false,
+                                       track: String = "02 - Letra sincronizada QA.flac", refresh: Bool = false) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["-appearance", theme, "-metadata.offline", "YES", "-metadata.endpoint", "http://127.0.0.1:9", "-playbackAdjustment", "", "-showArtworkLyrics", "YES", "-lyricTranslationSource", "auto",
                                "-UIPreferredContentSizeCategoryName", large ? "UICTContentSizeCategoryAccessibilityXXXL" : "UICTContentSizeCategoryL"]
-        app.launch(); app.openMusicSource("Sonora Lyrics QA")
-        let song = app.buttons["library-song:02 - Letra sincronizada QA.flac"]
+        app.launch(); app.openMusicSource("Sonora Lyrics QA", refresh: refresh)
+        let song = app.buttons["library-song:\(track)"]
         XCTAssertTrue(song.waitForExistence(timeout: 5)); song.tap()
         app.closeMusicSource("Sonora Lyrics QA")
         let transport = app.buttons["miniTransport"]
@@ -107,6 +108,18 @@ final class MusicToolsUITests: XCTestCase {
         audition.swipeLeft()
         app.buttons["Eliminar"].firstMatch.tap()
         XCTAssertEqual(outcome, .completed, "The marker's Escuchar action must start playback from its saved position")
+    }
+    @MainActor func testEstimatedBPMShowsANumberAndConfidence() {
+        let app = openPlayer(track: "04 - Pulso 120 BPM QA.flac", refresh: true)
+        capture("player-speaker-icon", app)
+        app.buttons["openAudioTools"].tap()
+        app.buttons["openSongAnalysis"].tap()
+        let bpm = app.staticTexts["songBPM"]
+        XCTAssertTrue(bpm.waitForExistence(timeout: 45))
+        XCTAssertTrue(bpm.label.hasSuffix(" BPM"))
+        XCTAssertNotNil(Double(bpm.label.replacingOccurrences(of: " BPM", with: "")))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Confianza")).firstMatch.exists)
+        capture("estimated-bpm-number", app)
     }
     @MainActor func testAudioToolsInLightAndLargeText() {
         let app = openPlayer(theme: "papel", large: true)

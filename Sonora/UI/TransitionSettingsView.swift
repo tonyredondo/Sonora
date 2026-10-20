@@ -36,8 +36,8 @@ struct TransitionSettingsView: View {
             }.disabled(player.transitionSettings.mode == .continuous)
             if player.transitionSettings.mode == .adaptive {
                 Section("Mezcla automática · beta") {
-                    Text("Analiza el pulso del principio y el final. Si ambos ritmos son estables y compatibles, alinea la entrada y ajusta la duración. Puede adelantar hasta un segundo el comienzo de la siguiente canción.")
-                    Text("No cambia la velocidad ni el tono. Con ritmos distintos, pistas breves o un análisis incierto, usa Crossfade. Para conciertos, elige Continua y conserva todos los comienzos y finales.")
+                    Text("Analiza el principio y el final para alinear los golpes, también con un BPM estimado. Si los tempos difieren un poco, acorta la mezcla para mantenerlos próximos. Puede adelantar hasta un segundo el comienzo de la siguiente canción.")
+                    Text("Si no puede situar los golpes, usa el BPM estimado para ajustar el fundido. Si no detecta ritmo, usa Crossfade. No cambia la velocidad ni el tono. Para conciertos, elige Continua.")
                         .foregroundStyle(.secondary)
                 }
             }

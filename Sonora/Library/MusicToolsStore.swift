@@ -145,7 +145,7 @@ enum SongAudioAnalyzer {
         }
         let total = Int(decoder.length), bucketSize = max(1, Int(ceil(Double(total) / 1024)))
         var waveform = [Float](repeating: 0, count: min(1024, total))
-        var energy: [Double] = [], windows: [BeatGrid?] = []
+        var energy: [Double] = [], windows: [TempoEstimate] = []
         var frame = 0, count = 0, sum = 0.0
         let clock = ContinuousClock(), deadline = clock.now.advanced(by: .seconds(180))
         var nextProgress = clock.now
@@ -170,7 +170,7 @@ enum SongAudioAnalyzer {
                 sum += Double(left + right) / 2; count += size; offset += size; frame += size
                 if count == 480 {
                     energy.append(sqrt(sum / 480)); sum = 0; count = 0
-                    if energy.count == 2000 { windows.append(RhythmAnalyzer.estimate(energy: energy)); energy.removeAll(keepingCapacity: true) }
+                    if energy.count == 2000 { windows.append(TempoEstimate.estimate(energy: energy)); energy.removeAll(keepingCapacity: true) }
                 }
             }
             if clock.now >= nextProgress { progress(Double(frame) / Double(total)); nextProgress = clock.now.advanced(by: .milliseconds(250)) }
@@ -178,8 +178,8 @@ enum SongAudioAnalyzer {
         // The resampler can round the advertised length up by one frame. Its
         // decoder already rejects a genuinely truncated tail.
         guard frame > 0, total - frame <= 1 else { throw CocoaError(.fileReadCorruptFile) }
-        if energy.count >= 600 { windows.append(RhythmAnalyzer.estimate(energy: energy)) }
+        if energy.count >= 600 { windows.append(TempoEstimate.estimate(energy: energy)) }
         progress(1)
-        return SongAnalysis(duration: duration, waveform: waveform, tempo: .combine(windows))
+        return SongAnalysis(duration: duration, waveform: waveform, tempo: .combine(estimates: windows))
     }
 }
