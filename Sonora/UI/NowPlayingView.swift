@@ -15,6 +15,7 @@ struct NowPlayingView: View {
     @State private var expandedPage: NowPlayingPage?
     @State private var lyricsScrollRequest = 0
     @State private var showListening = false
+    @State private var showCharacter = false
     @State private var showTimer = false
     @State private var showAnalysisIssue = false
     @State private var songAction: SongActionRequest?
@@ -25,7 +26,7 @@ struct NowPlayingView: View {
         NavigationStack {
             GeometryReader { geometry in
                 let compact = geometry.size.height < 700 || dynamicTypeSize.isAccessibilitySize
-                VStack(spacing: 12) {
+                VStack(spacing: 8) {
                     header.contentShape(.rect).simultaneousGesture(minimizeGesture)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 20)
@@ -47,7 +48,7 @@ struct NowPlayingView: View {
                     output.fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 20)
                 }
-                .padding(.vertical, 8)
+                .padding(.top, 8)
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .coordinateSpace(name: NowPlayingArtwork.coordinateSpace)
                 .offset(y:completedDrag ?? downwardDrag)
@@ -70,6 +71,13 @@ struct NowPlayingView: View {
             .sheet(item: $songAction) { SongActionSheet(player: player, request: $0) }
             .sheet(isPresented: $showListening) {
                 NavigationStack { SoundSettingsView(player: player).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { showListening = false } } } }
+            }
+            .sheet(isPresented: $showCharacter) {
+                NavigationStack {
+                    AudioCharacterView(player: player).toolbar {
+                        ToolbarItem(placement: .confirmationAction) { Button("Listo") { showCharacter = false } }
+                    }
+                }
             }
             .sheet(isPresented: $showTimer) {
                 NavigationStack { SleepTimerView(player: player).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { showTimer = false } } } }
@@ -114,7 +122,7 @@ struct NowPlayingView: View {
         }
     }
     private func trackInformation(compact: Bool) -> some View {
-        VStack(alignment: .leading, spacing: compact ? 4 : 8) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(player.currentDetails?.title ?? player.current?.displayName ?? "Sonora")
                 .font(.system(compact ? .title3 : .title, design: theme.heading, weight: .bold))
                 .lineLimit(compact ? 1 : 2).textSelection(.enabled).accessibilityIdentifier("playerTitle")
@@ -125,6 +133,7 @@ struct NowPlayingView: View {
                     .accessibilityIdentifier("playerAlbum")
             }
             .font(compact ? .subheadline : .title3).foregroundStyle(.secondary).lineLimit(1)
+            AudioCharacterTags(result: player.currentAudioCharacter, status: player.currentCharacterStatus) { showCharacter = true }
             if let format = player.currentDetails?.format {
                 HStack {
                     Text(format).lineLimit(1).layoutPriority(-1)
@@ -146,15 +155,15 @@ struct NowPlayingView: View {
             HStack(spacing: 16) {
                 Button { player.shuffle.toggle() } label: { Image(systemName: "shuffle").frame(width: 44, height: 44).playerControlGlass(in: Circle()) }
                     .foregroundStyle(player.shuffle ? theme.accent : Color.primary.opacity(0.72)).accessibilityLabel("Aleatorio").accessibilityValue(player.shuffle ? "Activado" : "Desactivado")
-                Button { player.previous() } label: { Image(systemName: "backward.end.fill").font(.system(size: 28)).frame(width: 44, height: 44).playerControlGlass(in: Circle()) }.accessibilityLabel("Anterior")
+                Button { player.previous() } label: { Image(systemName: "backward.end.fill").font(.system(size: 24)).frame(width: 44, height: 44).playerControlGlass(in: Circle()) }.accessibilityLabel("Anterior")
                 playButton
-                Button { player.next() } label: { Image(systemName: "forward.end.fill").font(.system(size: 28)).frame(width: 44, height: 44).playerControlGlass(in: Circle()) }.accessibilityLabel("Siguiente")
+                Button { player.next() } label: { Image(systemName: "forward.end.fill").font(.system(size: 24)).frame(width: 44, height: 44).playerControlGlass(in: Circle()) }.accessibilityLabel("Siguiente")
                 Button {
                     player.repeatMode = player.repeatMode == .off ? .all : player.repeatMode == .all ? .one : .off
                 } label: { Image(systemName: player.repeatMode == .one ? "repeat.1" : "repeat").frame(width: 44, height: 44).playerControlGlass(in: Circle()) }
                     .foregroundStyle(player.repeatMode == .off ? Color.primary.opacity(0.72) : theme.accent)
                     .accessibilityLabel("Repetición").accessibilityValue(player.repeatMode == .off ? "Desactivada" : player.repeatMode == .one ? "Una canción" : "Toda la cola")
-            }.font(.system(size: 20)).buttonStyle(.plain)
+            }.font(.system(size: 18)).buttonStyle(.plain)
         }
     }
     private var output: some View {
@@ -173,9 +182,9 @@ struct NowPlayingView: View {
         Button { player.togglePlayback() } label: {
             ZStack {
                 if player.isPreparing { ProgressView() }
-                else { Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 30)).contentTransition(.symbolEffect(.replace)) }
+                else { Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 27)).contentTransition(.symbolEffect(.replace)) }
             }
-            .frame(width: 76, height: 76)
+            .frame(width: 68, height: 68)
             .foregroundStyle(scheme == .dark ? Color.black : Color.white)
             .playerControlGlass(in: Circle(), prominent: true)
         }.accessibilityLabel(player.isPlaying ? "Pausar" : "Reproducir").accessibilityIdentifier("playerTransport")

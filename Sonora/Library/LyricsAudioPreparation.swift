@@ -24,7 +24,7 @@ enum LyricsAudioPreparation {
                   let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8192) else { throw LyricsSynchronizationError.unsupportedDuration }
             let pcm = try NormalizedPCMDecoder(source, format: format)
             guard pcm.length >= 16000, pcm.length <= 9_600_000 else { throw LyricsSynchronizationError.unsupportedDuration }
-            var data = header(bytes: UInt32(pcm.length * 2))
+            var data = PCM16WAV.header(bytes: UInt32(pcm.length * 2))
             data.reserveCapacity(44 + Int(pcm.length) * 2)
             var samples = [Int16](repeating: 0, count: 8192)
             while pcm.position < pcm.length {
@@ -48,7 +48,10 @@ enum LyricsAudioPreparation {
             LyricsSource.read(for: url, embedded: embedded, coordinator: lyricsCoordinator).text
         }
     }
-    private static func header(bytes: UInt32) -> Data {
+}
+
+enum PCM16WAV {
+    static func header(bytes: UInt32) -> Data {
         var result = Data("RIFF".utf8)
         func append<T: FixedWidthInteger>(_ value: T) { var v = value.littleEndian; withUnsafeBytes(of: &v) { result.append(contentsOf: $0) } }
         append(bytes + 36); result.append(Data("WAVEfmt ".utf8)); append(UInt32(16)); append(UInt16(1)); append(UInt16(1))

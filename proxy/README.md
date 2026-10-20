@@ -203,3 +203,58 @@ one bounded real request and writes the validated result for semantic inspection
 Run it only with authorization to consume the user's Codex plan. Ordinary translation
 tests cover IDs, authentication, shared capacity, cache persistence and refresh failures
 using a stub; they do not establish translation quality.
+## Local music style and mood analysis
+
+The optional `POST /v1/audio/character` endpoint runs Discogs-EffNet and four
+Essentia mood heads on this host. It accepts only canonical mono 16 kHz PCM16
+WAV, from 1 to 90 sampled seconds (at most 2,880,044 bytes). The phone samples
+three 30-second regions at 15%, 50% and 85% of the available start range, with
+one region for tracks of 30 seconds or less. No audio goes to an external AI
+provider and no original file or embedded genre is changed.
+Clips shorter than three seconds repeat locally to fill the model's minimum
+input; no synthetic audio is appended to the source file.
+
+Install the optional runtime in a **new dedicated directory**, using `uv` on
+PATH and Python 3.14 (the pinned native arm64 wheel requires macOS 15+):
+
+```sh
+python3 analysis/setup.py "$HOME/Library/Application Support/sonora-proxy/analysis"
+```
+
+Copy the printed `[audio_character]` section into the proxy configuration.
+The installer does not edit configuration or restart services. Both runtime
+paths must be absolute, or relative to the TOML file; `~/` expands to the
+server user's home. Models are downloaded from Essentia's official host and
+checked against the SHA-256 hashes embedded in `analysis/models.json`.
+Runtime dependencies are pinned to the versions used in the local validation.
+
+Enable the feature only after installing the runtime. Existing configurations
+default to disabled, and `/v1/status` advertises its version and enabled state.
+An older or disabled server is detected before the phone decodes or uploads
+samples. Authentication and redirect protection are the same as other routes.
+
+Only one TensorFlow child runs at a time (measured peak about 1.4 GiB); at most
+eight requests hold upload/queue slots, reserved before reading their bodies.
+Workers have a 60-second execution deadline and analysis, including queue time,
+has a 90-second deadline. The HTTP route also bounds upload plus analysis to
+110 seconds. Output
+is limited to 32 KiB. Processes are killed when dropped. Cached results are
+identified by sampled PCM, pipeline version and pinned model identities;
+queued duplicates reuse the first completion. `?refresh=true` replaces a
+cached result only after a valid, successful inference. The phone also keeps
+content-addressed results and unchanged-file bindings for offline use.
+
+Styles and moods are independent affinities, not accuracy percentages. The
+player shows the two strongest styles and up to two moods scoring at least
+0.6; the detail shows all returned styles and four mood affinities. Silence
+produces an explicit empty result rather than invented tags. Timing, pitch,
+speed, EQ and volume processing never enter this analysis.
+
+Essentia and its pretrained weights have separate licences. The linked model
+metadata includes noncommercial restrictions; review the [model catalogue](https://essentia.upf.edu/models.html)
+and [licensing information](https://essentia.upf.edu/licensing_information.html)
+before distributing a commercial product. Weights and Python binaries are not
+bundled with the iPhone app or committed to this repository.
+
+The model/pipeline version must change when changing sampling, preprocessing
+or weights so the phone's derived-result cache is invalidated as well.

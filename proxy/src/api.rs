@@ -28,6 +28,8 @@ struct App {
     uploads: Arc<tokio::sync::Semaphore>,
     metadata: MetadataArchive,
     interpretation: crate::interpretation::InterpretationService,
+    character: crate::audio_character::CharacterService,
+    character_uploads: Arc<tokio::sync::Semaphore>,
 }
 
 /// Must be constructed inside a Tokio runtime. Dropping the last router cancels its jobs.
@@ -41,6 +43,11 @@ pub fn router(config: Config) -> Result<Router, Error> {
     let metadata =
         MetadataArchive::open(&client.config().metadata).map_err(|_| Error::Configuration)?;
     let state = App {
+        character_uploads: Arc::new(tokio::sync::Semaphore::new(8)),
+        character: crate::audio_character::CharacterService::new(
+            client.config().audio_character.clone(),
+            client.scheduler.cache(),
+        ),
         interpretation: crate::interpretation::InterpretationService::new(
             client.config().codex.clone(),
             client.scheduler.cache(),
@@ -58,6 +65,15 @@ pub fn router(config: Config) -> Result<Router, Error> {
         )
         .route("/v1/recordings", get(search))
         .route("/v1/status", get(status))
+        .route(
+            "/v1/audio/character",
+            post(analyze_character)
+                .layer(DefaultBodyLimit::max(crate::audio_character::MAX_BYTES))
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    character_admission,
+                )),
+        )
         .route("/v1/audio/{audio_id}/metadata", get(metadata_copies))
         .route(
             "/v1/metadata-records/{id}",
@@ -117,8 +133,38 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
         })
         .collect();
     Json(json!({"providers":providers,"metadata_archive_version":1,
+        "audio_character":{"enabled":app.client.config().audio_character.enabled,"version":crate::audio_character::VERSION},
         "lyric_translation":{"enabled":app.client.config().codex.enabled,"version":1,"model":crate::translation::MODEL,"effort":crate::translation::EFFORT},
         "lyric_interpretation":{"enabled":app.client.config().codex.enabled,"model":crate::interpretation::MODEL,"effort":crate::interpretation::EFFORT}}))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CharacterParams {
+    #[serde(default)]
+    refresh: bool,
+}
+async fn character_admission(
+    State(app): State<App>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    // Reserve before extracting a body, so slow or concurrent uploads cannot
+    // allocate unbounded 3 MB buffers while the model is busy.
+    let Ok(_permit) = app.character_uploads.try_acquire() else {
+        return crate::audio_character::CharacterError::Busy.into_response();
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(110), next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => crate::audio_character::CharacterError::Timeout.into_response(),
+    }
+}
+async fn analyze_character(
+    State(app): State<App>,
+    Query(params): Query<CharacterParams>,
+    audio: bytes::Bytes,
+) -> Result<Json<crate::audio_character::Character>, crate::audio_character::CharacterError> {
+    Ok(Json(app.character.analyze(audio, params.refresh).await?))
 }
 
 async fn translate(

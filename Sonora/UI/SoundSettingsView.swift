@@ -9,11 +9,13 @@ struct SoundSettingsView: View {
                 Section {
                     NavigationLink { SongAnalysisView(player: player, track: track) } label: { Label("BPM, forma de onda y marcadores", systemImage: "waveform.path") }
                         .accessibilityIdentifier("openSongAnalysis")
+                    NavigationLink { AudioCharacterView(player: player) } label: { Label("Estilo y ambiente", systemImage: "music.note") }
+                        .accessibilityIdentifier("openAudioCharacterDetail")
                     Button("Actualizar análisis", systemImage: "arrow.clockwise") { player.refreshCurrentSongMetadata() }
                         .disabled(player.songMetadataRefresh?.isRunning == true || player.isPreparing || player.isLoading)
                         .accessibilityIdentifier("refreshSongMetadata")
                 } header: { Text("Canción actual") } footer: {
-                    Text("Recalcula BPM y onda y renueva traducción y significado. Conserva tus marcadores y correcciones. El significado requiere conexión con tu servidor y usa Codex.")
+                    Text("Recalcula BPM, onda, estilo y ambiente y renueva traducción y significado. Conserva tus marcadores y correcciones. Estilo y ambiente requieren tu servidor; traducción y significado usan Codex.")
                 }
             }
             if let refresh = player.songMetadataRefresh {

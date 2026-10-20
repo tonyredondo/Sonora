@@ -223,7 +223,7 @@ final class QueuePreparationTests: XCTestCase {
             if item.track.filename == "c.wav" { throw CocoaError(.fileReadCorruptFile) }
         }
         let preferences = QueuePreparationPreferences(defaults: defaults)
-        XCTAssertTrue(preferences.audio && preferences.translation && preferences.meaning)
+        XCTAssertTrue(preferences.audio && preferences.character && preferences.translation && preferences.meaning)
         store.update(items, preferences: preferences)
         try await wait { calls.count == 1 }
         store.update([items[3], items[2], items[3]], preferences: preferences)
@@ -256,10 +256,14 @@ final class QueuePreparationTests: XCTestCase {
         }
         let cache = MusicToolsCache(root: root.appendingPathComponent("tools"))
         let tools = MusicToolsStore(cache: cache)
-        var translated: [String] = [], interpreted: [String] = []
+        var translated: [String] = [], interpreted: [String] = [], characterized: [String] = []
         var translationGate: CheckedContinuation<Void, Never>?
         defer { translationGate?.resume() }
         let config = settings(root, defaults: defaults), http = QueueMeaningHTTP()
+        let characterValue = try JSONDecoder().decode(AudioCharacter.self, from: Data(#"{"version":"essentia-discogs-v1","silent":false,"styles":[{"label":"Rock---Indie Rock","score":0.3}],"moods":{"happy":0.2,"sad":0.8,"relaxed":0.9,"aggressive":0.1}}"#.utf8))
+        let character = AudioCharacterStore(settings: config, cache: cache) { track, _, _, _ in
+            characterized.append(track.filename); return characterValue
+        }
         let translations = LyricTranslationStore(cache: cache, settings: config) { doc, _, _, _ in
             translated.append(doc.lines[0].text)
             if translated.count == 1 { await withCheckedContinuation { translationGate = $0 } }
@@ -276,12 +280,12 @@ final class QueuePreparationTests: XCTestCase {
             return try await client.interpret(lyrics: doc.lines.map(\.text).joined(separator: "\n"), language: language,
                                               offline: cached == .cachedOnly, refresh: cached == .refresh)
         }
-        let player = PlaybackController(defaults: defaults, musicTools: tools, lyricTranslations: translations, lyricInterpretations: meanings)
+        let player = PlaybackController(defaults: defaults, musicTools: tools, lyricTranslations: translations, lyricInterpretations: meanings, audioCharacter: character)
         defer { player.stop() }
         await player.loadFolder(folderURL, autoPlay: false)
         let selected = player.current?.id
         player.seek(to: 1.25)
-        try await wait { translationGate != nil && meanings.results.count == 3 && !player.queuePreparation.isRunning }
+        try await wait { translationGate != nil && meanings.results.count == 3 && characterized.count == 3 && !player.queuePreparation.isRunning }
         XCTAssertNil(translations.results[LyricUnderstanding.translationKey(LyricsDocument(text: "[00:00]The tree grows 1\n[00:01]in the sun."), source: "auto", target: "es")], "The first request is still running while other songs can finish")
         for track in player.queue.tracks {
             XCTAssertNotNil(tools.summary(for: track, folder: try player.folderAccess(for: track)),
@@ -291,8 +295,11 @@ final class QueuePreparationTests: XCTestCase {
         try await wait { meanings.results.count == 3 && translations.results.count == 3 && !player.queuePreparation.isRunning }
         XCTAssertEqual(interpreted, ["The tree grows 1", "The tree grows 2", "The tree grows 3"])
         XCTAssertEqual(translated.count, 3)
+        XCTAssertEqual(characterized.count, 3)
         for track in player.queue.tracks {
-            XCTAssertNotNil(tools.summary(for: track, folder: try player.folderAccess(for: track)))
+            let access = try player.folderAccess(for: track)
+            let toolsResult = try XCTUnwrap(tools.summary(for: track, folder: access))
+            XCTAssertEqual(character.summary(track, folder: access, expected: toolsResult.fingerprint), characterValue)
         }
         XCTAssertEqual(player.current?.id, selected)
         XCTAssertEqual(player.currentTime, 1.25, accuracy: 0.01)
@@ -316,11 +323,20 @@ final class QueuePreparationTests: XCTestCase {
             XCTFail("Previously prepared lyrics must not be translated again")
             throw URLError(.unknown)
         }
+        let reopenedCharacter = AudioCharacterStore(settings: config, cache: cache) { _, _, _, _ in
+            XCTFail("Previously prepared tags must restore without a server or model call"); return characterValue
+        }
         let reopened = PlaybackController(defaults: defaults, musicTools: reopenedTools,
-                                          lyricTranslations: reopenedTranslations, lyricInterpretations: reopenedMeanings)
+                                          lyricTranslations: reopenedTranslations, lyricInterpretations: reopenedMeanings, audioCharacter: reopenedCharacter)
         defer { reopened.stop() }
         await reopened.restoreFolder()
         try await wait { reopenedMeanings.results.count == 3 }
+        try await wait {
+            reopened.queue.tracks.allSatisfy { track in
+                guard let access = try? reopened.folderAccess(for: track), let result = reopenedTools.summary(for: track, folder: access) else { return false }
+                return reopenedCharacter.summary(track, folder: access, expected: result.fingerprint) != nil
+            }
+        }
         XCTAssertEqual(reopened.queue.tracks.count, 3)
         XCTAssertEqual(reopened.current?.id, selected)
         XCTAssertEqual(reopened.currentTime, 1.25, accuracy: 0.01)

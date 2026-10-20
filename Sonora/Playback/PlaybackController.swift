@@ -8,6 +8,7 @@ import SonoraCore
 final class PlaybackController: NSObject {
     let equalizer: AudioEqualizer
     let musicTools: MusicToolsStore
+    let audioCharacter: AudioCharacterStore
     let lyricTranslations: LyricTranslationStore
     let lyricInterpretations: LyricInterpretationStore
     @ObservationIgnored lazy var queuePreparation = QueuePreparationStore { [weak self] item, preferences in
@@ -91,6 +92,19 @@ final class PlaybackController: NSObject {
               let result = musicTools.summary(for: track, folder: folder), result.fingerprint == currentDetails?.fingerprint else { return nil }
         return result
     }
+    var currentAudioCharacter: AudioCharacter? {
+        guard let track = current, let access = try? folderAccess(for: track), let fingerprint = currentDetails?.fingerprint else { return nil }
+        return audioCharacter.summary(track, folder: access, expected: fingerprint)
+    }
+    var currentCharacterStatus: AudioCharacterStore.Status? {
+        guard let track = current, let access = try? folderAccess(for: track) else { return nil }
+        return audioCharacter.status(track, folder: access)
+    }
+    func loadCurrentAudioCharacter(refresh: Bool = false) async throws {
+        guard let track = current, let access = try? folderAccess(for: track), let fingerprint = currentDetails?.fingerprint else { return }
+        _ = try await audioCharacter.load(track: track, folder: access, expected: fingerprint,
+                                         preparedAudio: currentSongTools, refresh: refresh)
+    }
     func retrySongAnalysis() {
         detachSongAnalysis()
         prepareCurrentSongTools()
@@ -130,6 +144,13 @@ final class PlaybackController: NSObject {
                 songMetadataRefresh?.steps[.audio] = .updated
             } catch { songMetadataRefresh?.steps[.audio] = .failed(error.localizedDescription) }
 
+            songMetadataRefresh?.steps[.character] = .running
+            do {
+                _ = try await audioCharacter.load(track: track, folder: access, expected: snapshot.fingerprint,
+                    preparedAudio: musicTools.summary(for: track, folder: access), refresh: true)
+                songMetadataRefresh?.steps[.character] = .updated
+            } catch { songMetadataRefresh?.steps[.character] = .failed(error.localizedDescription) }
+
             guard lyrics.lines.contains(where: { !$0.text.isEmpty }) else {
                 songMetadataRefresh?.steps[.translation] = .skipped("Esta canción no tiene letra.")
                 songMetadataRefresh?.steps[.meaning] = .skipped("Esta canción no tiene letra.")
@@ -156,6 +177,7 @@ final class PlaybackController: NSObject {
         prepareCurrentSongTools()
     }
     func retryQueuePreparation() {
+        audioCharacter.retry()
         lyricTranslations.retryAutomatic()
         lyricInterpretations.retryAutomatic()
         refreshQueuePreparation(retry: true)
@@ -174,7 +196,7 @@ final class PlaybackController: NSObject {
         lyricTranslations.setAutomaticQueue(preferences.translation ? items.map(\.id) : [], source: preferences.source, target: preferences.target)
         lyricInterpretations.setAutomaticQueue(preferences.meaning ? items.map(\.id) : [], language: preferences.meaningLanguage)
         queuePreparation.update(
-            preferences.audio || preferences.translation || preferences.meaning
+            preferences.audio || preferences.character || preferences.translation || preferences.meaning
                 ? items.filter { $0.track.id != current?.id } : [],
             preferences: preferences, retry: retry
         )
@@ -196,6 +218,12 @@ final class PlaybackController: NSObject {
             catch { audioIssue = error }
         }
         await prepareLyrics(lyrics, owner: item.id, preferences: preferences)
+        if preferences.character && QueuePreparationPreferences(defaults: defaults).character {
+            do {
+                _ = try await audioCharacter.load(track: item.track, folder: item.folder, expected: snapshot.fingerprint,
+                    preparedAudio: musicTools.summary(for: item.track, folder: item.folder))
+            } catch { audioIssue = audioIssue ?? error }
+        }
         if let audioIssue { throw audioIssue }
     }
     private func prepareLyrics(_ lyrics: LyricsDocument, owner: String, preferences: QueuePreparationPreferences) async {
@@ -252,8 +280,12 @@ final class PlaybackController: NSObject {
             }
             // Continue for this captured document even after the player changes
             // song. Translation errors belong to the lyric controls, not playback.
-            guard !Task.isCancelled, lyrics.lines.contains(where: { !$0.text.isEmpty }) else { return }
+            guard !Task.isCancelled else { return }
             await self?.prepareLyrics(lyrics, owner: QueuePreparationStore.Item.id(track, folder: access), preferences: preferences)
+            do {
+                _ = try await self?.audioCharacter.load(track: track, folder: access, expected: fingerprint,
+                    preparedAudio: store.summary(for: track, folder: access), cachedOnly: !preferences.character)
+            } catch { /* The shared store exposes failures in the style/ambience detail, never as a playback error. */ }
         }
     }
     var duration: Double { currentDetails?.duration ?? 0 }
@@ -371,9 +403,10 @@ final class PlaybackController: NSObject {
         return try await body(token)
     }
 
-    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil, musicTools: MusicToolsStore? = nil, lyricTranslations: LyricTranslationStore? = nil, lyricInterpretations: LyricInterpretationStore? = nil) {
+    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil, musicTools: MusicToolsStore? = nil, lyricTranslations: LyricTranslationStore? = nil, lyricInterpretations: LyricInterpretationStore? = nil, audioCharacter: AudioCharacterStore? = nil) {
         self.defaults = defaults
         self.musicTools = musicTools ?? MusicToolsStore()
+        self.audioCharacter = audioCharacter ?? AudioCharacterStore()
         self.lyricTranslations = lyricTranslations ?? LyricTranslationStore()
         self.lyricInterpretations = lyricInterpretations ?? LyricInterpretationStore()
         self.metadataArchive = metadataArchive

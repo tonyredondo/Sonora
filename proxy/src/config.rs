@@ -228,6 +228,27 @@ impl Default for CodexConfig {
     }
 }
 
+/// Optional local runtime. Relative paths are resolved alongside the TOML file.
+#[derive(Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AudioCharacterConfig {
+    pub enabled: bool,
+    pub python: PathBuf,
+    pub models: PathBuf,
+}
+impl Default for AudioCharacterConfig {
+    fn default() -> Self {
+        let root = dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("sonora-proxy/analysis");
+        Self {
+            enabled: false,
+            python: root.join(".venv/bin/python"),
+            models: root.join("models"),
+        }
+    }
+}
+
 /// Secrets are intentionally excluded from Debug and all diagnostic output.
 #[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -243,6 +264,7 @@ pub struct Config {
     pub cover_art: ProviderConfig,
     pub elevenlabs: ProviderConfig,
     pub codex: CodexConfig,
+    pub audio_character: AudioCharacterConfig,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -258,6 +280,7 @@ impl Default for Config {
             cover_art: ProviderConfig::default(),
             elevenlabs: ProviderConfig::default(),
             codex: CodexConfig::default(),
+            audio_character: AudioCharacterConfig::default(),
         }
     }
 }
@@ -294,6 +317,18 @@ impl Config {
         } else if config.metadata.path.is_relative() {
             config.metadata.path = directory.join(&config.metadata.path);
         }
+        for path in [
+            &mut config.audio_character.python,
+            &mut config.audio_character.models,
+        ] {
+            if let Ok(suffix) = path.strip_prefix("~") {
+                *path = dirs::home_dir()
+                    .ok_or(ConfigError::Invalid("home directory is unavailable"))?
+                    .join(suffix);
+            } else if path.is_relative() {
+                *path = directory.join(&*path);
+            }
+        }
         config.validate()?;
         Ok(config)
     }
@@ -308,6 +343,11 @@ impl Config {
     }
     pub fn validate(&self) -> Result<(), ConfigError> {
         let invalid = ConfigError::Invalid;
+        if self.audio_character.python.as_os_str().is_empty()
+            || self.audio_character.models.as_os_str().is_empty()
+        {
+            return Err(invalid("local analysis paths must not be empty"));
+        }
         if self.codex.binary.as_os_str().is_empty()
             || (self.codex.binary.is_relative() && self.codex.binary.components().count() != 1)
         {

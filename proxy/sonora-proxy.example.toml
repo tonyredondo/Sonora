@@ -69,3 +69,8 @@ ttl_seconds = 31536000
 [codex]
 enabled = false
 binary = "codex" # Use an absolute path for launchd.
+[audio_character]
+# Optional local Essentia runtime, installed separately with analysis/setup.py.
+enabled = false
+# python = "/absolute/path/to/analysis/.venv/bin/python"
+# models = "/absolute/path/to/analysis/models"
