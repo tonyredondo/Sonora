@@ -86,7 +86,7 @@ All JSON provider responses use an envelope with `provider`, `sources` (upstream
 | POST | `/v1/lyrics/align` | Multipart `file` (canonical WAV) and UTF-8 `text`; returns validated synchronized LRC and audio/text SHA-256 digests |
 | POST | `/v1/lyrics/transcribe` | Multipart `file` (canonical WAV); returns validated Scribe v2 text, line-level LRC and audio SHA-256; valid no-voice results contain empty text |
 | POST | `/v1/lyrics/translate` | JSON `lines` (`id`, `text`), `source_language` and `target_language`; full-context Codex translation with one result per source ID |
-| POST | `/v1/lyrics/interpret` | JSON `lyrics` and `language`; cached literary interpretation via the host user's Codex session, GPT-6-Astra at `xhigh` |
+| POST | `/v1/lyrics/interpret` | JSON `lyrics`, `language` and optional song `context`; cached literary interpretation via the host user's Codex session, GPT-6-Astra at `xhigh` |
 | POST | `/v1/identify` | JSON `fingerprint` and `duration`; AcoustID recording IDs and scores |
 | GET | `/v1/artwork/{release_mbid}` | Front artwork at the provider's 500-pixel variant; downloaded only when requested |
 | POST | `/v1/jobs` | Create a bounded batch; returns 202 and a `Location` to poll |
@@ -157,8 +157,15 @@ No API key is required. Each new analysis consumes the account's Codex allowance
 this does not turn a ChatGPT login into an API key.
 
 The protected `/v1/lyrics/interpret` route accepts up to 64 KiB of lyrics and one
-response language (`es`, `en`, `fr`, `de`, `it`, `pt`). Only the text is sent, with
-instructions to distinguish interpretation from confirmed author intent. Results
+response language (`es`, `en`, `fr`, `de`, `it`, `pt`). The optional `context` object
+contains `title`, `artist`, `album` (up to 4096 UTF-8 bytes each), `styles` (up to
+two labels of 200 bytes) and `moods` (up to two of `happy`, `sad`, `relaxed`,
+`aggressive`). Missing context remains valid for older clients. The app supplies
+the same prominent style/mood labels shown in the player, after preparing the
+available audio analysis. Unavailable or disabled analysis does not prevent a
+reading based on the song metadata and lyrics. No audio is sent to Codex.
+All fields are treated as data; tags are explicitly described as estimates,
+with lyrics as primary evidence and no claim of confirmed author intent. Results
 identify their model and effort. The iPhone labels them as AI interpretations.
 
 The protected `/v1/lyrics/translate` route accepts up to 2000 nonempty lines and
@@ -178,6 +185,8 @@ Cancelling the owning task stops its child process. Requests for the same cache 
 wait on that key before acquiring a process slot; ordinary callers reuse the first
 successful cached result, while explicit refreshes run in order for that key.
 Text, language, model, effort and prompt version form the SHA-256 cache identity.
+Interpretation also includes the song context, so metadata/tag changes cannot
+reuse another reading; lyric timestamp edits still reuse the cached meaning.
 Translations and interpretations share the existing bounded SQLite cache and are reusable until
 eviction, including when Codex is disabled. Errors are never cached as results.
 The iPhone keeps its own exact-input cache for offline viewing.

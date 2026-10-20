@@ -1,6 +1,34 @@
 import CryptoKit
 import Foundation
 
+/// Song identity and estimated audio tags, supplied as context rather than facts
+/// about the author's intent. Timestamps are deliberately absent.
+public struct LyricsInterpretationContext: Codable, Sendable, Equatable {
+    public let title: String
+    public let artist: String
+    public let album: String
+    public let styles: [String]
+    public let moods: [String]
+    public init(title: String = "", artist: String = "", album: String = "", styles: [String] = [], moods: [String] = []) {
+        self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.artist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.album = album.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.styles = styles; self.moods = moods
+    }
+    public var isValid: Bool {
+        [title, artist, album].allSatisfy { $0.utf8.count <= 4096 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }
+            && styles.count <= 2 && styles.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && $0.utf8.count <= 200 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }
+            && moods.count <= 2 && moods.allSatisfy { ["happy", "sad", "relaxed", "aggressive"].contains($0) }
+    }
+    public var cacheIdentity: String {
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        // This value contains only strings and arrays of strings.
+        let bytes = try! encoder.encode(self)
+        return SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
 public struct LyricsInterpretation: Codable, Sendable, Equatable {
     public let explanation: String
     public let model: String
@@ -30,9 +58,10 @@ public enum LyricsInterpretationError: LocalizedError {
     }
 }
 
-/// Callers choose whether to generate or read offline. Text, language and prompt version
+/// Callers choose whether to generate or read offline. Text, song context, language and prompt version
 /// identify reusable results; credentials never participate in the cache key.
 public actor LyricsInterpretationClient {
+    public static let version = "codex-meaning-v2"
     private let connection: MetadataProxyConnection
     private let cache: MetadataLookupCache
     private let transport: any MetadataLookupTransport
@@ -41,14 +70,14 @@ public actor LyricsInterpretationClient {
         self.connection = connection; self.cache = cache; self.transport = transport
     }
     /// Refresh bypasses both caches, replacing the saved result only after success.
-    public func interpret(lyrics: String, language: String, offline: Bool, refresh: Bool = false) async throws -> LyricsInterpretation {
+    public func interpret(lyrics: String, language: String, context: LyricsInterpretationContext = .init(), offline: Bool, refresh: Bool = false) async throws -> LyricsInterpretation {
         guard !lyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, lyrics.utf8.count <= 65536,
-              ["es", "en", "fr", "de", "it", "pt"].contains(language) else { throw MetadataLookupError.invalidSearch }
-        struct Input: Encodable { let lyrics: String; let language: String; var refresh: Bool? }
+              context.isValid, ["es", "en", "fr", "de", "it", "pt"].contains(language) else { throw MetadataLookupError.invalidSearch }
+        struct Input: Encodable { let lyrics: String; let language: String; let context: LyricsInterpretationContext; var refresh: Bool? }
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
-        let body = try encoder.encode(Input(lyrics: lyrics, language: language))
+        let body = try encoder.encode(Input(lyrics: lyrics, language: language, context: context))
         var request = try connection.request(path: "v1/lyrics/interpret")
-        let key = "codex-meaning-v1:gpt-6-astra:xhigh:\(connection.endpoint.absoluteString):" + SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+        let key = "\(Self.version):gpt-6-astra:xhigh:\(connection.endpoint.absoluteString):" + SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
         try Task.checkCancellation()
         if !refresh, let old = try await cache.read(key: key), old.status == 200,
            let value = try? JSONDecoder().decode(LyricsInterpretation.self, from: old.data), value.isValid {
@@ -56,7 +85,7 @@ public actor LyricsInterpretationClient {
         }
         guard !offline else { throw MetadataLookupError.notCached }
         request.httpMethod = "POST"
-        request.httpBody = refresh ? try encoder.encode(Input(lyrics: lyrics, language: language, refresh: true)) : body
+        request.httpBody = refresh ? try encoder.encode(Input(lyrics: lyrics, language: language, context: context, refresh: true)) : body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let response = try await transport.send(request)
         try Task.checkCancellation()

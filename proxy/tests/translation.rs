@@ -85,6 +85,7 @@ fn duplicate_translation_reuses_work_while_meaning_runs_and_cache_survives_resta
             service.interpret(InterpretationInput {
                 lyrics: "A tree grows.".into(),
                 language: "es".into(),
+                context: Default::default(),
                 refresh: false
             })
         );
@@ -137,6 +138,7 @@ async fn four_codex_processes_share_capacity_across_tools_without_duplicate_work
                     .interpret(InterpretationInput {
                         lyrics: format!("Song {index}"),
                         language: "es".into(),
+                        context: Default::default(),
                         refresh: false,
                     })
                     .await

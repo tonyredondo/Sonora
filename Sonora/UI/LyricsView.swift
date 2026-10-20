@@ -20,6 +20,8 @@ struct LyricsView: View {
     @State private var offset: Double = 0
     @State private var loadedLyrics: LyricsDocument?
     @State private var loadedTrackID: String?
+    @State private var meaningSnapshot: MetadataSnapshot?
+    @State private var meaningFolder: ScopedFolder?
     @State private var title = ""
     @State private var artist = ""
     @State private var issue: String?
@@ -39,6 +41,12 @@ struct LyricsView: View {
     }
     @State private var repair: RepairRequest?
     private var selectedTrack: AudioTrack? { track ?? player.current }
+    private var interpretationContext: LyricsInterpretationContext {
+        guard let track = selectedTrack, loadedTrackID == track.id, let snapshot = meaningSnapshot else {
+            return isCurrent ? player.currentInterpretationContext : .init()
+        }
+        return player.interpretationContext(for: track, folder: meaningFolder, values: snapshot.values, expected: snapshot.fingerprint)
+    }
     private var isCurrent: Bool { selectedTrack?.id == player.current?.id }
     private var lyrics: LyricsDocument {
         if loadedTrackID == selectedTrack?.id, let loadedLyrics { return loadedLyrics }
@@ -177,7 +185,15 @@ struct LyricsView: View {
             }
             .sheet(item: $understanding) { tool in
                 let sourceKey = LyricUnderstanding.sourceKey(lyrics)
-                LyricUnderstandingView(document: lyrics, translation: visibleTranslation, translations: player.lyricTranslations, interpretations: player.lyricInterpretations, initialMode: tool.rawValue) { value in
+                let context = interpretationContext, source = selectedTrack
+                let folder = meaningFolder ?? source.flatMap { try? player.folderAccess(for: $0) }
+                let values = meaningSnapshot?.values ?? (isCurrent ? player.currentDetails?.tags : nil) ?? [:]
+                let fingerprint = meaningSnapshot?.fingerprint ?? (isCurrent ? player.currentDetails?.fingerprint : nil)
+                LyricUnderstandingView(document: lyrics, translation: visibleTranslation, translations: player.lyricTranslations, interpretations: player.lyricInterpretations,
+                                       context: context, contextSourceID: (source?.id ?? "") + ":" + (folder?.url.absoluteString ?? ""), prepareContext: {
+                    guard let source, let folder, let fingerprint else { return context }
+                    return await player.prepareInterpretationContext(for: source, folder: folder, values: values, expected: fingerprint)
+                }, initialMode: tool.rawValue) { value in
                     guard sourceKey == LyricUnderstanding.sourceKey(lyrics) else { return }
                     showTranslation = value != nil
                     Task { await player.lyricTranslations.restore(lyrics, source: translationSource, target: translationTarget) }
@@ -226,16 +242,22 @@ struct LyricsView: View {
     private func load() async {
         guard let track = selectedTrack else { return }
         issue = nil
-        if loadedTrackID != track.id { title = track.displayName; artist = ""; loadedLyrics = nil }
+        if loadedTrackID != track.id { title = track.displayName; artist = ""; loadedLyrics = nil; meaningSnapshot = nil; meaningFolder = nil }
         do {
+            let folder = try player.folderAccess(for: track)
             let snapshot = try await player.readMetadata(for: track)
-            let text = try await LyricsAudioPreparation.existingText(track: track, folder: player.folderAccess(for: track),
+            let text = try await LyricsAudioPreparation.existingText(track: track, folder: folder,
                                                                    embedded: snapshot.values[.lyrics] ?? "", expected: snapshot.fingerprint)
             try Task.checkCancellation()
             title = snapshot.values[.title] ?? track.displayName; artist = snapshot.values[.artist] ?? ""
             loadedLyrics = LyricsDocument(text: text); loadedTrackID = track.id
+            meaningSnapshot = snapshot
+            meaningFolder = folder
             offset = UserDefaults.standard.double(forKey: "lyricsOffset.\(track.id)")
         } catch is CancellationError { }
-        catch { issue = error.localizedDescription }
+        catch {
+            guard !Task.isCancelled, selectedTrack?.id == track.id else { return }
+            issue = error.localizedDescription
+        }
     }
 }

@@ -44,7 +44,7 @@ final class QueuePreparationTests: XCTestCase {
         var calls: [String] = []
         var pending: [String: CheckedContinuation<LyricsInterpretation, Never>] = [:]
         defer { for continuation in pending.values { continuation.resume(returning: response) } }
-        let store = LyricInterpretationStore(settings: settings(root, defaults: defaults), requests: CodexRequestPool()) { doc, _, mode in
+        let store = LyricInterpretationStore(settings: settings(root, defaults: defaults), requests: CodexRequestPool()) { doc, _, _, mode in
             if mode == .cachedOnly { throw MetadataLookupError.notCached }
             let text = doc.lines[0].text
             calls.append(text)
@@ -78,7 +78,7 @@ final class QueuePreparationTests: XCTestCase {
         let old = try value("Old reading."), updated = try value("Updated reading.")
         var calls: [LyricInterpretationStore.RequestMode] = []
         var pending: CheckedContinuation<LyricsInterpretation, Error>?
-        let store = LyricInterpretationStore(settings: settings(root, defaults: defaults)) { _, _, mode in
+        let store = LyricInterpretationStore(settings: settings(root, defaults: defaults)) { _, _, _, mode in
             if mode == .cachedOnly { throw MetadataLookupError.notCached }
             calls.append(mode)
             return try await withCheckedThrowingContinuation { pending = $0 }
@@ -114,7 +114,7 @@ final class QueuePreparationTests: XCTestCase {
         let config = settings(root, defaults: defaults); config.offline = true
         let response = try value()
         var calls = 0, fail = true
-        let store = LyricInterpretationStore(settings: config) { _, _, cached in
+        let store = LyricInterpretationStore(settings: config) { _, _, _, cached in
             if cached == .cachedOnly { throw MetadataLookupError.notCached }
             calls += 1
             if fail { throw URLError(.cannotConnectToHost) }
@@ -153,12 +153,34 @@ final class QueuePreparationTests: XCTestCase {
         XCTAssertNotEqual(store.key(a, language: "es"), LyricInterpretationStore(settings: other).key(a, language: "es"))
     }
 
+    func testMeaningKeepsSongContextInTheJobAndReusesRetimedLyrics() async throws {
+        let (root, suite, defaults) = try scope()
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        var contexts: [LyricsInterpretationContext] = []
+        let store = LyricInterpretationStore(settings: settings(root, defaults: defaults)) { _, _, context, mode in
+            if mode == .cachedOnly { throw MetadataLookupError.notCached }
+            contexts.append(context)
+            return try self.value(context.title + ":" + context.moods.joined(separator: ","))
+        }
+        let lyrics = LyricsDocument(text: "[00:01]Remember me"), moved = LyricsDocument(text: "[00:04]Remember me")
+        let a = LyricsInterpretationContext(title: "November", artist: "Love Division", album: "November Songs", styles: ["Rock---Indie Rock"], moods: ["sad"])
+        let b = LyricsInterpretationContext(title: "Ghosts", artist: "Other artist", album: "Other album", styles: ["Pop---Indie Pop"], moods: ["happy"])
+        let first = try await store.load(lyrics, language: "es", context: a)
+        let retimed = try await store.load(moved, language: "es", context: a)
+        let second = try await store.load(lyrics, language: "es", context: b)
+        XCTAssertEqual(first, retimed)
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(contexts, [a, b])
+        XCTAssertEqual(store.results[store.key(moved, language: "es", context: a)], first)
+        XCTAssertEqual(store.results[store.key(lyrics, language: "es", context: b)], second)
+    }
+
     func testDisablingMeaningDuringAFailedRequestDoesNotRetryItOnReconnect() async throws {
         let (root, suite, defaults) = try scope()
         defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
         let response = try value()
         var calls = 0, pending: CheckedContinuation<LyricsInterpretation, Error>?
-        let store = LyricInterpretationStore(settings: settings(root, defaults: defaults)) { _, _, cached in
+        let store = LyricInterpretationStore(settings: settings(root, defaults: defaults)) { _, _, _, cached in
             if cached == .cachedOnly { throw MetadataLookupError.notCached }
             calls += 1
             if calls == 1 { return try await withCheckedThrowingContinuation { pending = $0 } }
@@ -184,7 +206,7 @@ final class QueuePreparationTests: XCTestCase {
         let response = try value()
         var calls: [String] = [], pending: [String: CheckedContinuation<LyricsInterpretation, Never>] = [:]
         defer { for continuation in pending.values { continuation.resume(returning: response) } }
-        let store = LyricInterpretationStore(settings: settings(root, defaults: defaults), requests: CodexRequestPool()) { doc, lang, mode in
+        let store = LyricInterpretationStore(settings: settings(root, defaults: defaults), requests: CodexRequestPool()) { doc, lang, _, mode in
             if mode == .cachedOnly { throw MetadataLookupError.notCached }
             let id = doc.lines[0].text + ":" + lang
             calls.append(id)
@@ -258,11 +280,14 @@ final class QueuePreparationTests: XCTestCase {
         let tools = MusicToolsStore(cache: cache)
         var translated: [String] = [], interpreted: [String] = [], characterized: [String] = []
         var translationGate: CheckedContinuation<Void, Never>?
-        defer { translationGate?.resume() }
+        var characterGate: CheckedContinuation<Void, Never>?
+        defer { translationGate?.resume(); characterGate?.resume() }
         let config = settings(root, defaults: defaults), http = QueueMeaningHTTP()
         let characterValue = try JSONDecoder().decode(AudioCharacter.self, from: Data(#"{"version":"essentia-discogs-v1","silent":false,"styles":[{"label":"Rock---Indie Rock","score":0.3}],"moods":{"happy":0.2,"sad":0.8,"relaxed":0.9,"aggressive":0.1}}"#.utf8))
         let character = AudioCharacterStore(settings: config, cache: cache) { track, _, _, _ in
-            characterized.append(track.filename); return characterValue
+            characterized.append(track.filename)
+            if characterized.count == 1 { await withCheckedContinuation { characterGate = $0 } }
+            return characterValue
         }
         let translations = LyricTranslationStore(cache: cache, settings: config) { doc, _, _, _ in
             translated.append(doc.lines[0].text)
@@ -271,18 +296,25 @@ final class QueuePreparationTests: XCTestCase {
         }
         let connection = try MetadataProxyConnection(endpoint: config.endpoint, token: "fixture-only")
         let client = LyricsInterpretationClient(connection: connection, cache: config.cache, transport: http)
-        let meanings = LyricInterpretationStore(settings: config) { doc, language, cached in
+        let meanings = LyricInterpretationStore(settings: config) { doc, language, context, cached in
             if cached != .cachedOnly {
+                XCTAssertEqual(context.styles, ["Rock---Indie Rock"])
+                XCTAssertEqual(context.moods, ["sad", "relaxed"])
+                XCTAssertFalse(context.title.isEmpty)
+                XCTAssertFalse(characterized.isEmpty, "Meaning must wait for its audio tags")
                 XCTAssertEqual(translations.statuses[LyricUnderstanding.translationKey(doc, source: "auto", target: "es")]?.busy == true || translations.results[LyricUnderstanding.translationKey(doc, source: "auto", target: "es")] != nil, true,
                                "Local preparation schedules both remote tools without waiting for translation")
                 interpreted.append(doc.lines[0].text)
             }
             return try await client.interpret(lyrics: doc.lines.map(\.text).joined(separator: "\n"), language: language,
-                                              offline: cached == .cachedOnly, refresh: cached == .refresh)
+                                              context: context, offline: cached == .cachedOnly, refresh: cached == .refresh)
         }
         let player = PlaybackController(defaults: defaults, musicTools: tools, lyricTranslations: translations, lyricInterpretations: meanings, audioCharacter: character)
         defer { player.stop() }
         await player.loadFolder(folderURL, autoPlay: false)
+        try await wait { characterGate != nil }
+        XCTAssertTrue(interpreted.isEmpty, "Meaning must not start while tags are still preparing")
+        characterGate?.resume(); characterGate = nil
         let selected = player.current?.id
         player.seek(to: 1.25)
         try await wait { translationGate != nil && meanings.results.count == 3 && characterized.count == 3 && !player.queuePreparation.isRunning }
@@ -343,8 +375,17 @@ final class QueuePreparationTests: XCTestCase {
         XCTAssertFalse(reopened.isPlaying)
         let remoteCalls = await http.calls
         XCTAssertEqual(remoteCalls, 3)
+        let selectedTrack = try XCTUnwrap(player.current), snapshot = try await player.readMetadata(for: selectedTrack)
+        let namedContext = player.interpretationContext(for: selectedTrack, folder: try player.folderAccess(for: selectedTrack),
+            values: [.title: "November", .artist: "Love Division", .album: "November Songs"], expected: snapshot.fingerprint)
+        XCTAssertEqual(namedContext.title, "November")
+        XCTAssertEqual(namedContext.artist, "Love Division")
+        XCTAssertEqual(namedContext.album, "November Songs")
+        XCTAssertEqual(namedContext.styles, ["Rock---Indie Rock"])
+        XCTAssertEqual(namedContext.moods, ["sad", "relaxed"])
         // A later enqueue must trigger preparation too. This copy deliberately
-        // shares audio/text identities, so it needs no new analysis or request.
+        // shares audio/text identities, so audio and translation are reusable.
+        // The different title still requires its own meaning context.
         try FileManager.default.copyItem(at: folderURL.appendingPathComponent("3.wav"), to: folderURL.appendingPathComponent("4.wav"))
         try FileManager.default.copyItem(at: folderURL.appendingPathComponent("1.lrc"), to: folderURL.appendingPathComponent("4.lrc"))
         let fourth = try XCTUnwrap(AudioTrack(relativePath: "4.wav"))

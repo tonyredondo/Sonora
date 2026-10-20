@@ -110,30 +110,35 @@ final class MusicToolsIntegrationTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
         for key in ["prepareQueueAudio", "prepareQueueTranslation", "prepareQueueMeaning"] { defaults.set(false, forKey: key) }
         let originalFolder = root.appendingPathComponent("original"), otherFolder = root.appendingPathComponent("other")
-        let url = try fixture(originalFolder); _ = try fixture(otherFolder, seconds: 12)
+        let url = try fixture(originalFolder), otherURL = try fixture(otherFolder, seconds: 12)
+        try FileManager.default.moveItem(at: otherURL, to: otherFolder.appendingPathComponent("other.wav"))
         let text = "[00:01]A tree grows.\n[00:04]Spring returns."
         try text.write(to: url.deletingPathExtension().appendingPathExtension("lrc"), atomically: true, encoding: .utf8)
         let document = LyricsDocument(text: text), fingerprint = try FileFingerprint(url)
         let cache = MusicToolsCache(root: root.appendingPathComponent("derived")), gate = AnalysisGate()
         gate.open(); defer { gate.open() }
         let tools = MusicToolsStore(cache: cache, analyze: { try gate.analyze($0, $1, $2) })
+        let characterValue = try JSONDecoder().decode(AudioCharacter.self, from: Data(#"{"version":"essentia-discogs-v1","silent":false,"styles":[{"label":"Rock---Indie Rock","score":0.3}],"moods":{"happy":0.2,"sad":0.8,"relaxed":0.9,"aggressive":0.1}}"#.utf8))
+        let character = AudioCharacterStore(cache: cache) { _, _, _, _ in characterValue }
         var translationCalls = 0, meaningCalls = 0, failLyrics = false
+        var expectedContext: LyricsInterpretationContext?
         let translations = LyricTranslationStore(cache: cache) { doc, _, _, _ in
             XCTAssertEqual(doc, document)
             translationCalls += 1
             if failLyrics { throw URLError(.cannotConnectToHost) }
             return try LyricTranslation(lines: [0: "Árbol \(translationCalls)", 1: "Vuelve la primavera."], document: doc)
         }
-        let meanings = LyricInterpretationStore { doc, _, mode in
+        let meanings = LyricInterpretationStore { doc, _, context, mode in
             if mode == .cachedOnly { throw MetadataLookupError.notCached }
             XCTAssertEqual(doc, document)
+            XCTAssertEqual(context, expectedContext, "A refresh must retain the original song's metadata after selection changes")
             meaningCalls += 1
             if meaningCalls > 1 { XCTAssertEqual(mode, .refresh) }
             if failLyrics { throw URLError(.cannotConnectToHost) }
             let data = try JSONSerialization.data(withJSONObject: ["explanation": "Reading \(meaningCalls)", "model": "gpt-6-astra", "effort": "xhigh"])
             return try JSONDecoder().decode(LyricsInterpretation.self, from: data)
         }
-        let player = PlaybackController(defaults: defaults, musicTools: tools, lyricTranslations: translations, lyricInterpretations: meanings)
+        let player = PlaybackController(defaults: defaults, musicTools: tools, lyricTranslations: translations, lyricInterpretations: meanings, audioCharacter: character)
         defer { player.stop() }
         await player.loadFolder(originalFolder, autoPlay: false)
         let track = try XCTUnwrap(player.current), folder = try player.folderAccess(for: track)
@@ -141,7 +146,11 @@ final class MusicToolsIntegrationTests: XCTestCase {
         let marker = SongMarker(time: 8, title: "Personal")
         _ = try await tools.save(SongAnnotations(bpm: 180, markers: [marker]), for: track, folder: folder, result: before)
         _ = try await translations.load(document, source: "auto", target: "es")
-        _ = try await meanings.load(document, language: "es")
+        let snapshot = try await player.readMetadata(for: track)
+        expectedContext = await player.prepareInterpretationContext(for: track, folder: folder, values: snapshot.values, expected: snapshot.fingerprint)
+        let context = try XCTUnwrap(expectedContext)
+        XCTAssertEqual(context.styles, ["Rock---Indie Rock"])
+        _ = try await meanings.load(document, language: "es", context: context)
         player.seek(to: 4.25); player.setPlaybackAdjustment(rate: 1.25, semitones: 2)
         gate.close()
         player.refreshCurrentSongMetadata(); player.refreshCurrentSongMetadata()
@@ -174,7 +183,7 @@ final class MusicToolsIntegrationTests: XCTestCase {
         XCTAssertEqual(translationCalls, 3); XCTAssertEqual(meaningCalls, 3)
         let preserved = try await translations.load(document, source: "auto", target: "es")
         XCTAssertEqual(preserved.lines[0], "Árbol 2")
-        XCTAssertEqual(meanings.results[meanings.key(document, language: "es")]?.explanation, "Reading 2")
+        XCTAssertEqual(meanings.results[meanings.key(document, language: "es", context: context)]?.explanation, "Reading 2")
 
         await player.loadFolder(otherFolder, autoPlay: false)
         player.refreshCurrentSongMetadata()
@@ -609,7 +618,7 @@ final class MusicToolsIntegrationTests: XCTestCase {
         let document = LyricsDocument(text: "A tree grows")
         let value = try JSONDecoder().decode(LyricsInterpretation.self, from: Data(#"{"explanation":"A possible reading.","model":"gpt-6-astra","effort":"xhigh"}"#.utf8))
         var requests: [String] = [], cachedLanguages: Set<String> = [], fail = false
-        let store = LyricInterpretationStore { _, language, cachedOnly in
+        let store = LyricInterpretationStore { _, language, _, cachedOnly in
             if cachedOnly == .cachedOnly {
                 guard cachedLanguages.contains(language) else { throw MetadataLookupError.notCached }
             } else {
@@ -644,7 +653,7 @@ final class MusicToolsIntegrationTests: XCTestCase {
         let document = LyricsDocument(text: "A tree grows")
         let value = try JSONDecoder().decode(LyricsInterpretation.self, from: Data(#"{"explanation":"Old language.","model":"gpt-6-astra","effort":"xhigh"}"#.utf8))
         var pending: CheckedContinuation<LyricsInterpretation, Never>?
-        let store = LyricInterpretationStore { _, _, cachedOnly in
+        let store = LyricInterpretationStore { _, _, _, cachedOnly in
             if cachedOnly == .cachedOnly { throw MetadataLookupError.notCached }
             return await withCheckedContinuation { pending = $0 }
         }

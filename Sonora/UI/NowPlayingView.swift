@@ -62,8 +62,14 @@ struct NowPlayingView: View {
             .sheet(isPresented: $showQueue) { QueueView(player: player) }
             .sheet(item: $expandedPage, onDismiss: { lyricsScrollRequest += 1 }) { page in
                 if page == .meaning, let lyrics = player.currentDetails?.lyrics {
+                    let context = player.currentInterpretationContext, track = player.current, details = player.currentDetails
+                    let folder = track.flatMap { try? player.folderAccess(for: $0) }
                     LyricUnderstandingView(document: lyrics, translation: nil, translations: player.lyricTranslations,
-                                           interpretations: player.lyricInterpretations) { _ in }
+                                           interpretations: player.lyricInterpretations, context: context,
+                                           contextSourceID: (track?.id ?? "") + ":" + (folder?.url.absoluteString ?? ""), prepareContext: {
+                        guard let track, let folder, let fingerprint = details?.fingerprint else { return context }
+                        return await player.prepareInterpretationContext(for: track, folder: folder, values: details?.tags ?? [:], expected: fingerprint)
+                    }) { _ in }
                 } else {
                     LyricsView(player: player)
                 }

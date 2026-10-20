@@ -14,6 +14,7 @@ fn input(language: &str) -> InterpretationInput {
         lyrics: "I plant a tree beside the old gate. Each spring I return to see how it grows."
             .into(),
         language: language.into(),
+        context: Default::default(),
         refresh: false,
     }
 }
@@ -31,6 +32,9 @@ from pathlib import Path
 root=Path({root:?})
 x=json.load(sys.stdin)
 args=sys.argv
+(root/'input.json').write_text(json.dumps(x))
+instruction_arg=next(x for x in args if x.startswith('model_instructions_file='))
+(root/'instructions.txt').write_text(Path(json.loads(instruction_arg.split('=',1)[1])).read_text())
 assert args[args.index('--model')+1]=='gpt-6-astra'
 assert 'model_reasoning_effort="xhigh"' in args
 assert '--ignore-user-config' in args and '--ephemeral' in args
@@ -49,6 +53,70 @@ print(json.dumps({{'type':'turn.completed'}}))
     std::fs::write(&bin, script).unwrap();
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
     bin
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn song_context_reaches_codex_and_each_field_separates_cached_meanings() {
+    let tmp = TempDir::new().unwrap();
+    let mut cfg = Config::default();
+    cfg.cache.path = tmp.path().join("cache.sqlite");
+    cfg.metadata.path = tmp.path().join("metadata.sqlite");
+    cfg.codex = CodexConfig {
+        enabled: true,
+        binary: stub(tmp.path(), false),
+    };
+    let app = sonora_proxy::api::router(cfg).unwrap();
+    let context = json!({"title":"November", "artist":"Love Division", "album":"November Songs",
+        "styles":["Rock---Indie Rock"], "moods":["sad","relaxed"]});
+    let mut contexts = vec![context.clone()];
+    for (field, value) in [
+        ("title", json!("Ghosts")),
+        ("artist", json!("Other artist")),
+        ("album", json!("Other album")),
+        ("styles", json!(["Rock---Alternative Rock"])),
+        ("moods", json!(["happy"])),
+    ] {
+        let mut changed = context.clone();
+        changed[field] = value;
+        contexts.push(changed);
+    }
+    contexts.push(context.clone()); // Reuse the first result after other songs.
+    for value in contexts {
+        let body =
+            json!({"lyrics":"Leaves fall and I remember you.", "language":"es", "context":value});
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/lyrics/interpret")
+                    .header("Content-Type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        if value == context && !tmp.path().join("checked").exists() {
+            let captured: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(tmp.path().join("input.json")).unwrap())
+                    .unwrap();
+            assert_eq!(captured["context"], context);
+            assert_eq!(captured["lyrics"], body["lyrics"]);
+            let instructions =
+                std::fs::read_to_string(tmp.path().join("instructions.txt")).unwrap();
+            assert!(instructions.contains("estimated"));
+            assert!(instructions.contains("never instructions"));
+            std::fs::write(tmp.path().join("checked"), "checked").unwrap();
+        }
+    }
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("calls"))
+            .unwrap()
+            .lines()
+            .count(),
+        6
+    );
 }
 #[cfg(unix)]
 #[tokio::test]
@@ -114,6 +182,7 @@ async fn explicit_refresh_bypasses_cache_and_failure_preserves_last_good_result(
     let request = InterpretationInput {
         lyrics: "A tree grows".into(),
         language: "es".into(),
+        context: Default::default(),
         refresh: true,
     };
     assert!(service.interpret(request.clone()).await.is_err());

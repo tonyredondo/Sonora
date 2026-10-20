@@ -31,7 +31,7 @@ enum LyricUnderstanding {
         let connection = try MetadataProxyConnection(endpoint: settings.endpoint, token: settings.savedToken())
         return try await LyricsTranslationClient(connection: connection).translate(document, source: source, target: target, refresh: refresh)
     }
-    @MainActor static func interpret(_ document: LyricsDocument, language: String, cachedOnly: Bool = false, refresh: Bool = false,
+    @MainActor static func interpret(_ document: LyricsDocument, language: String, context: LyricsInterpretationContext = .init(), cachedOnly: Bool = false, refresh: Bool = false,
                                     settings: MetadataAssistantSettings = .shared) async throws -> LyricsInterpretation {
         let offline = cachedOnly || settings.effectiveOffline
         if refresh && offline {
@@ -41,6 +41,6 @@ enum LyricUnderstanding {
         let connection = try MetadataProxyConnection(endpoint: settings.endpoint, token: offline ? "" : settings.savedToken())
         let client = LyricsInterpretationClient(connection: connection, cache: settings.cache)
         return try await client.interpret(lyrics: document.lines.map(\.text).joined(separator: "\n"), language: language,
-                                          offline: offline, refresh: refresh)
+                                          context: context, offline: offline, refresh: refresh)
     }
 }

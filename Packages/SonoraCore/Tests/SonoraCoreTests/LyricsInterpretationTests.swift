@@ -9,6 +9,52 @@ private actor InterpretationHTTP: MetadataLookupTransport {
     func set(_ data: String, status: Int) { response = MetadataHTTPResponse(data: Data(data.utf8), status: status, contentType: "application/json") }
 }
 final class LyricsInterpretationTests: XCTestCase {
+    func testSongContextIsSentAndSeparatesEveryCacheInput() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let http = InterpretationHTTP(), connection = try MetadataProxyConnection(endpoint: "http://localhost:8089", token: "")
+        let client = LyricsInterpretationClient(connection: connection, cache: MetadataLookupCache(directory: root), transport: http)
+        let context = LyricsInterpretationContext(title: "November", artist: "Love Division", album: "November Songs",
+                                                 styles: ["Rock---Indie Rock"], moods: ["sad", "relaxed"])
+        let first = try await client.interpret(lyrics: "Leaves fall.", language: "es", context: context, offline: false)
+        let calls = await http.calls
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(calls[0].httpBody)) as? [String: Any])
+        let song = try XCTUnwrap(body["context"] as? [String: Any])
+        XCTAssertEqual(song["title"] as? String, "November")
+        XCTAssertEqual(song["artist"] as? String, "Love Division")
+        XCTAssertEqual(song["album"] as? String, "November Songs")
+        XCTAssertEqual(song["styles"] as? [String], ["Rock---Indie Rock"])
+        XCTAssertEqual(song["moods"] as? [String], ["sad", "relaxed"])
+        let reopened = LyricsInterpretationClient(connection: connection, cache: MetadataLookupCache(directory: root), transport: http)
+        let restored = try await reopened.interpret(lyrics: "Leaves fall.", language: "es", context: context, offline: true)
+        XCTAssertEqual(restored, first)
+        for changed in [
+            LyricsInterpretationContext(title: "Ghosts", artist: context.artist, album: context.album, styles: context.styles, moods: context.moods),
+            LyricsInterpretationContext(title: context.title, artist: "Other", album: context.album, styles: context.styles, moods: context.moods),
+            LyricsInterpretationContext(title: context.title, artist: context.artist, album: "Other", styles: context.styles, moods: context.moods),
+            LyricsInterpretationContext(title: context.title, artist: context.artist, album: context.album, styles: ["Rock---Alternative Rock"], moods: context.moods),
+            LyricsInterpretationContext(title: context.title, artist: context.artist, album: context.album, styles: context.styles, moods: ["happy"])
+        ] {
+            do { _ = try await reopened.interpret(lyrics: "Leaves fall.", language: "es", context: changed, offline: true); XCTFail("Changed context must not reuse another meaning") }
+            catch MetadataLookupError.notCached { }
+        }
+        let finalCalls = await http.calls
+        XCTAssertEqual(finalCalls.count, 1)
+    }
+
+    func testInvalidContextNeverSendsARequest() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let http = InterpretationHTTP()
+        let client = LyricsInterpretationClient(connection: try .init(endpoint: "http://localhost:8089", token: ""), cache: MetadataLookupCache(directory: root), transport: http)
+        for context in [LyricsInterpretationContext(title: String(repeating: "a", count: 4097)),
+                        .init(artist: "Artist\u{0}Name"), .init(styles: [" "]), .init(styles: ["A", "B", "C"]),
+                        .init(moods: ["invented"])] {
+            do { _ = try await client.interpret(lyrics: "Leaves fall.", language: "es", context: context, offline: false); XCTFail() }
+            catch MetadataLookupError.invalidSearch { }
+        }
+        let calls = await http.calls; XCTAssertTrue(calls.isEmpty)
+    }
     func testRefreshBypassesCachesAndRetainsLastGoodResultOnFailure() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
