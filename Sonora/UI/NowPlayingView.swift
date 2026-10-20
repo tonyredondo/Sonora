@@ -141,8 +141,9 @@ struct NowPlayingView: View {
     private var output: some View {
         HStack(spacing: 12) {
             Button { showListening = true } label: {
-                Label("Audio", systemImage: "speaker.wave.2.fill").font(.caption).padding(.horizontal, 10).frame(height: 44).playerControlGlass(in: Capsule())
-            }.accessibilityLabel("Herramientas de audio").accessibilityIdentifier("openAudioTools")
+                Image(systemName: "speaker.wave.2.fill").frame(width: 44, height: 44).contentShape(Rectangle())
+            }.buttonStyle(.plain).foregroundStyle(theme.accent)
+                .accessibilityLabel("Herramientas de audio").accessibilityIdentifier("openAudioTools")
             SystemVolumeControl(tint: theme.accent)
                 .frame(maxWidth: .infinity).frame(height: 44)
                 .accessibilityIdentifier("playerVolume")
