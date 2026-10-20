@@ -1142,6 +1142,7 @@ final class PlaybackController: NSObject {
         var info: [String: Any] = [MPMediaItemPropertyTitle: currentDetails?.title ?? current.displayName,
             MPMediaItemPropertyArtist: currentDetails?.artist ?? "", MPMediaItemPropertyAlbumTitle: currentDetails?.album ?? "",
             MPMediaItemPropertyPlaybackDuration: duration, MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
+            MPNowPlayingInfoPropertyDefaultPlaybackRate: Double(equalizer.playback.rate),
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? Double(equalizer.playback.rate) : 0.0]
         if let image = currentDetails?.artwork { info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image } }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
