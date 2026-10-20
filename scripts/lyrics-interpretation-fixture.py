@@ -64,7 +64,7 @@ class Handler(BaseHTTPRequestHandler):
             translated = ['Cuando por fin pare la lluvia,', 'saldremos a la calle.'] * 2
             return self.send(200, {'lines': [{'id': line['id'], 'text': text}
                                             for line, text in zip(lines, translated)],
-                                   'model': 'gpt-6-astra', 'effort': 'xhigh'})
+                                   'model': 'gpt-6.1-sol', 'effort': 'medium'})
         # Only the explicitly marked synthetic seed files are accepted.
         first = data.get('lyrics', '').split('\n')[0]
         if first != 'Línea sincronizada 00':

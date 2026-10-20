@@ -13,13 +13,15 @@ enum LyricUnderstanding {
         let data = try! encoder.encode(document.lines.map { SourceLine(id: $0.id, time: $0.time, text: $0.text) })
         return MusicToolsCache.digest(String(decoding: data, as: UTF8.self))
     }
-    static func translationKey(_ document: LyricsDocument, source: String, target: String) -> String {
+    static func translationKey(_ document: LyricsDocument, source: String, target: String,
+                               model: String = LyricsTranslationClient.model,
+                               effort: String = LyricsTranslationClient.effort) -> String {
         // Provider and prompt version invalidate Apple's approximate word alignment.
         // Keep timing outside the key so retiming never spends another request.
         struct TextLine: Encodable { let id: Int; let text: String }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let data = try! encoder.encode(document.lines.map { TextLine(id: $0.id, text: $0.text) })
-        return "\(LyricsTranslationClient.version):gpt-6-astra:xhigh:\(source):\(target):\(MusicToolsCache.digest(String(decoding: data, as: UTF8.self)))"
+        return "\(LyricsTranslationClient.version):\(model):\(effort):\(source):\(target):\(MusicToolsCache.digest(String(decoding: data, as: UTF8.self)))"
     }
     @MainActor static func translate(_ document: LyricsDocument, source: String, target: String, refresh: Bool,
                                     settings: MetadataAssistantSettings) async throws -> LyricTranslation {

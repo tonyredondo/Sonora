@@ -117,9 +117,9 @@ final class InlineLyricsUITests: XCTestCase {
         let app = XCUIApplication()
         for (theme,largeText) in [("noche",false),("papel",true)] {
             openPlayer(app,theme:theme,track:"02 - Letra sincronizada QA.flac",accessibility:largeText)
-            let close = app.buttons["Cerrar reproductor"], editor = app.buttons["editPlayerLyrics"]
+            let close = app.buttons["Cerrar reproductor"], expansion = app.buttons["expandLyrics"]
             let originalFrame = close.frame
-            let header = app.coordinate(withNormalizedOffset:.zero).withOffset(CGVector(dx:(close.frame.maxX + editor.frame.minX) / 2,dy:close.frame.midY))
+            let header = app.coordinate(withNormalizedOffset:.zero).withOffset(CGVector(dx:(close.frame.maxX + expansion.frame.minX) / 2,dy:close.frame.midY))
             header.press(forDuration:0.05,thenDragTo:header.withOffset(CGVector(dx:0,dy:30)),withVelocity:.slow,thenHoldForDuration:0.1)
             XCTAssertTrue(close.exists)
             XCTAssertEqual(close.frame.minY,originalFrame.minY,accuracy:1,"A short pull must return to its original position")
@@ -265,7 +265,7 @@ final class InlineLyricsUITests: XCTestCase {
 
         app.selectPlayerPage(0)
         XCTAssertTrue(lyrics.waitForNonExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["expandLyrics"].waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["expandLyrics"].isHittable)
         XCTAssertEqual(pages.value as? String, "Portada, 1 de 4")
         XCTAssertEqual(app.buttons["playerTransport"].frame, controls)
         capture("artwork-lyrics-hidden-noche", app)
@@ -281,19 +281,19 @@ final class InlineLyricsUITests: XCTestCase {
         XCTAssertTrue(lyrics.exists, "Opening the full lyrics should keep inline lyrics visible")
         app.selectPlayerPage(0)
         XCTAssertTrue(lyrics.waitForNonExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["expandLyrics"].waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["expandLyrics"].isHittable)
 
         app.buttons["Cerrar reproductor"].tap()
         app.buttons["openNowPlaying"].tap()
         XCTAssertEqual(pages.value as? String, "Portada, 1 de 4")
         XCTAssertFalse(lyrics.exists)
-        XCTAssertFalse(app.buttons["expandLyrics"].exists)
+        XCTAssertTrue(app.buttons["expandLyrics"].isHittable)
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["openNowPlaying"].waitForExistence(timeout: 15))
         app.buttons["openNowPlaying"].tap()
         XCTAssertEqual(pages.value as? String, "Portada, 1 de 4")
         XCTAssertFalse(lyrics.exists)
-        XCTAssertFalse(app.buttons["expandLyrics"].exists)
+        XCTAssertTrue(app.buttons["expandLyrics"].isHittable)
 
         app.buttons["Siguiente"].tap()
         // Source collections sort by title, rather than the fixture's file prefix.
@@ -381,7 +381,7 @@ final class InlineLyricsUITests: XCTestCase {
         XCTAssertTrue(app.pageIndicators["playerPages"].isHittable)
         app.selectPlayerPage(0)
         XCTAssertTrue(lyrics.waitForNonExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["expandLyrics"].waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["expandLyrics"].isHittable)
         XCTAssertEqual(app.buttons["playerTransport"].frame, transport)
         capture("artwork-lyrics-hidden-papel-accessibility", app)
         app.selectPlayerPage(1)

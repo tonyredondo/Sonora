@@ -122,6 +122,8 @@ pub struct InterpretationService {
     flights: Arc<Mutex<HashMap<String, Weak<AsyncMutex<()>>>>>,
 }
 pub(crate) struct CodexPrompt {
+    pub model: &'static str,
+    pub effort: &'static str,
     pub instructions: &'static str,
     pub schema: Value,
 }
@@ -195,8 +197,7 @@ impl InterpretationService {
                 .acquire()
                 .await
                 .map_err(|_| InterpretationError::Unavailable)?;
-            let value =
-                decode(run_codex(&self.config, &input, prompt.instructions, prompt.schema).await?)?;
+            let value = decode(run_codex(&self.config, &input, prompt).await?)?;
             if !valid(&value) {
                 return Err(InterpretationError::InvalidResponse);
             }
@@ -229,6 +230,8 @@ impl InterpretationService {
         self.generate(&input.key(), input.refresh,
             serde_json::to_value(&input).map_err(|_| InterpretationError::Invalid)?,
             CodexPrompt {
+                model: MODEL,
+                effort: EFFORT,
                 instructions: INSTRUCTIONS,
                 schema: json!({"type":"object","properties":{"explanation":{"type":"string"}},"required":["explanation"],"additionalProperties":false}),
             },
@@ -255,8 +258,7 @@ fn interpretation(value: Value) -> Result<Interpretation, InterpretationError> {
 async fn run_codex(
     config: &CodexConfig,
     input: &Value,
-    prompt: &str,
-    output_schema: Value,
+    prompt: CodexPrompt,
 ) -> Result<Value, InterpretationError> {
     use InterpretationError as E;
     // Private throwaway working directory: no repository, personal instructions,
@@ -267,8 +269,8 @@ async fn run_codex(
         .map_err(|_| E::Unavailable)?;
     let schema = temp.path().join("schema.json");
     let instructions = temp.path().join("instructions.txt");
-    std::fs::write(&schema, output_schema.to_string()).map_err(|_| E::Unavailable)?;
-    std::fs::write(&instructions, prompt).map_err(|_| E::Unavailable)?;
+    std::fs::write(&schema, prompt.schema.to_string()).map_err(|_| E::Unavailable)?;
+    std::fs::write(&instructions, prompt.instructions).map_err(|_| E::Unavailable)?;
     let mut command = Command::new(&config.binary);
     command
         .current_dir(temp.path())
@@ -284,13 +286,13 @@ async fn run_codex(
             "--color",
             "never",
             "--model",
-            MODEL,
+            prompt.model,
             "--output-schema",
         ])
         .arg(&schema)
+        .arg("-c")
+        .arg(format!("model_reasoning_effort={:?}", prompt.effort))
         .args([
-            "-c",
-            "model_reasoning_effort=\"xhigh\"",
             "-c",
             "service_tier=\"default\"",
             "-c",

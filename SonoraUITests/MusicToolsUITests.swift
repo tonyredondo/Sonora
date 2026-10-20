@@ -85,17 +85,32 @@ final class MusicToolsUITests: XCTestCase {
         app.terminate()
     }
 
-    @MainActor func testPlayerCarouselReadsCachedContentKeepsSelectionAndOpensEditor() {
+    @MainActor func testPlayerCarouselReadsCachedContentKeepsSelectionAndOpensExpandedContent() {
         let app = openPlayer(track: "07 - Traducción por frases QA.flac", refresh: true)
         let pages = app.pageIndicators["playerPages"]
         XCTAssertEqual(pages.value as? String, "Letra, 2 de 4")
         XCTAssertTrue(app.scrollViews["playerLyrics"].isHittable)
+        let artwork = app.collectionViews["playerCarousel"]
+        let expand = app.buttons["expandLyrics"], close = app.buttons["Cerrar reproductor"]
+        XCTAssertEqual(expand.frame.midY, close.frame.midY, accuracy: 1, "Expansion belongs in the top toolbar")
+        XCTAssertLessThan(expand.frame.maxY, artwork.frame.minY)
+        XCTAssertEqual(artwork.frame.minX, app.frame.minX, accuracy: 1, "The artwork reaches the leading edge")
+        XCTAssertEqual(artwork.frame.maxX, app.frame.maxX, accuracy: 1, "The artwork reaches the trailing edge")
+        XCTAssertFalse(artwork.buttons["expandLyrics"].exists)
+        XCTAssertFalse(app.buttons["editPlayerLyrics"].exists)
         capture("carousel-lyrics", app)
         let transport = app.buttons["playerTransport"].frame
         app.selectPlayerPage(0)
         XCTAssertFalse(app.scrollViews["playerLyrics"].exists)
-        XCTAssertFalse(app.buttons["expandLyrics"].exists)
+        XCTAssertTrue(app.buttons["expandLyrics"].isHittable)
+        XCTAssertEqual(artwork.buttons.count, 0, "The artwork-only page has no overlaid buttons")
         capture("carousel-artwork", app)
+        app.buttons["expandLyrics"].tap()
+        XCTAssertTrue(app.navigationBars["Letra"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.textViews["metadata-lyrics"].exists, "Expansion must not jump straight into editing")
+        capture("toolbar-expanded-lyrics", app)
+        app.buttons["Listo"].tap()
+        XCTAssertEqual(pages.value as? String, "Portada, 1 de 4")
         app.selectPlayerPage(2)
         let translated = app.scrollViews["playerTranslatedLyrics"]
         XCTAssertTrue(translated.staticTexts["Un pájaro canta en el jardín."].waitForExistence(timeout: 10))
@@ -111,6 +126,8 @@ final class MusicToolsUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["playerMeaningTitle"].label, "Sobre la canción")
         XCTAssertLessThan(app.staticTexts["playerMeaningTitle"].frame.minY, meaning.frame.minY)
         XCTAssertTrue(meaning.label.contains("pequeños cambios del día"))
+        XCTAssertEqual(app.buttons["expandMeaning"].frame.midY, close.frame.midY, accuracy: 1)
+        XCTAssertFalse(artwork.buttons["expandMeaning"].exists)
         XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "playerMeaningPreparation").firstMatch.exists)
         capture("carousel-meaning", app)
         XCTAssertEqual(app.buttons["playerTransport"].frame, transport)
@@ -131,10 +148,16 @@ final class MusicToolsUITests: XCTestCase {
         XCTAssertEqual(pages.value as? String, "Significado, 4 de 4")
         let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "ausencia"), object: meaning)
         XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 10), .completed)
-        app.buttons["editPlayerLyrics"].tap()
-        XCTAssertTrue(app.textViews["metadata-lyrics"].waitForExistence(timeout: 10), "The header must open the editor directly")
+        app.selectPlayerPage(2)
+        app.buttons["expandLyrics"].tap()
+        XCTAssertTrue(app.navigationBars["Letra"].waitForExistence(timeout: 5))
+        app.buttons["editLyricsText"].tap()
+        XCTAssertTrue(app.textViews["metadata-lyrics"].waitForExistence(timeout: 10), "Editing stays available inside the expanded lyrics")
         XCTAssertTrue(app.navigationBars["Editar texto"].exists)
         app.buttons["Cancelar"].tap()
+        app.buttons["Listo"].tap()
+        XCTAssertEqual(pages.value as? String, "Traducción, 3 de 4")
+        app.selectPlayerPage(3)
         XCTAssertEqual(pages.value as? String, "Significado, 4 de 4")
         app.buttons["Cerrar reproductor"].tap()
         app.buttons["openNowPlaying"].tap()
@@ -143,9 +166,9 @@ final class MusicToolsUITests: XCTestCase {
         XCTAssertTrue(app.buttons["openNowPlaying"].waitForExistence(timeout: 10)); app.buttons["openNowPlaying"].tap()
         XCTAssertEqual(pages.value as? String, "Significado, 4 de 4")
         XCTAssertTrue(meaning.waitForExistence(timeout: 10))
-        let close = app.buttons["Cerrar reproductor"], editor = app.buttons["editPlayerLyrics"]
+        let expansion = app.buttons["expandMeaning"]
         let header = app.coordinate(withNormalizedOffset: .zero)
-            .withOffset(CGVector(dx: (close.frame.maxX + editor.frame.minX) / 2, dy: close.frame.midY))
+            .withOffset(CGVector(dx: (close.frame.maxX + expansion.frame.minX) / 2, dy: close.frame.midY))
         header.press(forDuration: 0.05, thenDragTo: header.withOffset(CGVector(dx: 0, dy: 220)),
                      withVelocity: .slow, thenHoldForDuration: 0.1)
         XCTAssertTrue(close.waitForNonExistence(timeout: 5), "Only the header drag minimizes the player")
@@ -156,14 +179,20 @@ final class MusicToolsUITests: XCTestCase {
     @MainActor func testPlayerCarouselLargeTextLastLineAndMissingContent() {
         let app = openPlayer(theme: "papel", large: true, track: "08 - Última traducción QA.flac")
         app.selectPlayerPage(2)
+        let artwork = app.collectionViews["playerCarousel"]
+        XCTAssertEqual(artwork.frame.minX, app.frame.minX, accuracy: 1)
+        XCTAssertEqual(artwork.frame.maxX, app.frame.maxX, accuracy: 1, "Large text must not add lateral artwork margins")
         let reader = app.scrollViews["playerTranslatedLyrics"]
         let last = reader.buttons["translatedLyricLine5"]
         for _ in 0..<12 where !last.isHittable { reader.swipeUp(velocity: .slow) }
         XCTAssertTrue(last.isHittable)
         reader.swipeUp(velocity: .slow)
-        XCTAssertLessThanOrEqual(last.frame.maxY, reader.frame.maxY - 50, "The final pair must clear the bottom fade and expand button")
+        XCTAssertLessThanOrEqual(last.frame.maxY, reader.frame.maxY - 50, "The final pair must clear the bottom fade")
         XCTAssertTrue(last.staticTexts["y a ti"].exists)
         capture("carousel-translation-large-last-line", app)
+        XCTAssertEqual(app.buttons["expandLyrics"].frame.midY, app.buttons["Cerrar reproductor"].frame.midY, accuracy: 1)
+        XCTAssertTrue(app.buttons["playerTransport"].isHittable)
+        XCTAssertTrue(app.buttons["openAudioTools"].isHittable)
         last.tap()
         XCTAssertEqual(app.staticTexts["playerElapsedTime"].label, "0:15")
         reader.swipeDown(velocity: .slow)
@@ -186,8 +215,10 @@ final class MusicToolsUITests: XCTestCase {
         XCTAssertEqual(app.pageIndicators["playerPages"].value as? String, "Traducción, 3 de 4")
         XCTAssertTrue(app.staticTexts["Esta canción todavía no tiene letra."].exists)
         app.selectPlayerPage(0)
-        XCTAssertFalse(app.buttons["expandLyrics"].exists)
-        XCTAssertTrue(app.buttons["editPlayerLyrics"].isHittable)
+        XCTAssertTrue(app.buttons["expandLyrics"].isHittable)
+        app.buttons["expandLyrics"].tap()
+        XCTAssertTrue(app.staticTexts["Sin letra"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Añadir letra"].exists)
         app.terminate()
     }
 

@@ -23,6 +23,8 @@ public enum LyricsTranslationError: LocalizedError {
 /// ID. Timing stays on the device. The owning store handles the offline cache.
 public actor LyricsTranslationClient {
     public static let version = "codex-translation-v1"
+    public static let model = "gpt-6.1-sol"
+    public static let effort = "medium"
     private let connection: MetadataProxyConnection
     private let transport: any MetadataLookupTransport
     public init(connection: MetadataProxyConnection,
@@ -62,7 +64,7 @@ public actor LyricsTranslationClient {
         }
         guard response.data.count <= 524_288 else { throw MetadataLookupError.tooLarge }
         guard let output = try? JSONDecoder().decode(Output.self, from: response.data),
-              output.model == "gpt-6-astra", output.effort == "xhigh",
+              output.model == Self.model, output.effort == Self.effort,
               output.lines.count == lines.count,
               output.lines.reduce(0, { $0 + $1.text.utf8.count }) <= 200_000,
               zip(output.lines, lines).allSatisfy({ $0.id == $1.id && Self.validText($0.text) }) else {

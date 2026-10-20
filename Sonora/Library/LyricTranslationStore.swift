@@ -77,10 +77,19 @@ final class LyricTranslationStore {
     }
     func restore(_ document: LyricsDocument, source: String, target: String) async {
         let key = LyricUnderstanding.translationKey(document, source: source, target: target)
-        guard results[key] == nil, let value = try? await cache.read(LyricTranslation.self, key: key),
-              value.phrases == nil, let valid = try? value.validated(for: document), results[key] == nil else { return }
-        results[key] = valid
-        if jobs[key] == nil { statuses[key] = .ready }
+        guard results[key] == nil else { return }
+        // Keep valid Codex translations offline after a model change. An explicit
+        // refresh writes the current model's key, which takes precedence on reopen.
+        let previousKey = LyricUnderstanding.translationKey(document, source: source, target: target,
+                                                            model: "gpt-6-astra", effort: "xhigh")
+        for candidate in [key, previousKey] {
+            guard let value = try? await cache.read(LyricTranslation.self, key: candidate),
+                  value.phrases == nil, let valid = try? value.validated(for: document) else { continue }
+            guard results[key] == nil else { return }
+            results[key] = valid
+            if jobs[key] == nil { statuses[key] = .ready }
+            return
+        }
     }
     func setAutomaticQueue(_ owners: [String], source: String? = nil, target: String? = nil) {
         ownerPriorities = Dictionary(owners.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)

@@ -18,17 +18,15 @@ enum NowPlayingPage: Int, CaseIterable, Identifiable {
 struct NowPlayingArtwork: View {
     let player: PlaybackController
     let scrollRequest: Int
-    let expand: (NowPlayingPage) -> Void
-    // One preference for the whole player, independent of the current song.
-    @AppStorage("nowPlayingPage") private var selection = NowPlayingPage.lyrics
+    @Binding var selection: NowPlayingPage
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { geometry in
-            // Reserve the dots separately so the artwork keeps its full square.
-            let side = max(0, min(geometry.size.width, geometry.size.height - 28))
-            carousel.frame(width: side, height: side + 28)
+            // Keep the full width even when controls or large text limit the height.
+            let artworkHeight = max(0, min(geometry.size.width, geometry.size.height - 28))
+            carousel.frame(width: geometry.size.width, height: artworkHeight + 28)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
@@ -48,22 +46,6 @@ struct NowPlayingArtwork: View {
                 .accessibilityIdentifier("playerCarousel")
             }
             .clipShape(.rect(cornerRadius: 14))
-            .overlay(alignment: .bottomTrailing) {
-                if selection != .artwork {
-                    Button { expand(selection) } label: {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
-                            .font(.system(size: 18, weight: .medium))
-                            .frame(width: 44, height: 44)
-                            .background(PlayerTheme(scheme).surface, in: .circle)
-                            .contentShape(.circle)
-                    }
-                    .buttonStyle(.plain).foregroundStyle(PlayerTheme(scheme).accent)
-                    .accessibilityLabel(selection == .meaning ? "Ampliar significado" : "Letra")
-                    .accessibilityHint("Ampliar el contenido")
-                    .accessibilityIdentifier(selection == .meaning ? "expandMeaning" : "expandLyrics")
-                    .padding(8)
-                }
-            }
             PlayerPageControl(selection: Binding(get: { selection }, set: { page in
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { selection = page }
             }))

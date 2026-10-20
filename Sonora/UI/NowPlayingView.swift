@@ -9,9 +9,10 @@ struct NowPlayingView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    // Shared by the carousel and its toolbar action, independent of the song.
+    @AppStorage("nowPlayingPage") private var selectedPage = NowPlayingPage.lyrics
     @State private var showQueue = false
     @State private var expandedPage: NowPlayingPage?
-    @State private var lyricsEditor: AudioTrack?
     @State private var lyricsScrollRequest = 0
     @State private var showListening = false
     @State private var showTimer = false
@@ -24,23 +25,27 @@ struct NowPlayingView: View {
         NavigationStack {
             GeometryReader { geometry in
                 let compact = geometry.size.height < 700 || dynamicTypeSize.isAccessibilitySize
-                VStack(spacing: compact ? 12 : 20) {
+                VStack(spacing: 12) {
                     header.contentShape(.rect).simultaneousGesture(minimizeGesture)
                         .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 20)
                     // Artwork yields its height before text or touch targets are compressed.
-                    NowPlayingArtwork(player: player, scrollRequest: lyricsScrollRequest) { expandedPage = $0 }
+                    NowPlayingArtwork(player: player, scrollRequest: lyricsScrollRequest, selection: $selectedPage)
                         .id(player.current?.id)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .layoutPriority(-1)
                         .contentShape(.rect)
                         .accessibilityElement(children:.contain).accessibilityLabel("Carátula").accessibilityIdentifier("playerArtwork")
                     trackInformation(compact: compact).fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 20)
                     PlaybackTimeline(player: player, tint: theme.accent).fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 20)
                     transport.fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 20)
                     output.fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 20)
                 }
-                .padding(.horizontal, compact ? 20 : 28)
-                .padding(.vertical, compact ? 8 : 12)
+                .padding(.vertical, 8)
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .offset(y:completedDrag ?? downwardDrag)
                 .animation(downwardDrag == 0 && completedDrag == nil && !reduceMotion ? .spring(response:0.3,dampingFraction:0.85) : nil,value:downwardDrag)
@@ -58,9 +63,6 @@ struct NowPlayingView: View {
                 } else {
                     LyricsView(player: player)
                 }
-            }
-            .sheet(item: $lyricsEditor, onDismiss: { lyricsScrollRequest += 1 }) { track in
-                MetadataEditorView(player: player, track: track, lyricsOnly: true)
             }
             .sheet(item: $songAction) { SongActionSheet(player: player, request: $0) }
             .sheet(isPresented: $showListening) {
@@ -92,15 +94,15 @@ struct NowPlayingView: View {
                 Spacer(minLength: 8)
                 Text(player.currentDetails?.album ?? player.folderName).font(.subheadline).lineLimit(1)
                 Spacer(minLength: 8)
-                Button { lyricsEditor = player.current } label: {
-                    Image(systemName: "pencil")
+                Button { expandedPage = selectedPage } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
                         .frame(width: 44, height: 44)
                         .playerControlGlass(in: Circle())
                 }
                 .foregroundStyle(theme.accent)
                 .disabled(player.current == nil)
-                .accessibilityLabel("Editar letra")
-                .accessibilityIdentifier("editPlayerLyrics")
+                .accessibilityLabel(selectedPage == .meaning ? "Ampliar significado" : "Ampliar letra")
+                .accessibilityIdentifier(selectedPage == .meaning ? "expandMeaning" : "expandLyrics")
                 Menu {
                     Button("Sonido", systemImage: "slider.horizontal.3") { showListening = true }
                     Button("Temporizador", systemImage: "moon.zzz") { showTimer = true }
