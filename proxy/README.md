@@ -85,6 +85,7 @@ All JSON provider responses use an envelope with `provider`, `sources` (upstream
 | GET | `/v1/lyrics` | Required `title`, `artist`, `album`, `duration` in seconds; LRCLIB's exact-signature result, including `plainLyrics`, `syncedLyrics`, `instrumental` |
 | POST | `/v1/lyrics/align` | Multipart `file` (canonical WAV) and UTF-8 `text`; returns validated synchronized LRC and audio/text SHA-256 digests |
 | POST | `/v1/lyrics/transcribe` | Multipart `file` (canonical WAV); returns validated Scribe v2 text, line-level LRC and audio SHA-256; valid no-voice results contain empty text |
+| POST | `/v1/lyrics/translate` | JSON `lines` (`id`, `text`), `source_language` and `target_language`; full-context Codex translation with one result per source ID |
 | POST | `/v1/lyrics/interpret` | JSON `lyrics` and `language`; cached literary interpretation via the host user's Codex session, GPT-6-Astra at `xhigh` |
 | POST | `/v1/identify` | JSON `fingerprint` and `duration`; AcoustID recording IDs and scores |
 | GET | `/v1/artwork/{release_mbid}` | Front artwork at the provider's 500-pixel variant; downloaded only when requested |
@@ -159,23 +160,41 @@ response language (`es`, `en`, `fr`, `de`, `it`, `pt`). Only the text is sent, w
 instructions to distinguish interpretation from confirmed author intent. Results
 identify their model and effort. The iPhone labels them as AI interpretations.
 
-One Codex process runs at a time, with at most eight active/waiting requests.
+The protected `/v1/lyrics/translate` route accepts up to 2000 nonempty lines and
+100 KB of lyric text (10 KB per line). Source can be `auto`; otherwise source and
+target are language tags such as `en`, `es` or `zh-Hans`. The complete document is
+one request, so expressions split across lines keep their context. The response
+contains `lines` with the same IDs in the same order, plus `model` and `effort`.
+Every ID must occur exactly once with nonempty translated text. Source timestamps
+are never sent or generated. The client rejects incomplete or mismatched output.
+
+Up to four Codex processes run concurrently across both routes, with at most eight
+active/waiting requests. The app also shares a four-request limit between its
+translation and interpretation queues.
 The process deadline is 180 seconds and the total queue deadline 210 seconds.
 The proxy does not automatically start another Codex invocation after failure.
-Cancelling the owning task stops its child process. Identical queued requests
-reuse the first successful cached result.
+Cancelling the owning task stops its child process. Requests for the same cache key
+wait on that key before acquiring a process slot; ordinary callers reuse the first
+successful cached result, while explicit refreshes run in order for that key.
 Text, language, model, effort and prompt version form the SHA-256 cache identity.
-Interpretations share the existing bounded SQLite cache and are reusable until
+Translations and interpretations share the existing bounded SQLite cache and are reusable until
 eviction, including when Codex is disabled. Errors are never cached as results.
 The iPhone keeps its own exact-input cache for offline viewing.
 An explicit `refresh: true` in the request bypasses the server cache and replaces
-the same entry only after a successful interpretation. Normal requests continue
+the same entry only after a valid result. Normal requests continue
 to reuse it. The app's **Sound → Refresh analysis** control also refreshes local
 BPM, waveform and translation data; manual BPM corrections and markers survive.
-This control requires an updated proxy for meaning regeneration. Older proxies
-reject the extra field instead of silently returning the previous interpretation.
+Both lyric tools require an updated proxy. Older proxies return an explicit error
+for the translation route instead of silently reusing an Apple translation.
 
 Ordinary tests use a local stub CLI. The ignored
 `live_codex_astra_xhigh_interpretation_and_cache` test uses only synthetic text and
 requires explicitly setting `SONORA_LIVE_CODEX` to an approved CLI binary. It makes
 one real request, then verifies reuse with Codex disabled.
+
+The ignored `real_codex_translation` test accepts explicit `SONORA_REAL_CODEX_BINARY`,
+`SONORA_REAL_TRANSLATION_INPUT` and `SONORA_REAL_TRANSLATION_OUTPUT` paths. It makes
+one bounded real request and writes the validated result for semantic inspection.
+Run it only with authorization to consume the user's Codex plan. Ordinary translation
+tests cover IDs, authentication, shared capacity, cache persistence and refresh failures
+using a stub; they do not establish translation quality.

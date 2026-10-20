@@ -9,9 +9,9 @@ struct NowPlayingView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage("showArtworkLyrics") private var showArtworkLyrics = true
     @State private var showQueue = false
-    @State private var showLyrics = false
+    @State private var expandedPage: NowPlayingPage?
+    @State private var lyricsEditor: AudioTrack?
     @State private var lyricsScrollRequest = 0
     @State private var showListening = false
     @State private var showTimer = false
@@ -20,7 +20,6 @@ struct NowPlayingView: View {
     @GestureState private var downwardDrag: CGFloat = 0
     @State private var completedDrag: CGFloat?
     private var theme: PlayerTheme { PlayerTheme(scheme) }
-    private var artworkHasScrollableLyrics: Bool { showArtworkLyrics && player.currentDetails?.lyrics.lines.isEmpty == false }
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
@@ -29,15 +28,11 @@ struct NowPlayingView: View {
                     header.contentShape(.rect).simultaneousGesture(minimizeGesture)
                         .fixedSize(horizontal: false, vertical: true)
                     // Artwork yields its height before text or touch targets are compressed.
-                    NowPlayingArtwork(player: player, showsLyrics: showArtworkLyrics, scrollRequest: lyricsScrollRequest) {
-                        showLyrics = true
-                    }
+                    NowPlayingArtwork(player: player, scrollRequest: lyricsScrollRequest) { expandedPage = $0 }
                         .id(player.current?.id)
-                        .aspectRatio(1, contentMode: .fit)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .layoutPriority(-1)
                         .contentShape(.rect)
-                        .simultaneousGesture(minimizeGesture,including:artworkHasScrollableLyrics ? .subviews : .all)
                         .accessibilityElement(children:.contain).accessibilityLabel("Carátula").accessibilityIdentifier("playerArtwork")
                     trackInformation(compact: compact).fixedSize(horizontal: false, vertical: true)
                     PlaybackTimeline(player: player, tint: theme.accent).fixedSize(horizontal: false, vertical: true)
@@ -56,7 +51,17 @@ struct NowPlayingView: View {
                 Button("Cancelar", role: .cancel) { }
             } message: { Text(player.songAnalysisIssue ?? "") }
             .sheet(isPresented: $showQueue) { QueueView(player: player) }
-            .sheet(isPresented: $showLyrics, onDismiss: { lyricsScrollRequest += 1 }) { LyricsView(player: player) }
+            .sheet(item: $expandedPage, onDismiss: { lyricsScrollRequest += 1 }) { page in
+                if page == .meaning, let lyrics = player.currentDetails?.lyrics {
+                    LyricUnderstandingView(document: lyrics, translation: nil, translations: player.lyricTranslations,
+                                           interpretations: player.lyricInterpretations) { _ in }
+                } else {
+                    LyricsView(player: player)
+                }
+            }
+            .sheet(item: $lyricsEditor, onDismiss: { lyricsScrollRequest += 1 }) { track in
+                MetadataEditorView(player: player, track: track, lyricsOnly: true)
+            }
             .sheet(item: $songAction) { SongActionSheet(player: player, request: $0) }
             .sheet(isPresented: $showListening) {
                 NavigationStack { SoundSettingsView(player: player).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { showListening = false } } } }
@@ -87,16 +92,15 @@ struct NowPlayingView: View {
                 Spacer(minLength: 8)
                 Text(player.currentDetails?.album ?? player.folderName).font(.subheadline).lineLimit(1)
                 Spacer(minLength: 8)
-                Button { showArtworkLyrics.toggle() } label: {
-                    Image(systemName: showArtworkLyrics ? "quote.bubble.fill" : "quote.bubble")
+                Button { lyricsEditor = player.current } label: {
+                    Image(systemName: "pencil")
                         .frame(width: 44, height: 44)
                         .playerControlGlass(in: Circle())
                 }
-                .foregroundStyle(showArtworkLyrics ? theme.accent : .secondary)
-                .accessibilityLabel(showArtworkLyrics ? "Ocultar letra en portada" : "Mostrar letra en portada")
-                .accessibilityValue(showArtworkLyrics ? "Visibles" : "Ocultas")
-                .accessibilityAddTraits(showArtworkLyrics ? .isSelected : [])
-                .accessibilityIdentifier("toggleArtworkLyrics")
+                .foregroundStyle(theme.accent)
+                .disabled(player.current == nil)
+                .accessibilityLabel("Editar letra")
+                .accessibilityIdentifier("editPlayerLyrics")
                 Menu {
                     Button("Sonido", systemImage: "slider.horizontal.3") { showListening = true }
                     Button("Temporizador", systemImage: "moon.zzz") { showTimer = true }

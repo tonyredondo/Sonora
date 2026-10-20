@@ -15,7 +15,9 @@ final class InlineLyricsUITests: XCTestCase {
             app.beginLinkingFolder(); app.selectSyntheticFolder(["Sonora Lyrics QA"])
         }
         for _ in 0..<8 where !source.isHittable { app.swipeUp() }
-        XCTAssertTrue(source.waitForExistence(timeout: 15)); source.tap()
+        XCTAssertTrue(source.waitForExistence(timeout: 15))
+        app.buttons["source-options:Sonora Lyrics QA"].tap(); app.buttons["Actualizar fuente"].tap()
+        source.tap()
         let song = app.buttons["library-song:" + track]
         XCTAssertTrue(song.waitForExistence(timeout: 10)); song.tap()
         app.closeMusicSource("Sonora Lyrics QA")
@@ -30,8 +32,7 @@ final class InlineLyricsUITests: XCTestCase {
             XCTAssertTrue(app.buttons["openNowPlaying"].waitForExistence(timeout: 15))
         }
         app.buttons["openNowPlaying"].tap()
-        let toggle = app.buttons["toggleArtworkLyrics"]
-        if toggle.exists, toggle.value as? String == "Ocultas" { toggle.tap() }
+        app.selectPlayerPage(1)
     }
 
     @MainActor private func seekUsingLyrics(_ app: XCUIApplication, line: Int) {
@@ -88,9 +89,9 @@ final class InlineLyricsUITests: XCTestCase {
         XCTAssertEqual(app.buttons["playerTransport"].frame, controls)
         capture("current-lyric-noche-seek", app)
 
-        app.buttons["toggleArtworkLyrics"].tap()
+        app.selectPlayerPage(0)
         XCTAssertTrue(lyrics.waitForNonExistence(timeout: 5))
-        app.buttons["toggleArtworkLyrics"].tap()
+        app.selectPlayerPage(1)
         XCTAssertTrue(current.waitForExistence(timeout: 5))
         XCTAssertTrue(current.isHittable, "Showing lyrics should immediately follow the paused position")
         app.buttons["Cerrar reproductor"].tap()
@@ -116,9 +117,9 @@ final class InlineLyricsUITests: XCTestCase {
         let app = XCUIApplication()
         for (theme,largeText) in [("noche",false),("papel",true)] {
             openPlayer(app,theme:theme,track:"02 - Letra sincronizada QA.flac",accessibility:largeText)
-            let close = app.buttons["Cerrar reproductor"], toggle = app.buttons["toggleArtworkLyrics"]
+            let close = app.buttons["Cerrar reproductor"], editor = app.buttons["editPlayerLyrics"]
             let originalFrame = close.frame
-            let header = app.coordinate(withNormalizedOffset:.zero).withOffset(CGVector(dx:(close.frame.maxX + toggle.frame.minX) / 2,dy:close.frame.midY))
+            let header = app.coordinate(withNormalizedOffset:.zero).withOffset(CGVector(dx:(close.frame.maxX + editor.frame.minX) / 2,dy:close.frame.midY))
             header.press(forDuration:0.05,thenDragTo:header.withOffset(CGVector(dx:0,dy:30)),withVelocity:.slow,thenHoldForDuration:0.1)
             XCTAssertTrue(close.exists)
             XCTAssertEqual(close.frame.minY,originalFrame.minY,accuracy:1,"A short pull must return to its original position")
@@ -144,14 +145,15 @@ final class InlineLyricsUITests: XCTestCase {
             XCTAssertEqual(app.buttons["miniTransport"].label,"Pausar","Minimizing must keep the song playing")
             capture("player-drag-minimized-" + theme,app)
             app.buttons["openNowPlaying"].tap(); XCTAssertTrue(close.waitForExistence(timeout:5))
-            app.buttons["playerTransport"].tap(); toggle.tap()
+            app.buttons["playerTransport"].tap(); app.selectPlayerPage(0)
             XCTAssertTrue(lyrics.waitForNonExistence(timeout:5))
             let artwork = app.descendants(matching:.any).matching(identifier:"playerArtwork").firstMatch
             XCTAssertTrue(artwork.exists)
             capture("player-drag-uncovered-artwork-" + theme,app)
             let cover = artwork.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.25))
             cover.press(forDuration:0.05,thenDragTo:cover.withOffset(CGVector(dx:0,dy:220)),withVelocity:.slow,thenHoldForDuration:0.1)
-            XCTAssertTrue(close.waitForNonExistence(timeout:5),"Dragging the uncovered artwork must minimize playback")
+            XCTAssertTrue(close.exists,"Artwork gestures are reserved for paging; only the header minimizes playback")
+            close.tap()
             app.assertLibraryHome(); XCTAssertEqual(app.buttons["miniTransport"].label,"Reproducir")
             app.buttons["openNowPlaying"].tap(); XCTAssertTrue(close.waitForExistence(timeout:5))
             close.tap(); app.assertLibraryHome(); app.terminate()
@@ -254,20 +256,20 @@ final class InlineLyricsUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         openPlayer(app, theme: "noche", track: "02 - Letra sincronizada QA.flac")
-        let toggle = app.buttons["toggleArtworkLyrics"]
+        let pages = app.pageIndicators["playerPages"]
         let lyrics = app.scrollViews["playerLyrics"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 5), "The header should let the listener show or hide inline lyrics")
+        XCTAssertTrue(pages.waitForExistence(timeout: 5), "The carousel must expose its current page")
         XCTAssertTrue(lyrics.waitForExistence(timeout: 5))
         let controls = app.buttons["playerTransport"].frame
         capture("artwork-lyrics-visible-noche", app)
 
-        toggle.tap()
+        app.selectPlayerPage(0)
         XCTAssertTrue(lyrics.waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.buttons["expandLyrics"].waitForNonExistence(timeout: 5))
-        XCTAssertEqual(toggle.value as? String, "Ocultas")
+        XCTAssertEqual(pages.value as? String, "Portada, 1 de 4")
         XCTAssertEqual(app.buttons["playerTransport"].frame, controls)
         capture("artwork-lyrics-hidden-noche", app)
-        toggle.tap()
+        app.selectPlayerPage(1)
         XCTAssertTrue(lyrics.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["expandLyrics"].isHittable)
         app.buttons["expandLyrics"].tap()
@@ -277,32 +279,33 @@ final class InlineLyricsUITests: XCTestCase {
         app.buttons["Cancelar"].tap()
         app.buttons["Listo"].tap()
         XCTAssertTrue(lyrics.exists, "Opening the full lyrics should keep inline lyrics visible")
-        toggle.tap()
+        app.selectPlayerPage(0)
         XCTAssertTrue(lyrics.waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.buttons["expandLyrics"].waitForNonExistence(timeout: 5))
 
         app.buttons["Cerrar reproductor"].tap()
         app.buttons["openNowPlaying"].tap()
-        XCTAssertEqual(toggle.value as? String, "Ocultas")
+        XCTAssertEqual(pages.value as? String, "Portada, 1 de 4")
         XCTAssertFalse(lyrics.exists)
         XCTAssertFalse(app.buttons["expandLyrics"].exists)
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["openNowPlaying"].waitForExistence(timeout: 15))
         app.buttons["openNowPlaying"].tap()
-        XCTAssertEqual(toggle.value as? String, "Ocultas")
+        XCTAssertEqual(pages.value as? String, "Portada, 1 de 4")
         XCTAssertFalse(lyrics.exists)
         XCTAssertFalse(app.buttons["expandLyrics"].exists)
 
         app.buttons["Siguiente"].tap()
-        XCTAssertTrue(app.staticTexts["Sin letra QA"].waitForExistence(timeout: 10))
-        XCTAssertEqual(toggle.value as? String, "Ocultas")
+        // Source collections sort by title, rather than the fixture's file prefix.
+        XCTAssertTrue(app.staticTexts["Pulso 120 BPM QA"].waitForExistence(timeout: 10))
+        XCTAssertEqual(pages.value as? String, "Portada, 1 de 4")
         app.buttons["Anterior"].tap()
         XCTAssertTrue(app.staticTexts["Letra sincronizada QA"].waitForExistence(timeout: 10))
         XCTAssertFalse(lyrics.exists, "Changing songs should keep lyrics hidden")
-        toggle.tap()
+        app.selectPlayerPage(1)
         XCTAssertTrue(lyrics.waitForExistence(timeout: 5))
         XCTAssertTrue(lyrics.buttons["Línea sincronizada 00"].isHittable)
-        XCTAssertEqual(toggle.value as? String, "Visibles")
+        XCTAssertEqual(pages.value as? String, "Letra, 2 de 4")
         XCTAssertTrue(app.buttons["expandLyrics"].isHittable)
         capture("artwork-lyrics-restored-noche", app)
     }
@@ -375,14 +378,13 @@ final class InlineLyricsUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Siguiente"].isHittable)
         XCTAssertTrue(app.buttons["expandLyrics"].isHittable)
         capture("inline-lyrics-papel-accessibility", app)
-        let toggle = app.buttons["toggleArtworkLyrics"]
-        XCTAssertTrue(toggle.isHittable)
-        toggle.tap()
+        XCTAssertTrue(app.pageIndicators["playerPages"].isHittable)
+        app.selectPlayerPage(0)
         XCTAssertTrue(lyrics.waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.buttons["expandLyrics"].waitForNonExistence(timeout: 5))
         XCTAssertEqual(app.buttons["playerTransport"].frame, transport)
         capture("artwork-lyrics-hidden-papel-accessibility", app)
-        toggle.tap()
+        app.selectPlayerPage(1)
         XCTAssertTrue(lyrics.waitForExistence(timeout: 5))
         app.buttons["expandLyrics"].tap()
         XCTAssertTrue(app.switches["Seguir canción"].waitForExistence(timeout: 5))

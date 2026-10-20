@@ -14,19 +14,20 @@ enum LyricUnderstanding {
         return MusicToolsCache.digest(String(decoding: data, as: UTF8.self))
     }
     static func translationKey(_ document: LyricsDocument, source: String, target: String) -> String {
-        if #available(iOS 26.4, *) {
-            // Timing edits do not change a translation. A content or language
-            // change does. Regenerate older results that merged adjacent lines
-            // because of punctuation or backward-aligned connecting words.
-            struct TextLine: Encodable { let id: Int; let text: String }
-            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-            let data = try! encoder.encode(document.lines.map { TextLine(id: $0.id, text: $0.text) })
-            return "apple-translation-context-v5:\(source):\(target):\(MusicToolsCache.digest(String(decoding: data, as: UTF8.self)))"
-        }
-        return legacyTranslationKey(document, source: source, target: target)
+        // Provider and prompt version invalidate Apple's approximate word alignment.
+        // Keep timing outside the key so retiming never spends another request.
+        struct TextLine: Encodable { let id: Int; let text: String }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let data = try! encoder.encode(document.lines.map { TextLine(id: $0.id, text: $0.text) })
+        return "\(LyricsTranslationClient.version):gpt-6-astra:xhigh:\(source):\(target):\(MusicToolsCache.digest(String(decoding: data, as: UTF8.self)))"
     }
-    static func legacyTranslationKey(_ document: LyricsDocument, source: String, target: String) -> String {
-        "apple-translation-v1:\(ProcessInfo.processInfo.operatingSystemVersionString):\(source):\(target):\(sourceKey(document))"
+    @MainActor static func translate(_ document: LyricsDocument, source: String, target: String, refresh: Bool,
+                                    settings: MetadataAssistantSettings) async throws -> LyricTranslation {
+        guard !settings.effectiveOffline else {
+            throw MusicTextError.invalid("Conecta con el servidor y desactiva el modo sin conexión para traducir esta letra.")
+        }
+        let connection = try MetadataProxyConnection(endpoint: settings.endpoint, token: settings.savedToken())
+        return try await LyricsTranslationClient(connection: connection).translate(document, source: source, target: target, refresh: refresh)
     }
     @MainActor static func interpret(_ document: LyricsDocument, language: String, cachedOnly: Bool = false, refresh: Bool = false,
                                     settings: MetadataAssistantSettings = .shared) async throws -> LyricsInterpretation {

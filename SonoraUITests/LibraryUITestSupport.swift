@@ -1,6 +1,23 @@
 import XCTest
 
 extension XCUIApplication {
+    @MainActor func selectPlayerPage(_ page: Int, file: StaticString = #filePath, line: UInt = #line) {
+        let dots = pageIndicators["playerPages"]
+        XCTAssertTrue(dots.waitForExistence(timeout: 5), file: file, line: line)
+        for _ in 0..<4 {
+            let numbers = (dots.value as? String ?? "").split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
+            guard let current = numbers.first else {
+                XCTFail("Missing page selection: \(String(describing: dots.value))", file: file, line: line); return
+            }
+            if current == page + 1 { return }
+            let region = collectionViews["playerCarousel"]
+            let start = region.coordinate(withNormalizedOffset: CGVector(dx: current < page + 1 ? 0.85 : 0.15, dy: 0.45))
+            let end = region.coordinate(withNormalizedOffset: CGVector(dx: current < page + 1 ? 0.15 : 0.85, dy: 0.45))
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.1)
+        }
+        XCTFail("Could not select page \(page): \(String(describing: dots.value))", file: file, line: line)
+    }
+
     @MainActor func assertLibraryHome(file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(navigationBars["Biblioteca"].waitForExistence(timeout: 15), file: file, line: line)
     }

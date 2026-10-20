@@ -37,38 +37,39 @@ final class QueuePreparationTests: XCTestCase {
         return (root, suite, try XCTUnwrap(UserDefaults(suiteName: suite)))
     }
 
-    func testMeaningSerializesCoalescesManualRequestAndPrioritizesReorderedQueue() async throws {
+    func testMeaningParallelizesCoalescesAndPrioritizesUnstartedWork() async throws {
         let (root, suite, defaults) = try scope()
         defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
         let response = try value()
         var calls: [String] = []
-        var pending: CheckedContinuation<LyricsInterpretation, Never>?
-        let store = LyricInterpretationStore(settings: settings(root, defaults: defaults)) { doc, _, cached in
-            if cached == .cachedOnly { throw MetadataLookupError.notCached }
-            calls.append(doc.lines[0].text)
-            return await withCheckedContinuation { pending = $0 }
+        var pending: [String: CheckedContinuation<LyricsInterpretation, Never>] = [:]
+        defer { for continuation in pending.values { continuation.resume(returning: response) } }
+        let store = LyricInterpretationStore(settings: settings(root, defaults: defaults), requests: CodexRequestPool()) { doc, _, mode in
+            if mode == .cachedOnly { throw MetadataLookupError.notCached }
+            let text = doc.lines[0].text
+            calls.append(text)
+            return await withCheckedContinuation { pending[text] = $0 }
         }
-        let a = LyricsDocument(text: "A"), b = LyricsDocument(text: "B"), c = LyricsDocument(text: "C")
-        store.setAutomaticQueue(["a", "b", "c"])
-        await store.enqueue(a, language: "es", owner: "a")
-        try await wait { calls.count == 1 }
-        await store.enqueue(b, language: "es", owner: "b")
-        await store.enqueue(c, language: "es", owner: "c")
-        let manual = Task { try await store.load(a, language: "es") }
+        let documents = ["A", "B", "C", "D", "E", "F"].map { LyricsDocument(text: $0) }
+        store.setAutomaticQueue(["A", "B", "C", "D", "E", "F"])
+        for doc in documents { await store.enqueue(doc, language: "es", owner: doc.lines[0].text) }
+        try await wait { pending.count == 4 }
+        XCTAssertEqual(calls, ["A", "B", "C", "D"])
+        let manual = Task { try await store.load(documents[0], language: "es") }
         await Task.yield()
-        store.setAutomaticQueue(["c", "a", "b"])
-        XCTAssertEqual(calls, ["A"])
-        pending?.resume(returning: response); pending = nil
+        store.setAutomaticQueue(["F", "A", "B", "C", "D", "E"])
+        pending.removeValue(forKey: "A")?.resume(returning: response)
         let joined = try await manual.value
         XCTAssertEqual(joined, response)
-        try await wait { calls.count == 2 }
-        XCTAssertEqual(calls, ["A", "C"])
-        // Removing B only removes unstarted work. C completes and is retained.
+        try await wait { calls.count == 5 }
+        XCTAssertEqual(calls, ["A", "B", "C", "D", "F"])
+        // E has not started; the other four active requests must finish and cache.
         store.setAutomaticQueue([])
-        pending?.resume(returning: response); pending = nil
-        try await wait { store.statuses[store.key(c, language: "es")] == .ready }
-        XCTAssertEqual(calls, ["A", "C"])
-        XCTAssertNil(store.statuses[store.key(b, language: "es")])
+        let remaining = pending; pending.removeAll()
+        for continuation in remaining.values { continuation.resume(returning: response) }
+        try await wait { store.results.count == 5 && store.pendingCount == 0 }
+        XCTAssertEqual(calls.count, 5)
+        XCTAssertNil(store.statuses[store.key(documents[4], language: "es")])
     }
 
     func testMeaningRefreshWaitsForActiveCachedRequestAndCoalescesWithoutLosingPreviousResult() async throws {
@@ -177,32 +178,35 @@ final class QueuePreparationTests: XCTestCase {
         XCTAssertEqual(store.pendingCount, 0)
     }
 
-    func testMeaningLanguageChangeDropsUnstartedOldLanguageAndKeepsActiveResult() async throws {
+    func testMeaningLanguageChangeDropsUnstartedOldLanguageAndKeepsActiveResults() async throws {
         let (root, suite, defaults) = try scope()
         defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
         let response = try value()
-        var calls: [String] = [], pending: CheckedContinuation<LyricsInterpretation, Never>?
-        let store = LyricInterpretationStore(settings: settings(root, defaults: defaults)) { _, lang, cached in
-            if cached == .cachedOnly { throw MetadataLookupError.notCached }
-            calls.append(lang)
-            return await withCheckedContinuation { pending = $0 }
+        var calls: [String] = [], pending: [String: CheckedContinuation<LyricsInterpretation, Never>] = [:]
+        defer { for continuation in pending.values { continuation.resume(returning: response) } }
+        let store = LyricInterpretationStore(settings: settings(root, defaults: defaults), requests: CodexRequestPool()) { doc, lang, mode in
+            if mode == .cachedOnly { throw MetadataLookupError.notCached }
+            let id = doc.lines[0].text + ":" + lang
+            calls.append(id)
+            return await withCheckedContinuation { pending[id] = $0 }
         }
-        let a = LyricsDocument(text: "A"), b = LyricsDocument(text: "B")
-        store.setAutomaticQueue(["a", "b"], language: "es")
-        await store.enqueue(a, language: "es", owner: "a")
-        try await wait { calls == ["es"] }
-        await store.enqueue(b, language: "es", owner: "b")
-        store.setAutomaticQueue(["a", "b"], language: "en")
-        await store.enqueue(b, language: "es", owner: "b")
-        XCTAssertNil(store.statuses[store.key(b, language: "es")], "Late local preparation must not queue the previous response language")
-        await store.enqueue(b, language: "en", owner: "b")
-        pending?.resume(returning: response); pending = nil
-        try await wait { calls.count == 2 }
-        XCTAssertEqual(calls, ["es", "en"])
-        pending?.resume(returning: response); pending = nil
-        try await wait { store.results.count == 2 }
-        XCTAssertNil(store.results[store.key(b, language: "es")])
-        XCTAssertEqual(store.results[store.key(a, language: "es")], response)
+        let owners = ["A", "B", "C", "D", "E"]
+        store.setAutomaticQueue(owners, language: "es")
+        for owner in owners { await store.enqueue(LyricsDocument(text: owner), language: "es", owner: owner) }
+        try await wait { pending.count == 4 }
+        let e = LyricsDocument(text: "E")
+        store.setAutomaticQueue(owners, language: "en")
+        await store.enqueue(e, language: "es", owner: "E")
+        XCTAssertNil(store.statuses[store.key(e, language: "es")])
+        await store.enqueue(e, language: "en", owner: "E")
+        pending.removeValue(forKey: "A:es")?.resume(returning: response)
+        try await wait { pending["E:en"] != nil }
+        XCTAssertEqual(calls, ["A:es", "B:es", "C:es", "D:es", "E:en"])
+        let remaining = pending; pending.removeAll()
+        for continuation in remaining.values { continuation.resume(returning: response) }
+        try await wait { store.results.count == 5 }
+        XCTAssertNil(store.results[store.key(e, language: "es")])
+        XCTAssertEqual(store.results[store.key(LyricsDocument(text: "A"), language: "es")], response)
     }
 
     func testLocalQueueReconcilesOrderRemovalDuplicatesAndFailuresWithoutCancellingActive() async throws {
@@ -253,16 +257,20 @@ final class QueuePreparationTests: XCTestCase {
         let cache = MusicToolsCache(root: root.appendingPathComponent("tools"))
         let tools = MusicToolsStore(cache: cache)
         var translated: [String] = [], interpreted: [String] = []
-        let translations = LyricTranslationStore(cache: cache) { doc, _, _ in
+        var translationGate: CheckedContinuation<Void, Never>?
+        defer { translationGate?.resume() }
+        let config = settings(root, defaults: defaults), http = QueueMeaningHTTP()
+        let translations = LyricTranslationStore(cache: cache, settings: config) { doc, _, _, _ in
             translated.append(doc.lines[0].text)
+            if translated.count == 1 { await withCheckedContinuation { translationGate = $0 } }
             return try LyricTranslation(lines: [0: "El árbol crece", 1: "al sol."], document: doc)
         }
-        let config = settings(root, defaults: defaults), http = QueueMeaningHTTP()
         let connection = try MetadataProxyConnection(endpoint: config.endpoint, token: "fixture-only")
         let client = LyricsInterpretationClient(connection: connection, cache: config.cache, transport: http)
         let meanings = LyricInterpretationStore(settings: config) { doc, language, cached in
             if cached != .cachedOnly {
-                XCTAssertTrue(translated.contains(doc.lines[0].text), "Meaning follows local preparation")
+                XCTAssertEqual(translations.statuses[LyricUnderstanding.translationKey(doc, source: "auto", target: "es")]?.busy == true || translations.results[LyricUnderstanding.translationKey(doc, source: "auto", target: "es")] != nil, true,
+                               "Local preparation schedules both remote tools without waiting for translation")
                 interpreted.append(doc.lines[0].text)
             }
             return try await client.interpret(lyrics: doc.lines.map(\.text).joined(separator: "\n"), language: language,
@@ -273,7 +281,14 @@ final class QueuePreparationTests: XCTestCase {
         await player.loadFolder(folderURL, autoPlay: false)
         let selected = player.current?.id
         player.seek(to: 1.25)
-        try await wait { meanings.results.count == 3 && !player.queuePreparation.isRunning }
+        try await wait { translationGate != nil && meanings.results.count == 3 && !player.queuePreparation.isRunning }
+        XCTAssertNil(translations.results[LyricUnderstanding.translationKey(LyricsDocument(text: "[00:00]The tree grows 1\n[00:01]in the sun."), source: "auto", target: "es")], "The first request is still running while other songs can finish")
+        for track in player.queue.tracks {
+            XCTAssertNotNil(tools.summary(for: track, folder: try player.folderAccess(for: track)),
+                            "Slow translation must not block audio preparation for the rest of the queue")
+        }
+        translationGate?.resume(); translationGate = nil
+        try await wait { meanings.results.count == 3 && translations.results.count == 3 && !player.queuePreparation.isRunning }
         XCTAssertEqual(interpreted, ["The tree grows 1", "The tree grows 2", "The tree grows 3"])
         XCTAssertEqual(translated.count, 3)
         for track in player.queue.tracks {
@@ -297,7 +312,7 @@ final class QueuePreparationTests: XCTestCase {
             XCTFail("Previously prepared audio must not be decoded again")
             throw URLError(.unknown)
         }
-        let reopenedTranslations = LyricTranslationStore(cache: cache) { _, _, _ in
+        let reopenedTranslations = LyricTranslationStore(cache: cache, settings: config) { _, _, _, _ in
             XCTFail("Previously prepared lyrics must not be translated again")
             throw URLError(.unknown)
         }

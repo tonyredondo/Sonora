@@ -75,6 +75,10 @@ pub fn router(config: Config) -> Result<Router, Error> {
             post(interpret).layer(DefaultBodyLimit::max(128 * 1024)),
         )
         .route(
+            "/v1/lyrics/translate",
+            post(translate).layer(DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route(
             "/v1/lyrics/align",
             post(align).layer(DefaultBodyLimit::max(
                 crate::alignment::MAX_AUDIO_BYTES + crate::alignment::MAX_TEXT_BYTES + 4096,
@@ -113,7 +117,15 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
         })
         .collect();
     Json(json!({"providers":providers,"metadata_archive_version":1,
+        "lyric_translation":{"enabled":app.client.config().codex.enabled,"version":1,"model":crate::interpretation::MODEL,"effort":crate::interpretation::EFFORT},
         "lyric_interpretation":{"enabled":app.client.config().codex.enabled,"model":crate::interpretation::MODEL,"effort":crate::interpretation::EFFORT}}))
+}
+
+async fn translate(
+    State(app): State<App>,
+    Json(input): Json<crate::translation::TranslationInput>,
+) -> Result<Json<crate::translation::Translation>, crate::interpretation::InterpretationError> {
+    Ok(Json(app.interpretation.translate(input).await?))
 }
 
 async fn interpret(
