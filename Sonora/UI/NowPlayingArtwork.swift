@@ -16,9 +16,11 @@ enum NowPlayingPage: Int, CaseIterable, Identifiable {
 }
 
 struct NowPlayingArtwork: View {
+    static let coordinateSpace = "nowPlayingArtworkLayout"
     let player: PlaybackController
     let scrollRequest: Int
     @Binding var selection: NowPlayingPage
+    let topSafeArea: CGFloat
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -26,17 +28,36 @@ struct NowPlayingArtwork: View {
         GeometryReader { geometry in
             // Keep the full width even when controls or large text limit the height.
             let artworkHeight = max(0, min(geometry.size.width, geometry.size.height))
-            carousel.frame(width: geometry.size.width, height: artworkHeight)
+            let topSpace = max(0, geometry.frame(in: .named(Self.coordinateSpace)).minY
+                               + (geometry.size.height - artworkHeight) / 2 + topSafeArea)
+            carousel(artworkSize: CGSize(width: geometry.size.width, height: artworkHeight), topSpace: topSpace)
+                .frame(width: geometry.size.width, height: artworkHeight + topSpace)
+                // Extend the scrolling viewport behind the header without
+                // changing the cover's size or the controls below it.
+                .frame(height: artworkHeight, alignment: .bottom)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    private var carousel: some View {
+    private func carousel(artworkSize: CGSize, topSpace: CGFloat) -> some View {
         ZStack {
-            ArtworkView(image: player.currentDetails?.artwork, cornerRadius: 0)
+            VStack(spacing: 0) {
+                ArtworkHeaderReflection(image: player.currentDetails?.artwork,
+                                        artworkSize: artworkSize, height: topSpace)
+                ArtworkView(image: player.currentDetails?.artwork, cornerRadius: 0)
+                    .frame(height: artworkSize.height)
+            }
+            .overlay {
+                // Tint the shared artwork, including the status-bar extension,
+                // independently of the native pager's inset content bounds.
+                PlayerTheme(scheme).background.opacity(selection == .artwork ? 0 : 0.72)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: selection)
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
             TabView(selection: $selection) {
                 ForEach(NowPlayingPage.allCases) { page in
-                    pageContent(page)
+                    pageContent(page, topSpace: topSpace)
                         .tag(page)
                         .accessibilityHidden(selection != page)
                 }
@@ -45,39 +66,110 @@ struct NowPlayingArtwork: View {
             .accessibilityIdentifier("playerCarousel")
         }
         .clipped()
+        .overlay(alignment: .top) {
+            Rectangle().fill(.ultraThinMaterial)
+                .mask {
+                    // Preserve contrast near the status bar while allowing
+                    // lyrics to remain recognizable behind the toolbar.
+                    LinearGradient(stops: [.init(color: .white.opacity(0.9), location: 0),
+                                           .init(color: .white.opacity(0.65), location: 0.35),
+                                           .init(color: .white.opacity(0.18), location: 0.68),
+                                           .init(color: .clear, location: 1)],
+                                   startPoint: .top, endPoint: .bottom)
+                }
+                .frame(height: topSpace)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
         .overlay(alignment: .bottom) {
-            PlayerPageControl(selection: Binding(get: { selection }, set: { page in
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { selection = page }
-            }))
+            // Native pages may extend below the visible carousel. Fade the
+            // composed artwork and text at its actual edge, outside the pager.
+            LinearGradient(colors: [.clear, PlayerTheme(scheme).background],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: selection == .artwork ? 32 : 64)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+        .overlay(alignment: .bottom) {
+            // UIPageControl supplies its own touch animation. An animated
+            // binding transaction can leave the native pager on the old page.
+            PlayerPageControl(selection: $selection)
             .fixedSize(horizontal: true, vertical: false)
             .frame(height: 44)
             .padding(.bottom, 4)
         }
     }
 
-    @ViewBuilder private func pageContent(_ page: NowPlayingPage) -> some View {
+    @ViewBuilder private func pageContent(_ page: NowPlayingPage, topSpace: CGFloat) -> some View {
         if page == .artwork {
             Color.clear.accessibilityLabel("Portada del álbum")
         } else {
             ZStack(alignment: .bottomTrailing) {
-                PlayerTheme(scheme).background.opacity(0.72).allowsHitTesting(false)
-                if let lyrics = player.currentDetails?.lyrics, !lyrics.lines.isEmpty {
-                    switch page {
-                    case .translation:
-                        ArtworkTranslation(player: player, lyrics: lyrics, scrollRequest: scrollRequest, isVisible: selection == page)
-                    case .meaning:
-                        ArtworkMeaning(lyrics: lyrics, store: player.lyricInterpretations)
-                    default:
-                        ArtworkLyrics(player: player, lyrics: lyrics, scrollRequest: scrollRequest, isVisible: selection == page)
+                Group {
+                    if let lyrics = player.currentDetails?.lyrics, !lyrics.lines.isEmpty {
+                        switch page {
+                        case .translation:
+                            ArtworkTranslation(player: player, lyrics: lyrics, scrollRequest: scrollRequest, isVisible: selection == page)
+                        case .meaning:
+                            ArtworkMeaning(lyrics: lyrics, store: player.lyricInterpretations)
+                        default:
+                            ArtworkLyrics(player: player, lyrics: lyrics, scrollRequest: scrollRequest, isVisible: selection == page)
+                        }
+                    } else {
+                        ArtworkMessage(message: player.currentDetails == nil ? "Cargando letra…" : "Esta canción todavía no tiene letra.",
+                                       busy: player.currentDetails == nil)
                     }
-                } else {
-                    ArtworkMessage(message: player.currentDetails == nil ? "Cargando letra…" : "Esta canción todavía no tiene letra.",
-                                   busy: player.currentDetails == nil)
                 }
-                LinearGradient(colors: [.clear, PlayerTheme(scheme).background], startPoint: .top, endPoint: .bottom)
-                    .frame(height: 64).allowsHitTesting(false).accessibilityHidden(true)
+                .safeAreaPadding(.top, topSpace)
             }
         }
+    }
+}
+
+/// The reflected top edge continues the cover without stretching or cropping it.
+/// Only the extension is blurred; the join keeps the original edge's pixels.
+private struct ArtworkHeaderReflection: View {
+    let image: UIImage?
+    let artworkSize: CGSize
+    let height: CGFloat
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        ZStack {
+            if let image {
+                reflection(image)
+                    .overlay {
+                        reflection(image)
+                            .blur(radius: 24, opaque: true)
+                            .mask {
+                                LinearGradient(stops: [.init(color: .white, location: 0),
+                                                       .init(color: .white, location: 0.94),
+                                                       .init(color: .clear, location: 1)],
+                                               startPoint: .top, endPoint: .bottom)
+                            }
+                    }
+            } else {
+                PlayerTheme(scheme).surface
+            }
+            LinearGradient(stops: [.init(color: headerShade, location: 0),
+                                   .init(color: headerShade, location: 0.35),
+                                   .init(color: .clear, location: 1)],
+                           startPoint: .top, endPoint: .bottom)
+        }
+        .frame(width: artworkSize.width, height: height)
+        .clipped()
+    }
+
+    private var headerShade: Color {
+        PlayerTheme(scheme).background.opacity(scheme == .dark ? 0.6 : 0.8)
+    }
+
+    private func reflection(_ image: UIImage) -> some View {
+        Image(uiImage: image).resizable().scaledToFill()
+            .frame(width: artworkSize.width, height: artworkSize.height)
+            .scaleEffect(x: 1, y: -1)
+            .frame(width: artworkSize.width, height: height, alignment: .bottom)
+            .clipped()
     }
 }
 
@@ -162,8 +254,9 @@ private struct ArtworkMeaning: View {
                         Text("Interpretación de IA").font(.caption).foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 24).padding(.top, 24).padding(.bottom, 72)
+                    .padding(.horizontal, 24).padding(.top, 24)
                 }
+                .contentMargins(.bottom, 104, for: .scrollContent)
                 .accessibilityIdentifier("playerMeaning")
             } else {
                 ArtworkMessage(message: message, busy: store.statuses[key] == .interpreting)
@@ -184,8 +277,9 @@ private struct ArtworkMessage: View {
                 Text(message).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: .infinity).padding(24).padding(.bottom, 64)
+            .frame(maxWidth: .infinity).padding(24)
         }
+        .contentMargins(.bottom, 104, for: .scrollContent)
     }
 }
 
@@ -244,8 +338,11 @@ private struct ArtworkLyrics: View {
                         .id(line.id)
                     }
                 }
-                .padding(.horizontal, 24).padding(.top, 24).padding(.bottom, 72)
+                .padding(.horizontal, 24).padding(.top, 24)
             }
+            // The native pager's scroll bounds can extend below its visible
+            // clip. Leave clearance for that inset and the overlaid dots.
+            .contentMargins(.bottom, 104, for: .scrollContent)
             .accessibilityLabel(translated ? "Letra traducida" : "Letra de la canción")
             .accessibilityIdentifier(translated ? "playerTranslatedLyrics" : "playerLyrics")
             .safeAreaInset(edge: .top, spacing: 0) {

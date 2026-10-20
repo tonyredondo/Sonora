@@ -85,6 +85,48 @@ final class MusicToolsUITests: XCTestCase {
         app.terminate()
     }
 
+    @MainActor func testPlayerLyricsContinueBehindHeaderWhileFollowing() {
+        let app = openPlayer(additionalArguments: ["-lyricsAutoScroll", "YES"])
+        let reader = app.scrollViews["playerLyrics"]
+        let current = reader.buttons["artworkLyricLine20"]
+        for _ in 0..<12 where !current.isHittable {
+            let start = reader.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.8))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -160)))
+        }
+        XCTAssertTrue(current.isHittable)
+        current.tap()
+        let elapsed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", "0:20"), object: app.staticTexts["playerElapsedTime"])
+        XCTAssertEqual(XCTWaiter.wait(for: [elapsed], timeout: 5), .completed)
+        let close = app.buttons["Cerrar reproductor"], expand = app.buttons["expandLyrics"]
+        XCTAssertEqual(current.value as? String, "Línea actual")
+        XCTAssertGreaterThan(current.frame.minY, close.frame.maxY + 12, "The active lyric stays below the glass header")
+        let earlierLines = reader.buttons.allElementsBoundByIndex.filter {
+            $0.frame.intersects(CGRect(x: reader.frame.minX, y: close.frame.minY,
+                                      width: reader.frame.width, height: close.frame.height))
+        }
+        XCTAssertFalse(earlierLines.isEmpty, "Earlier lyrics continue beneath the header's translucent area")
+        XCTAssertTrue(close.isHittable)
+        XCTAssertTrue(expand.isHittable)
+        capture("header-lyrics-under-glass", app)
+        let shuffle = app.buttons["Aleatorio"], repeatControl = app.buttons["Repetición"]
+        XCTAssertEqual(shuffle.value as? String, "Desactivado")
+        XCTAssertEqual(repeatControl.value as? String, "Desactivada")
+        shuffle.tap(); repeatControl.tap()
+        XCTAssertEqual(shuffle.value as? String, "Activado")
+        XCTAssertEqual(repeatControl.value as? String, "Toda la cola")
+        capture("header-active-transport-options", app)
+        shuffle.tap(); repeatControl.tap(); repeatControl.tap()
+        XCTAssertEqual(shuffle.value as? String, "Desactivado")
+        XCTAssertEqual(repeatControl.value as? String, "Desactivada")
+        expand.tap()
+        XCTAssertTrue(app.navigationBars["Letra"].waitForExistence(timeout: 5))
+        app.buttons["Listo"].tap()
+        XCTAssertTrue(close.isHittable)
+        XCTAssertGreaterThan(current.frame.minY, close.frame.maxY + 12)
+        app.terminate()
+    }
+
     @MainActor func testPlayerCarouselReadsCachedContentKeepsSelectionAndOpensExpandedContent() {
         let app = openPlayer(track: "07 - Traducción por frases QA.flac", refresh: true)
         let pages = app.pageIndicators["playerPages"]
@@ -93,7 +135,8 @@ final class MusicToolsUITests: XCTestCase {
         let artwork = app.collectionViews["playerCarousel"]
         let expand = app.buttons["expandLyrics"], close = app.buttons["Cerrar reproductor"]
         XCTAssertEqual(expand.frame.midY, close.frame.midY, accuracy: 1, "Expansion belongs in the top toolbar")
-        XCTAssertLessThan(expand.frame.maxY, artwork.frame.minY)
+        XCTAssertLessThan(artwork.frame.minY, close.frame.minY, "The carousel extends beneath the header")
+        XCTAssertTrue(expand.isHittable, "The overlaid header remains interactive")
         XCTAssertEqual(artwork.frame.minX, app.frame.minX, accuracy: 1, "The artwork reaches the leading edge")
         XCTAssertEqual(artwork.frame.maxX, app.frame.maxX, accuracy: 1, "The artwork reaches the trailing edge")
         XCTAssertGreaterThan(pages.frame.minY, artwork.frame.maxY - 64)
@@ -207,7 +250,7 @@ final class MusicToolsUITests: XCTestCase {
         for _ in 0..<12 where !last.isHittable { reader.swipeUp(velocity: .slow) }
         XCTAssertTrue(last.isHittable)
         reader.swipeUp(velocity: .slow)
-        XCTAssertLessThanOrEqual(last.frame.maxY, reader.frame.maxY - 50, "The final pair must clear the bottom fade")
+        XCTAssertLessThanOrEqual(last.frame.maxY, artwork.frame.maxY - 64, "The final pair must clear the visible bottom fade")
         XCTAssertLessThanOrEqual(last.frame.maxY, pages.frame.minY - 8, "The final pair must also clear the overlaid page indicator")
         XCTAssertTrue(last.staticTexts["y a ti"].exists)
         capture("carousel-translation-large-last-line", app)
@@ -237,6 +280,7 @@ final class MusicToolsUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Esta canción todavía no tiene letra."].exists)
         app.selectPlayerPage(0)
         XCTAssertTrue(app.buttons["expandLyrics"].isHittable)
+        capture("carousel-artwork-large", app)
         app.buttons["expandLyrics"].tap()
         XCTAssertTrue(app.staticTexts["Sin letra"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Añadir letra"].exists)
