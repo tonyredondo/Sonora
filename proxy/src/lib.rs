@@ -2,6 +2,7 @@
 
 pub mod alignment;
 pub mod api;
+pub mod audio_character;
 mod audio_job;
 pub mod cache;
 pub mod config;

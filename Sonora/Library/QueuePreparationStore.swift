@@ -4,11 +4,12 @@ import SonoraCore
 
 struct SongMetadataRefresh: Equatable {
     enum Step: String, CaseIterable, Identifiable {
-        case audio, translation, meaning
+        case audio, character, translation, meaning
         var id: String { rawValue }
         var title: String {
             switch self {
             case .audio: "BPM y forma de onda"
+            case .character: "Estilo y ambiente"
             case .translation: "Traducción"
             case .meaning: "Significado"
             }
@@ -25,6 +26,7 @@ struct SongMetadataRefresh: Equatable {
 
 struct QueuePreparationPreferences: Equatable {
     let audio: Bool
+    let character: Bool
     let translation: Bool
     let meaning: Bool
     let source: String
@@ -33,6 +35,7 @@ struct QueuePreparationPreferences: Equatable {
 
     init(defaults: UserDefaults) {
         audio = defaults.object(forKey: "prepareQueueAudio") == nil || defaults.bool(forKey: "prepareQueueAudio")
+        character = defaults.object(forKey: "prepareQueueCharacter") == nil || defaults.bool(forKey: "prepareQueueCharacter")
         translation = defaults.object(forKey: "prepareQueueTranslation") == nil || defaults.bool(forKey: "prepareQueueTranslation")
         meaning = defaults.object(forKey: "prepareQueueMeaning") == nil || defaults.bool(forKey: "prepareQueueMeaning")
         source = defaults.string(forKey: "lyricTranslationSource") ?? "auto"

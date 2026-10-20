@@ -9,6 +9,7 @@ struct SonoraApp: App {
     @AppStorage("lyricTranslationTarget") private var translationTarget = "es"
     @AppStorage("lyricMeaningLanguage") private var meaningLanguage = "es"
     @AppStorage("prepareQueueAudio") private var automaticAudio = true
+    @AppStorage("prepareQueueCharacter") private var automaticCharacter = true
     @AppStorage("prepareQueueTranslation") private var automaticTranslation = true
     @AppStorage("prepareQueueMeaning") private var automaticMeaning = true
     private var metadata: MetadataAssistantSettings { .shared }
@@ -22,6 +23,7 @@ struct SonoraApp: App {
                 .onChange(of: translationTarget) { player.translationPreferencesDidChange() }
                 .onChange(of: meaningLanguage) { player.preparationPreferencesDidChange() }
                 .onChange(of: automaticAudio) { player.preparationPreferencesDidChange() }
+                .onChange(of: automaticCharacter) { player.preparationPreferencesDidChange() }
                 .onChange(of: automaticTranslation) { player.preparationPreferencesDidChange() }
                 .onChange(of: automaticMeaning) { player.preparationPreferencesDidChange() }
                 .onChange(of: metadata.configurationRevision) { player.retryQueuePreparation() }
