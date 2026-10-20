@@ -142,7 +142,45 @@ final class LyricTranslationTests: XCTestCase {
         XCTAssertNotEqual(original, LyricUnderstanding.translationKey(LyricsDocument(text: "Changed words"), source: "auto", target: "es"))
         XCTAssertNotEqual(original, LyricUnderstanding.translationKey(lyric, source: "en", target: "es"))
         XCTAssertNotEqual(original, LyricUnderstanding.translationKey(lyric, source: "auto", target: "fr"))
-        XCTAssertTrue(original.hasPrefix("codex-translation-v1:gpt-6-astra:xhigh:"))
+        XCTAssertTrue(original.hasPrefix("codex-translation-v1:gpt-6.1-sol:medium:"))
+    }
+
+    @MainActor func testPreviousCodexCacheSurvivesModelChangeUntilExplicitRefresh() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = MusicToolsCache(root: root), document = LyricsDocument(text: "A tree grows.")
+        let old = try LyricTranslation(lines: [0: "Un árbol crece."], document: document)
+        let new = try LyricTranslation(lines: [0: "Crece un árbol."], document: document)
+        let key = LyricUnderstanding.translationKey(document, source: "en", target: "es")
+        let previousKey = LyricUnderstanding.translationKey(document, source: "en", target: "es",
+                                                           model: "gpt-6-astra", effort: "xhigh")
+        XCTAssertNotEqual(key, previousKey)
+        try await cache.write(old, key: previousKey)
+        let offline = LyricTranslationStore(cache: cache) { _, _, _, _ in
+            XCTFail("Saved Codex translations must remain available offline")
+            throw URLError(.notConnectedToInternet)
+        }
+        let restored = try await offline.load(document, source: "en", target: "es")
+        XCTAssertEqual(restored, old)
+        let currentBeforeRefresh = try await cache.read(LyricTranslation.self, key: key)
+        XCTAssertNil(currentBeforeRefresh, "Do not relabel the previous model's saved output")
+        var calls = 0
+        let store = LyricTranslationStore(cache: cache) { _, _, _, refresh in
+            XCTAssertTrue(refresh)
+            calls += 1
+            return new
+        }
+        let refreshed = try await store.load(document, source: "en", target: "es", refresh: true)
+        XCTAssertEqual(refreshed, new)
+        XCTAssertEqual(calls, 1)
+        let reopened = LyricTranslationStore(cache: cache) { _, _, _, _ in
+            XCTFail("The refreshed model's result must take precedence")
+            throw URLError(.notConnectedToInternet)
+        }
+        let persisted = try await reopened.load(document, source: "en", target: "es")
+        XCTAssertEqual(persisted, new)
+        let previous = try await cache.read(LyricTranslation.self, key: previousKey)
+        XCTAssertEqual(previous, old)
     }
 
     @MainActor func testCollapsedCachesAreRecomputedAndNewAlignmentPersists() async throws {
@@ -156,6 +194,9 @@ final class LyricTranslationTests: XCTestCase {
             let oldKey = "apple-translation-context-v\(version):en:es:" + String(key.split(separator: ":").last!)
             try await cache.write(collapsed, key: oldKey)
         }
+        let previousKey = LyricUnderstanding.translationKey(source, source: "en", target: "es",
+                                                           model: "gpt-6-astra", effort: "xhigh")
+        try await cache.write(collapsed, key: previousKey)
         let expected = try LyricTranslation(lines: [0: "Cae la noche.", 1: "Cantamos juntos."], document: source)
         var calls = 0
         let store = LyricTranslationStore(cache: cache) { _, _, _, _ in calls += 1; return expected }

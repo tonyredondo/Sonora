@@ -117,7 +117,7 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
         })
         .collect();
     Json(json!({"providers":providers,"metadata_archive_version":1,
-        "lyric_translation":{"enabled":app.client.config().codex.enabled,"version":1,"model":crate::interpretation::MODEL,"effort":crate::interpretation::EFFORT},
+        "lyric_translation":{"enabled":app.client.config().codex.enabled,"version":1,"model":crate::translation::MODEL,"effort":crate::translation::EFFORT},
         "lyric_interpretation":{"enabled":app.client.config().codex.enabled,"model":crate::interpretation::MODEL,"effort":crate::interpretation::EFFORT}}))
 }
 

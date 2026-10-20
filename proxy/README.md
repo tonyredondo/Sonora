@@ -150,8 +150,9 @@ binary = "/absolute/path/to/codex"
 
 The adapter is verified with Codex CLI 0.162.0. It uses `codex exec` in an ephemeral,
 read-only session with user configuration, project instructions, shell tools,
-plugins, hooks, browsing and app connectors disabled. Requests explicitly select
-`gpt-6-astra`, reasoning effort `xhigh`, the default service tier and ChatGPT auth.
+plugins, hooks, browsing and app connectors disabled. Interpretation requests select
+`gpt-6-astra` with reasoning effort `xhigh`; translation requests select `gpt-6.1-sol`
+with `medium`. Both use the default service tier and ChatGPT auth.
 No API key is required. Each new analysis consumes the account's Codex allowance;
 this does not turn a ChatGPT login into an API key.
 
@@ -180,12 +181,16 @@ Text, language, model, effort and prompt version form the SHA-256 cache identity
 Translations and interpretations share the existing bounded SQLite cache and are reusable until
 eviction, including when Codex is disabled. Errors are never cached as results.
 The iPhone keeps its own exact-input cache for offline viewing.
+Previously saved Codex translations remain available on the iPhone after the model
+change. An explicit refresh replaces them with a result from the current model.
 An explicit `refresh: true` in the request bypasses the server cache and replaces
 the same entry only after a valid result. Normal requests continue
 to reuse it. The app's **Sound → Refresh analysis** control also refreshes local
 BPM, waveform and translation data; manual BPM corrections and markers survive.
 Both lyric tools require an updated proxy. Older proxies return an explicit error
 for the translation route instead of silently reusing an Apple translation.
+Update the app and proxy together when changing the translation model: the client
+validates the response model and effort as well as the line IDs.
 
 Ordinary tests use a local stub CLI. The ignored
 `live_codex_astra_xhigh_interpretation_and_cache` test uses only synthetic text and

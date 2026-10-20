@@ -65,14 +65,16 @@ for title, times, text, translated in translations:
     (root / (title + '.lrc')).write_text(
         '\n'.join(f'[00:{time:02d}]{line}' for time, line in zip(times, text)), encoding='utf-8')
     source = json.dumps([dict(id=i, text=line) for i, line in enumerate(text)], sort_keys=True, separators=(',', ':'))
-    key = 'codex-translation-v1:gpt-6-astra:xhigh:auto:es:' + hashlib.sha256(source.encode()).hexdigest()
+    key = 'codex-translation-v1:gpt-6.1-sol:medium:auto:es:' + hashlib.sha256(source.encode()).hexdigest()
     value = dict(lines={str(i): line for i, line in enumerate(translated)})
     (cache / (hashlib.sha256(key.encode()).hexdigest() + '.json')).write_text(json.dumps(value), encoding='utf-8')
     if title.startswith('06'):
         # The loopback loading-state test uses explicit English, separate from
         # these offline display fixtures. Reset only that synthetic cached result.
         live_key = key.replace(':auto:es:', ':en:es:')
-        (cache / (hashlib.sha256(live_key.encode()).hexdigest() + '.json')).unlink(missing_ok=True)
+        previous_live_key = live_key.replace(':gpt-6.1-sol:medium:', ':gpt-6-astra:xhigh:')
+        for cached_key in [live_key, previous_live_key]:
+            (cache / (hashlib.sha256(cached_key.encode()).hexdigest() + '.json')).unlink(missing_ok=True)
     # Offline interpretation fixtures, scoped to the UI tests' unused loopback
     # endpoint. No live provider or account is needed to inspect the carousel.
     meaning_cache = container / 'Library' / 'Application Support' / 'Sonora' / 'MetadataCache'

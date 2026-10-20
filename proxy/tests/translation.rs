@@ -32,8 +32,9 @@ root=Path({root:?})
 x=json.load(sys.stdin)
 assert '--ignore-user-config' in sys.argv and '--ignore-rules' in sys.argv
 assert 'OPENAI_API_KEY' not in os.environ
-assert sys.argv[sys.argv.index('--model')+1]=='gpt-6-astra'
-assert 'model_reasoning_effort="xhigh"' in sys.argv
+model,effort=('gpt-6.1-sol','medium') if 'lines' in x else ('gpt-6-astra','xhigh')
+assert sys.argv[sys.argv.index('--model')+1]==model
+assert 'model_reasoning_effort="'+effort+'"' in sys.argv
 schema=json.loads(Path(sys.argv[sys.argv.index('--output-schema')+1]).read_text())
 def metrics(delta):
     with (root/'metrics').open('a+') as f:
@@ -239,6 +240,19 @@ async fn translation_route_is_authenticated_and_validates_before_starting_codex(
         binary: stub(tmp.path()),
     };
     let app = sonora_proxy::api::router(cfg).unwrap();
+    let status_request = axum::http::Request::builder()
+        .uri("/v1/status")
+        .header("Authorization", "Bearer test-token")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(status_request).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let status: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(status["lyric_translation"]["model"], "gpt-6.1-sol");
+    assert_eq!(status["lyric_translation"]["effort"], "medium");
+    assert_eq!(status["lyric_interpretation"]["model"], "gpt-6-astra");
+    assert_eq!(status["lyric_interpretation"]["effort"], "xhigh");
     let good = serde_json::to_value(input()).unwrap();
     for (token, body, status) in [
         ("wrong", good.clone(), 401),
@@ -266,7 +280,8 @@ async fn translation_route_is_authenticated_and_validates_before_starting_codex(
         if status == 200 {
             let bytes = response.into_body().collect().await.unwrap().to_bytes();
             let value: Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(value["model"], "gpt-6-astra");
+            assert_eq!(value["model"], "gpt-6.1-sol");
+            assert_eq!(value["effort"], "medium");
             assert_eq!(value["lines"][1]["id"], 2);
         }
     }

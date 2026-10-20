@@ -4,7 +4,7 @@ import XCTest
 
 private actor TranslationHTTP: MetadataLookupTransport {
     var calls: [URLRequest] = []
-    var response = MetadataHTTPResponse(data: Data(#"{"lines":[{"id":0,"text":" Decidí dejar "},{"id":2,"text":"de fumar."}],"model":"gpt-6-astra","effort":"xhigh"}"#.utf8),
+    var response = MetadataHTTPResponse(data: Data(#"{"lines":[{"id":0,"text":" Decidí dejar "},{"id":2,"text":"de fumar."}],"model":"gpt-6.1-sol","effort":"medium"}"#.utf8),
                                         status: 200, contentType: "application/json")
     func send(_ request: URLRequest) -> MetadataHTTPResponse { calls.append(request); return response }
     func set(_ data: String, status: Int = 200) { response = MetadataHTTPResponse(data: Data(data.utf8), status: status, contentType: "application/json") }
@@ -47,13 +47,18 @@ final class LyricsTranslationTests: XCTestCase {
             #"[{"id":0,"text":"First"},{"id":2,"text":" "}]"#,
             #"[{"id":0,"text":"First\nSecond"},{"id":2,"text":"Second"}]"#,
         ] {
-            await http.set(#"{"lines":\#(lines),"model":"gpt-6-astra","effort":"xhigh"}"#)
+            await http.set(#"{"lines":\#(lines),"model":"gpt-6.1-sol","effort":"medium"}"#)
             do { _ = try await service.translate(document, source: "en", target: "es"); XCTFail(lines) }
             catch MetadataLookupError.invalidResponse { }
         }
-        await http.set(#"{"lines":[{"id":0,"text":"Primera"},{"id":2,"text":"Segunda"}],"model":"other","effort":"xhigh"}"#)
-        do { _ = try await service.translate(document, source: "en", target: "es"); XCTFail() }
-        catch MetadataLookupError.invalidResponse { }
+    }
+    func testUnexpectedModelOrEffortIsRejected() async throws {
+        let http = TranslationHTTP(), service = try client(http)
+        for (model, effort) in [("gpt-6-astra", "xhigh"), ("gpt-6.1-sol", "xhigh"), ("other", "medium")] {
+            await http.set(#"{"lines":[{"id":0,"text":"Primera"},{"id":2,"text":"Segunda"}],"model":"\#(model)","effort":"\#(effort)"}"#)
+            do { _ = try await service.translate(document, source: "en", target: "es"); XCTFail("\(model)/\(effort)") }
+            catch MetadataLookupError.invalidResponse { }
+        }
     }
     func testAuthenticationErrorsAndOldServerAreActionableAndDoNotLeakProviderText() async throws {
         let http = TranslationHTTP(), service = try client(http)

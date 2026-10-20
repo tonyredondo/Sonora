@@ -19,6 +19,71 @@ final class LyricsEditingUXUITests: XCTestCase {
         let options = app.buttons["options-song:02 - Letra sincronizada QA.flac"]; show(options, app); options.tap()
         app.buttons["Letra"].tap(); XCTAssertTrue(app.buttons["editLyricsText"].waitForExistence(timeout: 15))
     }
+    @MainActor private func checkAutomaticKeyboardDismissal(_ app: XCUIApplication) {
+        let text = app.textViews["metadata-lyrics"]
+        XCTAssertTrue(text.waitForExistence(timeout: 10))
+        let original = text.value as? String
+        text.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Ocultar teclado"].exists)
+        text.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.08)).tap()
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "A tap inside the field must keep editing")
+        text.typeText("Z" + XCUIKeyboardKey.delete.rawValue)
+        for scroll in 0..<3 {
+            text.swipeUp(velocity: .slow)
+            XCTAssertTrue(app.keyboards.firstMatch.exists, "Scrolling inside the text must keep editing")
+            XCTAssertFalse(app.buttons["Ocultar teclado"].exists)
+            if scroll == 2 { capture("lyrics-keyboard-without-buttons", app) }
+        }
+        // Tap the form's blank gutter, outside the text view and its controls.
+        let navigation = app.navigationBars[app.navigationBars["Editar texto"].exists ? "Editar texto" : "Editar letra"]
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: 4, dy: max(navigation.frame.maxY, text.frame.minY) + 20)).tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(text.value as? String, original, "Scrolling and dismissing must preserve the draft")
+        capture("lyrics-keyboard-dismissed-outside", app)
+        text.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        let playback = app.buttons["draftPlayback"]
+        playback.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5), "Tapping playback leaves the text field")
+        XCTAssertEqual(playback.label, "Pausar previsualización", "Dismissing the keyboard must also execute the tapped control")
+        playback.tap()
+        let modes = app.segmentedControls["lyricsDraftMode"]
+        for _ in 0..<4 {
+            if modes.exists && modes.isHittable { break }
+            app.swipeDown(velocity: .slow)
+        }
+        XCTAssertTrue(modes.isHittable, "Return to the mode picker after scrolling the long draft")
+        text.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.08)).tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        modes.buttons["Frases"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(text.waitForNonExistence(timeout: 5))
+        modes.buttons["Texto"].tap()
+        XCTAssertTrue(text.waitForExistence(timeout: 5))
+        XCTAssertEqual(text.value as? String, original)
+        XCTAssertFalse(app.buttons["Ocultar teclado"].exists)
+    }
+    @MainActor func testLyricsKeyboardDismissesAutomaticallyOutsideTextField() {
+        let app = launch(); openTimedLyrics(app)
+        app.buttons["editLyricsText"].tap()
+        checkAutomaticKeyboardDismissal(app)
+        app.navigationBars["Editar texto"].buttons["Cancelar"].tap()
+        app.terminate()
+    }
+    @MainActor func testLyricsKeyboardDismissesAutomaticallyInsideMetadataNavigation() {
+        let app = launch(); app.openMusicSource("Sonora Lyrics QA")
+        let options = app.buttons["options-song:02 - Letra sincronizada QA.flac"]; show(options, app); options.tap()
+        app.buttons["Editar información"].tap()
+        XCTAssertTrue(app.textFields["metadata-title"].waitForExistence(timeout: 10))
+        let edit = app.buttons["editLyrics"]; show(edit, app); edit.tap()
+        checkAutomaticKeyboardDismissal(app)
+        app.navigationBars["Editar letra"].buttons.element(boundBy: 0).tap()
+        XCTAssertFalse(app.buttons["metadataSave"].isEnabled, "Keyboard actions must not create unsaved changes")
+        app.navigationBars["Información"].buttons["Cancelar"].tap()
+        app.terminate()
+    }
     @MainActor func testTimedLyricsCanSynchronizeAgainAndDraftCanBeAuditionedThenDiscarded() {
         let app = launch(); openTimedLyrics(app)
         let resync = app.buttons["synchronizeUntimedLyrics"]; show(resync, app)

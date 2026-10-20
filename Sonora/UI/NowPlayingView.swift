@@ -9,9 +9,10 @@ struct NowPlayingView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    // Shared by the carousel and its toolbar action, independent of the song.
+    @AppStorage("nowPlayingPage") private var selectedPage = NowPlayingPage.lyrics
     @State private var showQueue = false
     @State private var expandedPage: NowPlayingPage?
-    @State private var lyricsEditor: AudioTrack?
     @State private var lyricsScrollRequest = 0
     @State private var showListening = false
     @State private var showTimer = false
@@ -24,24 +25,31 @@ struct NowPlayingView: View {
         NavigationStack {
             GeometryReader { geometry in
                 let compact = geometry.size.height < 700 || dynamicTypeSize.isAccessibilitySize
-                VStack(spacing: compact ? 12 : 20) {
+                VStack(spacing: 12) {
                     header.contentShape(.rect).simultaneousGesture(minimizeGesture)
                         .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 20)
+                        .zIndex(1)
                     // Artwork yields its height before text or touch targets are compressed.
-                    NowPlayingArtwork(player: player, scrollRequest: lyricsScrollRequest) { expandedPage = $0 }
+                    NowPlayingArtwork(player: player, scrollRequest: lyricsScrollRequest, selection: $selectedPage,
+                                      topSafeArea: geometry.safeAreaInsets.top)
                         .id(player.current?.id)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .layoutPriority(-1)
                         .contentShape(.rect)
                         .accessibilityElement(children:.contain).accessibilityLabel("Carátula").accessibilityIdentifier("playerArtwork")
                     trackInformation(compact: compact).fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 20)
                     PlaybackTimeline(player: player, tint: theme.accent).fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 20)
                     transport.fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 20)
                     output.fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 20)
                 }
-                .padding(.horizontal, compact ? 20 : 28)
-                .padding(.vertical, compact ? 8 : 12)
+                .padding(.vertical, 8)
                 .frame(width: geometry.size.width, height: geometry.size.height)
+                .coordinateSpace(name: NowPlayingArtwork.coordinateSpace)
                 .offset(y:completedDrag ?? downwardDrag)
                 .animation(downwardDrag == 0 && completedDrag == nil && !reduceMotion ? .spring(response:0.3,dampingFraction:0.85) : nil,value:downwardDrag)
             }.background(theme.background).toolbar(.hidden, for: .navigationBar)
@@ -58,9 +66,6 @@ struct NowPlayingView: View {
                 } else {
                     LyricsView(player: player)
                 }
-            }
-            .sheet(item: $lyricsEditor, onDismiss: { lyricsScrollRequest += 1 }) { track in
-                MetadataEditorView(player: player, track: track, lyricsOnly: true)
             }
             .sheet(item: $songAction) { SongActionSheet(player: player, request: $0) }
             .sheet(isPresented: $showListening) {
@@ -90,17 +95,14 @@ struct NowPlayingView: View {
             HStack {
                 Button { dismiss() } label: { Image(systemName: "chevron.down").frame(width: 44, height: 44).playerControlGlass(in: Circle()) }.accessibilityLabel("Cerrar reproductor")
                 Spacer(minLength: 8)
-                Text(player.currentDetails?.album ?? player.folderName).font(.subheadline).lineLimit(1)
-                Spacer(minLength: 8)
-                Button { lyricsEditor = player.current } label: {
-                    Image(systemName: "pencil")
+                Button { expandedPage = selectedPage } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
                         .frame(width: 44, height: 44)
                         .playerControlGlass(in: Circle())
                 }
-                .foregroundStyle(theme.accent)
                 .disabled(player.current == nil)
-                .accessibilityLabel("Editar letra")
-                .accessibilityIdentifier("editPlayerLyrics")
+                .accessibilityLabel(selectedPage == .meaning ? "Ampliar significado" : "Ampliar letra")
+                .accessibilityIdentifier(selectedPage == .meaning ? "expandMeaning" : "expandLyrics")
                 Menu {
                     Button("Sonido", systemImage: "slider.horizontal.3") { showListening = true }
                     Button("Temporizador", systemImage: "moon.zzz") { showTimer = true }
@@ -108,7 +110,7 @@ struct NowPlayingView: View {
                     if let track = player.current { SongActions(player: player, track: track) { songAction = $0 } }
                 } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44).playerControlGlass(in: Circle()) }.accessibilityLabel("Opciones de canción")
                 Button { showQueue = true } label: { Image(systemName: "list.bullet").frame(width: 44, height: 44).playerControlGlass(in: Circle()) }.accessibilityLabel("Cola").accessibilityIdentifier("playerQueue")
-            }.font(.system(size: 18, weight: .medium)).buttonStyle(.plain)
+            }.font(.system(size: 18, weight: .medium)).foregroundStyle(.primary).buttonStyle(.plain)
         }
     }
     private func trackInformation(compact: Bool) -> some View {
@@ -116,8 +118,13 @@ struct NowPlayingView: View {
             Text(player.currentDetails?.title ?? player.current?.displayName ?? "Sonora")
                 .font(.system(compact ? .title3 : .title, design: theme.heading, weight: .bold))
                 .lineLimit(compact ? 1 : 2).textSelection(.enabled).accessibilityIdentifier("playerTitle")
-            Text(player.currentDetails?.artist ?? "Artista desconocido")
-                .font(compact ? .subheadline : .title3).foregroundStyle(.secondary).lineLimit(1)
+            Group {
+                Text(player.currentDetails?.artist ?? "Artista desconocido")
+                    .accessibilityIdentifier("playerArtist")
+                Text(player.currentDetails?.album ?? player.folderName)
+                    .accessibilityIdentifier("playerAlbum")
+            }
+            .font(compact ? .subheadline : .title3).foregroundStyle(.secondary).lineLimit(1)
             if let format = player.currentDetails?.format {
                 HStack {
                     Text(format).lineLimit(1).layoutPriority(-1)
@@ -138,14 +145,14 @@ struct NowPlayingView: View {
         PlayerGlassGroup {
             HStack(spacing: 16) {
                 Button { player.shuffle.toggle() } label: { Image(systemName: "shuffle").frame(width: 44, height: 44).playerControlGlass(in: Circle()) }
-                    .foregroundStyle(player.shuffle ? theme.accent : .secondary).accessibilityLabel("Aleatorio").accessibilityValue(player.shuffle ? "Activado" : "Desactivado")
+                    .foregroundStyle(player.shuffle ? theme.accent : Color.primary.opacity(0.72)).accessibilityLabel("Aleatorio").accessibilityValue(player.shuffle ? "Activado" : "Desactivado")
                 Button { player.previous() } label: { Image(systemName: "backward.end.fill").font(.system(size: 28)).frame(width: 44, height: 44).playerControlGlass(in: Circle()) }.accessibilityLabel("Anterior")
                 playButton
                 Button { player.next() } label: { Image(systemName: "forward.end.fill").font(.system(size: 28)).frame(width: 44, height: 44).playerControlGlass(in: Circle()) }.accessibilityLabel("Siguiente")
                 Button {
                     player.repeatMode = player.repeatMode == .off ? .all : player.repeatMode == .all ? .one : .off
                 } label: { Image(systemName: player.repeatMode == .one ? "repeat.1" : "repeat").frame(width: 44, height: 44).playerControlGlass(in: Circle()) }
-                    .foregroundStyle(player.repeatMode == .off ? .secondary : theme.accent)
+                    .foregroundStyle(player.repeatMode == .off ? Color.primary.opacity(0.72) : theme.accent)
                     .accessibilityLabel("Repetición").accessibilityValue(player.repeatMode == .off ? "Desactivada" : player.repeatMode == .one ? "Una canción" : "Toda la cola")
             }.font(.system(size: 20)).buttonStyle(.plain)
         }
