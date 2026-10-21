@@ -58,7 +58,7 @@ struct LyricsDraftPreview: View {
     @State private var follow = true
     private var active: String? {
         guard player.isEditingTrackCurrent(track) else { return nil }
-        let offset = UserDefaults.standard.double(forKey: "lyricsOffset.\(track.id)")
+        let offset = UserDefaults.standard.double(forKey: player.lyricsOffsetKey(for: track))
         let time = player.currentTime - offset + 0.25
         var selected: LyricsDraft.Line?
         for line in draft.lines {
@@ -84,7 +84,7 @@ struct LyricsDraftPreview: View {
                         LazyVStack(alignment: .leading, spacing: 22) {
                             ForEach(draft.lines) { line in
                                 Button {
-                                    if let time = line.time { player.playForLyricsEditing(track, at: max(0, time + UserDefaults.standard.double(forKey: "lyricsOffset.\(track.id)"))) }
+                                    if let time = line.time { player.playForLyricsEditing(track, at: max(0, time + UserDefaults.standard.double(forKey: player.lyricsOffsetKey(for: track)))) }
                                 } label: {
                                     Text(line.text.isEmpty ? "♪" : line.text)
                                         .font(active == line.id ? .title.bold() : .title2.weight(.medium))
@@ -203,7 +203,7 @@ struct LyricsPhraseEditor: View {
     @State private var start = ""
     @State private var issue: String?
     @State private var discard = false
-    private var offset: Double { UserDefaults.standard.double(forKey: "lyricsOffset.\(track.id)") }
+    private var offset: Double { UserDefaults.standard.double(forKey: player.lyricsOffsetKey(for: track)) }
     private var changed: Bool { text != line.text || start != (line.time.map { String(LyricsDraft.timestamp($0).dropFirst().dropLast()) } ?? "") }
     private var seconds: Double? {
         let parts = start.replacingOccurrences(of: ",", with: ".").split(separator: ":", omittingEmptySubsequences: false)

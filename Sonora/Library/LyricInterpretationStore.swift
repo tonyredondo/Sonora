@@ -198,7 +198,7 @@ final class LyricInterpretationStore {
         for waiter in waiters { waiter.resume(with: result) }
     }
     private static func blocksAutomaticQueue(_ error: Error) -> Bool {
-        if error is URLError { return true }
+        if error is URLError || error is MetadataTransportFailure { return true }
         if case LyricsInterpretationError.service(let code, _) = error { return code != "codex_invalid_response" }
         if case MetadataLookupError.unauthorized = error { return true }
         if case MetadataLookupError.invalidConnection = error { return true }

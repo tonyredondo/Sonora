@@ -147,4 +147,28 @@ final class CollectionLibraryTests: XCTestCase {
         XCTAssertTrue(library.state.songs.isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("a.flac").path), "Forgetting a source must not delete audio")
     }
+    func testRescanningMissingFilesReconcilesReferencesBeforePlaylistEdits() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "fixture", withExtension: "flac"))
+        for name in ["a.flac", "b.flac", "c.flac"] { try FileManager.default.copyItem(at: fixture, to: root.appendingPathComponent(name)) }
+        let suite = "SonoraTests.Rescan.\(UUID())", defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let library = MusicLibrary(defaults: defaults, artworkDirectory: root.appendingPathComponent("art"))
+        defer { library.cancelIndexing() }
+        let folder = try ScopedFolder(root), source = try library.register(folder, tracks: await FolderScanService.scan(folder))
+        let ids = ["a.flac", "b.flac", "c.flac"].map { source + "\0" + $0 }
+        let playlist = try XCTUnwrap(library.createPlaylist("Favorites"))
+        library.add(ids, to: playlist); library.toggleFavorite(ids[0]); library.recordPlayed(ids[0])
+        try FileManager.default.removeItem(at: root.appendingPathComponent("a.flac"))
+        try library.register(folder, tracks: await FolderScanService.scan(folder))
+        XCTAssertNil(library.state.songs[ids[0]])
+        XCTAssertFalse(library.state.favorites.contains(ids[0]))
+        XCTAssertFalse(library.state.history.contains { $0.songID == ids[0] })
+        XCTAssertEqual(library.state.playlists.first { $0.id == playlist }?.songIDs, Array(ids.dropFirst()))
+        library.remove(from: playlist, at: IndexSet(integer: 1))
+        XCTAssertEqual(library.state.playlists.first { $0.id == playlist }?.songIDs, [ids[1]])
+    }
+
 }

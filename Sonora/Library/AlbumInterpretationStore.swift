@@ -116,7 +116,7 @@ final class AlbumInterpretationStore {
             }
             return try await job.task.value
         }
-        let endpoint = settings.endpoint
+        let endpoint = settings.endpoint, connectionRevision = settings.configurationRevision
         let task = Task { [self] () throws -> Prepared in
             defer { pending[key] = nil; start() }
             do {
@@ -160,7 +160,8 @@ final class AlbumInterpretationStore {
                 if case MetadataLookupError.notCached = error { statuses[key] = .waiting }
                 else {
                     statuses[key] = .failed(error.localizedDescription)
-                    if error is URLError || error is LyricsInterpretationError { automaticIssue = error.localizedDescription }
+                    if endpoint == settings.endpoint, connectionRevision == settings.configurationRevision,
+                       Self.blocksAutomaticQueue(error) { automaticIssue = error.localizedDescription }
                 }
                 throw error
             }
@@ -168,4 +169,11 @@ final class AlbumInterpretationStore {
         pending[key] = (refresh, task)
         return try await task.value
     }
+    private static func blocksAutomaticQueue(_ error: Error) -> Bool {
+        if error is URLError || error is MetadataTransportFailure || error is LyricsInterpretationError { return true }
+        if case MetadataLookupError.unauthorized = error { return true }
+        if case MetadataLookupError.invalidConnection = error { return true }
+        return false
+    }
+
 }

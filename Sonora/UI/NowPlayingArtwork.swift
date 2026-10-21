@@ -306,7 +306,7 @@ private struct ArtworkLyrics: View {
          translation: LyricTranslation? = nil, translated: Bool = false, preparation: String? = nil, preparing: Bool = false) {
         self.player = player; self.lyrics = lyrics; self.scrollRequest = scrollRequest; self.isVisible = isVisible
         self.translation = translation; self.translated = translated; self.preparation = preparation; self.preparing = preparing
-        _offset = AppStorage(wrappedValue: 0, "lyricsOffset.\(player.current?.id ?? "")")
+        _offset = AppStorage(wrappedValue: 0, player.lyricsOffsetKey(for: player.current))
     }
     private var active: Int? { lyrics.activeLine(at: player.currentTime, offset: offset) }
 

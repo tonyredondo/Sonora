@@ -192,4 +192,21 @@ import XCTest
         XCTAssertEqual(try Data(contentsOf: payload), bytes)
         XCTAssertTrue(FileManager.default.fileExists(atPath: LocalMusicImport.musicURL(again, storage: storage).appendingPathComponent("song.flac").path))
     }
+    func testDeletingFolderContainingCurrentAndEarlierTracksSelectsImmediateSurvivor() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Source")
+        for path in ["Gone/01.flac", "Gone/02.flac", "Keep/01.flac", "Keep/02.flac", "Keep/03.flac"] { try audio(source.appendingPathComponent(path)) }
+        let (player, defaults, suite) = try player(storage: root.appendingPathComponent("Copies"))
+        defer { player.stop(); player.library.cancelIndexing(); defaults.removePersistentDomain(forName: suite) }
+        await player.loadFolder(source, autoPlay: false)
+        let id = try XCTUnwrap(player.library.state.sources.first?.id)
+        player.play(index: 1); player.pause()
+        try await settle(player)
+        XCTAssertEqual(player.current?.relativePath, "Gone/02.flac")
+        try await player.deleteSourceFile(try await item("Gone", in: player.library.access(id)), sourceID: id)
+        try await settle(player)
+        XCTAssertEqual(player.current?.relativePath, "Keep/01.flac")
+        XCTAssertFalse(player.isPlaying)
+    }
+
 }

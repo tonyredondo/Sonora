@@ -95,9 +95,9 @@ struct LyricsSynchronizationView: View {
                 let client = LyricsSynchronizationClient(connection: connection, cache: settings.cache)
                 let folder = try player.folderAccess(for: track)
                 let query = MetadataSearch(title: current[.title].flatMap { $0.isEmpty ? nil : $0 } ?? track.displayName, artist: (current[.artist] ?? "").trimmingCharacters(in: .whitespacesAndNewlines), album: (current[.album] ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
-                let value = try await client.synchronize(query: query, duration: snapshot.duration, lyrics: lyrics, offline: settings.effectiveOffline) {
-                    await MainActor.run { phase = "Preparando audio y analizando…" }
-                    return try await LyricsAudioPreparation.prepare(track: track, folder: folder, expected: snapshot.fingerprint)
+                let value = try await Self.synchronize(client: client, query: query, track: track, folder: folder,
+                                                       snapshot: snapshot, lyrics: lyrics, offline: settings.effectiveOffline) {
+                    phase = "Preparando audio y analizando…"
                 }
                 try Task.checkCancellation()
                 result = value
@@ -105,4 +105,14 @@ struct LyricsSynchronizationView: View {
               catch { if !Task.isCancelled { issue = error.localizedDescription } }
         }
     }
+    static func synchronize(client: LyricsSynchronizationClient, query: MetadataSearch, track: AudioTrack, folder: ScopedFolder,
+                            snapshot: MetadataSnapshot, lyrics: String, offline: Bool,
+                            preparingAudio: @escaping @MainActor @Sendable () -> Void) async throws -> MetadataLookupResult<LyricsSynchronizationResult> {
+        let duration = try await LyricsAudioPreparation.duration(track: track, folder: folder, expected: snapshot.fingerprint)
+        return try await client.synchronize(query: query, duration: duration, lyrics: lyrics, offline: offline) {
+            await preparingAudio()
+            return try await LyricsAudioPreparation.prepare(track: track, folder: folder, expected: snapshot.fingerprint)
+        }
+    }
+
 }

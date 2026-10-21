@@ -36,12 +36,13 @@ struct MetadataBatchResult: Sendable {
 }
 
 enum MetadataIOError: LocalizedError {
-    case unsupported, changed, readOnly, verification(MetadataField), invalidImage, invalidReplayGain
+    case unsupported, changed, readOnly, verification(MetadataField), invalidImage, invalidReplayGain, externalLyrics
     var errorDescription: String? {
         switch self {
         case .unsupported: "Este formato no permite guardar etiquetas en Sonora."
         case .changed: "El archivo ha cambiado desde que lo abriste. Cierra el editor y vuelve a cargarlo."
         case .readOnly: "No hay permiso de escritura para este archivo o su carpeta."
+        case .externalLyrics: "Una letra externa seguiría teniendo prioridad. Conserva los tiempos de la letra o actualiza el archivo .lrc o .txt antes de guardar esta sustitución."
         case .verification(let field): "El formato no ha conservado el campo \(field.title). El original no se ha sustituido."
         case .invalidImage: "No se pudo leer la carátula. Elige una imagen JPEG o PNG."
         case .invalidReplayGain: "No se pudieron verificar las etiquetas ReplayGain. El original no se ha sustituido."
