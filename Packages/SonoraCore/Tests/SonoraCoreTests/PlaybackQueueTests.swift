@@ -29,4 +29,14 @@ final class PlaybackQueueTests: XCTestCase {
         XCTAssertEqual(queue.current?.id, "02.wav")
         XCTAssertEqual(queue.tracks.count, 2)
     }
+    func testRemovingCurrentAndEarlierEntriesSelectsTheNearestSurvivingSuccessor() {
+        for (removed, expected) in [([0, 2], "D.wav"), ([0, 1, 2], "D.wav"), ([0, 2, 3], "E.wav"), ([0, 2, 3, 4], "B.wav")] {
+            var queue = PlaybackQueue()
+            queue.replace(with: ["A.wav", "B.wav", "C.wav", "D.wav", "E.wav"].map { AudioTrack(relativePath: $0)! })
+            queue.select(index: 2)
+            queue.remove(atOffsets: IndexSet(removed))
+            XCTAssertEqual(queue.current?.relativePath, expected)
+        }
+    }
+
 }

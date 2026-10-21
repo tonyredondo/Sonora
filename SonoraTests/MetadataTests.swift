@@ -137,4 +137,38 @@ final class MetadataTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), external)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["test.flac"])
     }
+    @MainActor func testUserLyricSaveRejectsExternalLyricsShadowingWithoutChangingEitherFile() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("song.flac")
+        try FileManager.default.copyItem(at: XCTUnwrap(Bundle(for: Self.self).url(forResource: "fixture", withExtension: "flac")), to: url)
+        let sidecar = root.appendingPathComponent("song.lrc"), external = Data("[00:01]Original external lyric".utf8)
+        try external.write(to: sidecar)
+        let defaults = UserDefaults(suiteName: "SonoraTests.ShadowedLyrics.\(UUID())")!
+        let player = PlaybackController(defaults: defaults); defer { player.stop(); player.library.cancelIndexing() }
+        await player.loadFolder(root, autoPlay: false)
+        let track = try XCTUnwrap(player.current), before = try Data(contentsOf: url)
+        for lyrics in ["Replacement without times", ""] {
+            let snapshot = try await player.readMetadata(for: track)
+            do {
+                try await player.saveMetadata(for: track, expected: snapshot.fingerprint, patch: MetadataPatch(values: [.lyrics: lyrics]))
+                XCTFail("A successful save must become the effective lyric")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("externa"))
+            }
+            XCTAssertEqual(try Data(contentsOf: url), before)
+            XCTAssertEqual(try Data(contentsOf: sidecar), external)
+        }
+        let snapshot = try await player.readMetadata(for: track)
+        let batch = await player.saveMetadataBatch([track], expected: [track.id: snapshot.fingerprint], patch: MetadataPatch(values: [.lyrics: ""]), progress: { _ in })
+        XCTAssertEqual(batch.written, 0)
+        XCTAssertEqual(batch.failures.count, 1)
+        XCTAssertEqual(try Data(contentsOf: url), before)
+        try await player.saveMetadata(for: track, expected: snapshot.fingerprint, patch: MetadataPatch(values: [.lyrics: "[00:01]New timed lyric"]))
+        let saved = try await player.readMetadata(for: track)
+        let effective = try await LyricsAudioPreparation.existingText(track: track, folder: player.folderAccess(for: track), embedded: saved.values[.lyrics] ?? "", expected: saved.fingerprint)
+        XCTAssertEqual(effective, "[00:01]New timed lyric")
+    }
+
 }

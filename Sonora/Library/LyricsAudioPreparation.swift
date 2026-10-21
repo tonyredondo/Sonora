@@ -43,6 +43,13 @@ enum LyricsAudioPreparation {
             return data
         }
     }
+    /// User edits must become effective without silently overriding or deleting an external lyric file.
+    static func validateReplacement(_ text: String, track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint) async throws {
+        let effective = try await existingText(track: track, folder: folder, embedded: text, expected: expected)
+        guard effective.trimmingCharacters(in: .whitespacesAndNewlines) == text.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            throw MetadataIOError.externalLyrics
+        }
+    }
     static func existingText(track: AudioTrack, folder: ScopedFolder, embedded: String, expected: FileFingerprint) async throws -> String {
         try await CoordinatedAudioRead.read(track: track, folder: folder, expected: expected) { url, lyricsCoordinator in
             LyricsSource.read(for: url, embedded: embedded, coordinator: lyricsCoordinator).text

@@ -33,7 +33,7 @@ impl RequestSpec {
         // A catalog miss is reusable; a paid-provider error is never an analysis.
         status == 200 || (status == 404 && self.audio_job.is_none())
     }
-    fn key(&self, user_agent: &str) -> String {
+    pub(crate) fn key(&self, user_agent: &str) -> String {
         let mut hash = Sha256::new();
         hash.update(b"sonora-http-v1\0");
         hash.update(self.provider.name());

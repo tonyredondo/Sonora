@@ -190,7 +190,7 @@ struct MetadataEditorView: View {
             .task(id: track.id) {
                 guard loadedTrackID != track.id else { return }
                 do {
-                    let value = try await player.readMetadata(for: track)
+                    let value = try await Self.readSnapshot(player: player, track: track)
                     try Task.checkCancellation()
                     var effectiveLyrics = value.values[.lyrics] ?? ""
                     if lyricsOnly || effectiveLyrics.isEmpty {
@@ -269,6 +269,13 @@ struct MetadataEditorView: View {
             }
             Section { Button("Importar .lrc o .txt") { importLyrics = true } }
         }
+    }
+    static func readSnapshot(player: PlaybackController, track: AudioTrack) async throws -> MetadataSnapshot {
+        let value = try await player.readMetadata(for: track)
+        guard value.canWrite else { return value }
+        let duration = try await LyricsAudioPreparation.duration(track: track, folder: player.folderAccess(for: track), expected: value.fingerprint)
+        return MetadataSnapshot(values: value.values, artwork: value.artwork, fingerprint: value.fingerprint,
+                                canWrite: value.canWrite, fileDescription: value.fileDescription, duration: duration, replayGain: value.replayGain)
     }
     private func save() {
         guard let snapshot else { return }

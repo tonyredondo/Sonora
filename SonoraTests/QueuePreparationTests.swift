@@ -13,6 +13,24 @@ private actor QueueMeaningHTTP: MetadataLookupTransport {
     }
 }
 
+private final class UnavailableMetadataURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() { client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost)) }
+    override func stopLoading() { }
+}
+
+/// Exercise the production transport's sanitized error, rather than injecting a bare URLError.
+func failThroughMetadataTransport(diagnosticsRoot: URL) async throws {
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [UnavailableMetadataURLProtocol.self]
+    let session = URLSession(configuration: config)
+    defer { session.invalidateAndCancel() }
+    let transport = MetadataURLSessionTransport(session: session, diagnostics: MetadataDiagnostics(directory: diagnosticsRoot))
+    _ = try await transport.send(URLRequest(url: URL(string: "http://127.0.0.1/unavailable")!))
+    XCTFail("The fixture must fail through the actual transport")
+}
+
 @MainActor
 final class QueuePreparationTests: XCTestCase {
     private func wait(_ predicate: () -> Bool) async throws {
@@ -396,4 +414,26 @@ final class QueuePreparationTests: XCTestCase {
         XCTAssertEqual(reopened.current?.id, selected)
         XCTAssertFalse(reopened.isPlaying)
     }
+    func testProductionTransportFailureRetainsMeaningJobsUntilRetry() async throws {
+        let (root, suite, defaults) = try scope()
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        let response = try value()
+        var fail = true, calls: [String] = []
+        let store = LyricInterpretationStore(settings: settings(root, defaults: defaults), requests: CodexRequestPool()) { doc, _, _, mode in
+            if mode == .cachedOnly { throw MetadataLookupError.notCached }
+            calls.append(doc.lines[0].text)
+            if fail { try await failThroughMetadataTransport(diagnosticsRoot: root.appendingPathComponent("diagnostics")) }
+            return response
+        }
+        let a = LyricsDocument(text: "A"), b = LyricsDocument(text: "B")
+        store.setAutomaticQueue(["a", "b"])
+        await store.enqueue(a, language: "es", owner: "a")
+        try await wait { store.automaticIssue != nil }
+        await store.enqueue(b, language: "es", owner: "b")
+        XCTAssertEqual(calls, ["A"], "An outage must block work that has not already started")
+        fail = false; store.retryAutomatic()
+        try await wait { store.results.count == 2 }
+        XCTAssertEqual(calls, ["A", "A", "B"], "Retry must retain the failed job as well as the queued job")
+    }
+
 }

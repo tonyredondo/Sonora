@@ -159,4 +159,83 @@ import XCTest
         let markers = try await cache.read([String: String].self, key: "manual-markers", personal: true)
         XCTAssertEqual(translation, sentinel); XCTAssertEqual(markers, sentinel)
     }
+    func testProductionTransportFailurePausesAutomaticAlbumsAndRetryRetainsWork() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "AlbumNetwork.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        var collection = MusicCollection(); collection.sources = [.init(id: "source", name: "Music", bookmark: Data())]
+        collection.upsert([.init(sourceID: "source", relativePath: "one.wav", tags: [.album: "A", .artist: "B"])])
+        let group = try XCTUnwrap(collection.groups(byAlbum: true).first)
+        let album = AlbumPreparationRequest(group: group, songs: group.songIDs.compactMap { collection.songs[$0] })
+        let corpus = AlbumInterpretationInput(title: "A", artist: "B", tracks: [.init(context: .init(title: "One"), lyrics: "Full text")])
+        let response = try reading()
+        var fail = true, calls = 0
+        let store = AlbumInterpretationStore(settings: config(defaults, root: root), cache: MusicToolsCache(root: root)) { _, _, _ in
+            calls += 1
+            if fail { try await failThroughMetadataTransport(diagnosticsRoot: root.appendingPathComponent("diagnostics")) }
+            return response
+        }
+        store.update([album], preferences: QueuePreparationPreferences(defaults: defaults)) { _, _ in corpus }
+        let key = store.key(album, language: "es", character: true)
+        try await wait { if case .failed = store.statuses[key] { return true }; return false }
+        XCTAssertNotNil(store.automaticIssue)
+        XCTAssertEqual(calls, 1)
+        fail = false; store.retry()
+        try await wait { store.results.count == 1 }
+        XCTAssertEqual(calls, 2)
+    }
+
+    private func requests(_ count: Int) throws -> [AlbumPreparationRequest] {
+        var collection = MusicCollection(); collection.sources = [.init(id: "source", name: "Music", bookmark: Data())]
+        collection.upsert((0..<count).map { .init(sourceID: "source", relativePath: "\($0).wav", tags: [.album: "Album \($0)", .artist: "Artist"]) })
+        return collection.groups(byAlbum: true).map { AlbumPreparationRequest(group: $0, songs: $0.songIDs.compactMap { collection.songs[$0] }) }
+    }
+
+    func testUnauthorizedPausesUnstartedAlbumsUntilRetry() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "AlbumAuth.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        let response = try reading(), albums = try requests(6)
+        var fail = true, calls = 0, collections = 0
+        let store = AlbumInterpretationStore(settings: config(defaults, root: root), cache: MusicToolsCache(root: root), requests: CodexRequestPool()) { _, _, _ in
+            calls += 1
+            if fail { throw MetadataLookupError.unauthorized }
+            return response
+        }
+        store.update(albums, preferences: QueuePreparationPreferences(defaults: defaults)) { album, _ in
+            collections += 1
+            return AlbumInterpretationInput(title: album.title, artist: album.artist, tracks: [.init(context: .init(title: "Song"), lyrics: "Full text")])
+        }
+        try await wait { store.automaticIssue != nil }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertLessThanOrEqual(calls, CodexRequestPool.capacity)
+        XCTAssertLessThanOrEqual(collections, CodexRequestPool.capacity)
+        fail = false; store.retry()
+        try await wait { store.results.count == albums.count }
+    }
+
+    func testOldEndpointFailureCannotPauseNewAlbumConnection() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "AlbumEndpoint.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        let settings = config(defaults, root: root), response = try reading(), album = try XCTUnwrap(requests(1).first)
+        let corpus = AlbumInterpretationInput(title: album.title, artist: album.artist, tracks: [.init(context: .init(title: "Song"), lyrics: "Full text")])
+        var gate: CheckedContinuation<LyricsInterpretation, Error>?, calls = 0
+        let store = AlbumInterpretationStore(settings: settings, cache: MusicToolsCache(root: root), requests: CodexRequestPool()) { _, _, _ in
+            calls += 1
+            if calls == 1 { return try await withCheckedThrowingContinuation { gate = $0 } }
+            return response
+        }
+        let first = Task { try await store.load(album, language: "es", character: false) { _, _ in corpus } }
+        try await wait { gate != nil }
+        try settings.save(endpoint: "http://127.0.0.1:10", token: "")
+        try await Task.sleep(for: .milliseconds(100)) // Let the connection observer apply its retry before the late failure.
+        gate?.resume(throwing: URLError(.cannotConnectToHost)); gate = nil
+        do { _ = try await first.value; XCTFail() } catch { }
+        XCTAssertNil(store.automaticIssue, "Only the current connection may block automatic work")
+        store.update([album], preferences: QueuePreparationPreferences(defaults: defaults)) { _, _ in corpus }
+        let key = store.key(album, language: "es", character: true)
+        try await wait { store.results[key] != nil }
+    }
+
 }

@@ -77,7 +77,7 @@ public actor LyricsTranslationClient {
 
     private static func validText(_ text: String) -> Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && text.utf8.count <= 10_000
-            && !text.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) && $0 != "\t" }
+            && !text.unicodeScalars.contains { $0.properties.generalCategory == .control && $0 != "\t" }
     }
     private static func validLanguage(_ language: String) -> Bool {
         let parts = language.split(separator: "-", omittingEmptySubsequences: false)

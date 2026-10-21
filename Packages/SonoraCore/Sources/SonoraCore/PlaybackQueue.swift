@@ -50,7 +50,9 @@ public struct PlaybackQueue: Sendable {
     public mutating func remove(atOffsets: IndexSet) {
         let currentID = current?.id
         let oldIndex = currentIndex ?? 0
-        for index in atOffsets.reversed() where tracks.indices.contains(index) { tracks.remove(at: index) }
-        currentIndex = tracks.firstIndex { $0.id == currentID } ?? (tracks.isEmpty ? nil : min(oldIndex, tracks.count - 1))
+        let indices = atOffsets.filter { tracks.indices.contains($0) }
+        let successorIndex = oldIndex - indices.filter { $0 < oldIndex }.count
+        for index in indices.reversed() { tracks.remove(at: index) }
+        currentIndex = tracks.firstIndex { $0.id == currentID } ?? (tracks.isEmpty ? nil : min(successorIndex, tracks.count - 1))
     }
 }

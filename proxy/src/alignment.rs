@@ -52,6 +52,30 @@ impl AlignmentInput {
             text,
         })
     }
+    // Old positive cache entries may predate the strict start-time bound. Reject
+    // and evict those locally; never issue another paid request in the same call.
+    fn accepts_cached(&self, result: &Alignment) -> bool {
+        result.synced_lyrics.lines().all(|line| {
+            if line.trim().is_empty() {
+                return true;
+            }
+            let Some((cue, _)) = line.strip_prefix('[').and_then(|line| line.split_once(']'))
+            else {
+                return false;
+            };
+            let Some((minutes, seconds)) = cue.split_once(':') else {
+                return false;
+            };
+            match (minutes.parse::<u32>(), seconds.parse::<f64>()) {
+                (Ok(minutes), Ok(seconds)) => {
+                    seconds.is_finite()
+                        && (0.0..60.0).contains(&seconds)
+                        && f64::from(minutes) * 60.0 + seconds <= self.duration
+                }
+                _ => false,
+            }
+        })
+    }
     /// Match the complete transcript in order, including repeated verses; retain original line text.
     pub fn aligned(&self, value: &serde_json::Value) -> Result<Alignment, Error> {
         #[derive(Deserialize)]
@@ -76,6 +100,7 @@ impl AlignmentInput {
             if !word.start.is_finite()
                 || !word.end.is_finite()
                 || word.start < previous
+                || word.start > self.duration
                 || word.end < word.start
                 || word.end > self.duration + 0.05
             {
@@ -171,10 +196,19 @@ impl Client {
         }
         let mut spec = self.request(Provider::Elevenlabs, "/v1/forced-alignment", &[])?;
         let source = spec.url.to_string();
-        spec.audio_job = Some(AudioJob::Alignment(input));
+        spec.audio_job = Some(AudioJob::Alignment(input.clone()));
+        let key = spec.key(&self.config().user_agent);
         let result = self.scheduler.fetch(spec, priority).await?;
-        let data = serde_json::from_slice(&result.entry.body)
+        let data: Alignment = serde_json::from_slice(&result.entry.body)
             .map_err(|_| Error::InvalidResponse(Provider::Elevenlabs))?;
+        if !input.accepts_cached(&data) {
+            self.scheduler
+                .cache()
+                .remove(&key)
+                .await
+                .map_err(|_| Error::Cache)?;
+            return Err(Error::InvalidResponse(Provider::Elevenlabs));
+        }
         Ok(Reply {
             provider: Provider::Elevenlabs,
             sources: vec![source],
@@ -188,6 +222,80 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn evicts_old_invalid_alignment_without_repeating_paid_work() {
+        use crate::{
+            cache::{CacheEntry, ResponseHeaders},
+            config::Config,
+        };
+        let root = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.cache.path = root.path().join("cache.sqlite");
+        config.metadata.path = root.path().join("metadata.sqlite");
+        config.elevenlabs.api_key = Some("fixture".into());
+        config.elevenlabs.base_url = Some("http://127.0.0.1:9".into());
+        let client = Client::new(config).unwrap();
+        let mut audio = vec![0; 64044];
+        audio[..44].copy_from_slice(&[
+            b'R', b'I', b'F', b'F', 36, 250, 0, 0, b'W', b'A', b'V', b'E', b'f', b'm', b't', b' ',
+            16, 0, 0, 0, 1, 0, 1, 0, 128, 62, 0, 0, 0, 125, 0, 0, 2, 0, 16, 0, b'd', b'a', b't',
+            b'a', 0, 250, 0, 0,
+        ]);
+        let input = AlignmentInput::new(audio.clone().into(), "Hello".into()).unwrap();
+        let mut spec = client
+            .request(Provider::Elevenlabs, "/v1/forced-alignment", &[])
+            .unwrap();
+        spec.audio_job = Some(AudioJob::Alignment(input));
+        let key = spec.key(&client.config().user_agent);
+        let cached = Alignment {
+            plain_lyrics: "Hello".into(),
+            synced_lyrics: "[00:02.01]Hello".into(),
+            audio_sha256: digest(&audio),
+            text_sha256: digest(b"Hello"),
+            duration: 2.0,
+        };
+        let cache = client.scheduler.cache();
+        cache
+            .put(
+                &key,
+                CacheEntry {
+                    status: 200,
+                    headers: ResponseHeaders::default(),
+                    body: serde_json::to_vec(&cached).unwrap().into(),
+                    stored_at: 1,
+                    expires_at: crate::cache::unix_time() + 86400,
+                },
+            )
+            .await
+            .unwrap();
+        let result = client
+            .align(audio.into(), "Hello".into(), Priority::Interactive)
+            .await;
+        // A request to the closed fixture port would return Upstream instead.
+        assert!(matches!(
+            result,
+            Err(Error::InvalidResponse(Provider::Elevenlabs))
+        ));
+        assert!(cache.get(&key).await.unwrap().is_none());
+    }
+    #[test]
+    fn rejects_word_starts_beyond_audio_even_inside_end_tolerance() {
+        let input = AlignmentInput {
+            audio: Bytes::new(),
+            text: "Hello".into(),
+            duration: 2.0,
+        };
+        assert!(
+            input
+                .aligned(&serde_json::json!({"words":[{"text":"Hello","start":2.01,"end":2.02}]}))
+                .is_err()
+        );
+        assert!(
+            input
+                .aligned(&serde_json::json!({"words":[{"text":"Hello","start":1.99,"end":2.02}]}))
+                .is_ok()
+        );
+    }
     #[test]
     fn rejects_incomplete_transcript_and_out_of_range_timestamps() {
         let input = AlignmentInput {

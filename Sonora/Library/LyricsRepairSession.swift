@@ -39,7 +39,7 @@ import SonoraCore
     private var previewSelection: PreviewSelection?
     var title: String { snapshot?.values[.title].flatMap { $0.isEmpty ? nil : $0 } ?? track.displayName }
     var canAnalyze: Bool { snapshot?.canWrite == true && track.cue == nil && !settings.endpoint.isEmpty && !loading && !saving }
-    var canListen: Bool { player.current?.id == track.id }
+    var canListen: Bool { player.isEditingTrackCurrent(track) }
     var visibleProposals: [LyricsRepair.Proposal] {
         review?.proposals.filter { $0.kind != .unrecognized && (!onlyCompletions || $0.kind == .completion) } ?? []
     }

@@ -92,4 +92,18 @@ final class LyricsTranslationTests: XCTestCase {
         let calls = await http.calls
         XCTAssertTrue(calls.isEmpty)
     }
+    func testMeaningfulUnicodeFormatCharactersSurviveTranslationAndContextValidation() async throws {
+        let http = TranslationHTTP(), service = try client(http)
+        await http.set(#"{"lines":[{"id":0,"text":"می‌خواهم"},{"id":2,"text":"\u200eTraducción"}],"model":"gpt-6.1-sol","effort":"medium"}"#)
+        let value = try await service.translate(document, source: "en", target: "fa")
+        XCTAssertEqual(value.lines[0], "می‌خواهم")
+        XCTAssertEqual(value.lines[2], "\u{200e}Traducción")
+        let original = LyricsDocument(text: "می‌خواهم")
+        await http.set(#"{"lines":[{"id":0,"text":"I want"}],"model":"gpt-6.1-sol","effort":"medium"}"#)
+        let reverse = try await service.translate(original, source: "fa", target: "en")
+        XCTAssertEqual(reverse.lines[0], "I want")
+        XCTAssertTrue(LyricsInterpretationContext(title: "می‌خواهم").isValid)
+        XCTAssertTrue(AlbumInterpretationInput(title: "Record", artist: "Artist", tracks: [.init(context: .init(title: "Song"), lyrics: "می‌خواهم", genre: "Rock")]).isValid)
+    }
+
 }

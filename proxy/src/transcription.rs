@@ -36,6 +36,41 @@ pub struct TranscriptionWord {
     pub start: f64,
     pub end: f64,
 }
+impl Transcription {
+    /// Match the retained word contract accepted by the iPhone, including legacy
+    /// cached transcripts without word details.
+    fn valid_words(&self) -> bool {
+        if self.words.is_empty() {
+            return true;
+        }
+        let mut previous = 0.0;
+        let mut bytes = 0;
+        for word in &self.words {
+            bytes += word.text.len();
+            if bytes > 262_144
+                || word.text.contains('\0')
+                || normalized(&word.text).is_empty()
+                || !word.start.is_finite()
+                || !word.end.is_finite()
+                || word.start < previous
+                || word.start > self.duration
+                || word.end < word.start
+                || word.end > self.duration + 0.05
+            {
+                return false;
+            }
+            previous = word.start;
+        }
+        normalized(
+            &self
+                .words
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<String>(),
+        ) == normalized(&self.plain_lyrics)
+    }
+}
+
 impl TranscriptionInput {
     pub fn new(audio: Bytes) -> Result<Self, Error> {
         Ok(Self {
@@ -212,7 +247,7 @@ impl TranscriptionInput {
             );
             return Err(invalid());
         }
-        Ok(Transcription {
+        let result = Transcription {
             plain_lyrics,
             synced_lyrics: synced.join("\n"),
             audio_sha256: digest(&self.audio),
@@ -229,7 +264,11 @@ impl TranscriptionInput {
                     end: word.end,
                 })
                 .collect(),
-        })
+        };
+        if !result.valid_words() {
+            return Err(invalid());
+        }
+        Ok(result)
     }
 }
 
@@ -300,9 +339,19 @@ impl Client {
         let mut spec = self.request(Provider::Elevenlabs, "/v1/speech-to-text", &[])?;
         let source = spec.url.to_string();
         spec.audio_job = Some(AudioJob::Transcription(input));
+        let key = spec.key(&self.config().user_agent);
         let result = self.scheduler.fetch(spec, priority).await?;
-        let data = serde_json::from_slice(&result.entry.body)
+        let data: Transcription = serde_json::from_slice(&result.entry.body)
             .map_err(|_| Error::InvalidResponse(Provider::Elevenlabs))?;
+        if !data.valid_words() {
+            // Evict old incompatible successes without starting another paid job.
+            self.scheduler
+                .cache()
+                .remove(&key)
+                .await
+                .map_err(|_| Error::Cache)?;
+            return Err(Error::InvalidResponse(Provider::Elevenlabs));
+        }
         Ok(Reply {
             provider: Provider::Elevenlabs,
             sources: vec![source],
@@ -316,6 +365,83 @@ impl Client {
 #[cfg(test)]
 mod review_tests {
     use super::*;
+    #[tokio::test]
+    async fn evicts_invalid_cached_words_without_a_new_paid_request() {
+        use crate::{
+            cache::{CacheEntry, ResponseHeaders},
+            config::Config,
+        };
+        let root = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.cache.path = root.path().join("cache.sqlite");
+        config.metadata.path = root.path().join("metadata.sqlite");
+        config.elevenlabs.api_key = Some("fixture".into());
+        config.elevenlabs.base_url = Some("http://127.0.0.1:9".into());
+        let client = Client::new(config).unwrap();
+        let mut audio = b"RIFF".to_vec();
+        audio.extend(64036_u32.to_le_bytes());
+        audio.extend(b"WAVEfmt ");
+        audio.extend(16_u32.to_le_bytes());
+        audio.extend(1_u16.to_le_bytes());
+        audio.extend(1_u16.to_le_bytes());
+        audio.extend(16000_u32.to_le_bytes());
+        audio.extend(32000_u32.to_le_bytes());
+        audio.extend(2_u16.to_le_bytes());
+        audio.extend(16_u16.to_le_bytes());
+        audio.extend(b"data");
+        audio.extend(64000_u32.to_le_bytes());
+        audio.resize(64044, 0);
+        let input = TranscriptionInput::new(audio.clone().into()).unwrap();
+        let mut spec = client
+            .request(Provider::Elevenlabs, "/v1/speech-to-text", &[])
+            .unwrap();
+        spec.audio_job = Some(AudioJob::Transcription(input));
+        let key = spec.key(&client.config().user_agent);
+        let cached = Transcription {
+            plain_lyrics: "Hello".into(),
+            synced_lyrics: "[00:00.10]Hello".into(),
+            audio_sha256: digest(&audio),
+            duration: 2.0,
+            model_id: MODEL_ID.into(),
+            language_code: None,
+            words: vec![TranscriptionWord {
+                text: "\0Hello".into(),
+                start: 0.1,
+                end: 0.5,
+            }],
+        };
+        let cache = client.scheduler.cache();
+        cache
+            .put(
+                &key,
+                CacheEntry {
+                    status: 200,
+                    headers: ResponseHeaders::default(),
+                    body: serde_json::to_vec(&cached).unwrap().into(),
+                    stored_at: 1,
+                    expires_at: crate::cache::unix_time() + 86400,
+                },
+            )
+            .await
+            .unwrap();
+        let result = client.transcribe(audio.into(), Priority::Interactive).await;
+        assert!(matches!(
+            result,
+            Err(Error::InvalidResponse(Provider::Elevenlabs))
+        ));
+        assert!(cache.get(&key).await.unwrap().is_none());
+    }
+    #[test]
+    fn rejects_retained_word_nul_and_aggregate_bytes_before_caching() {
+        for word in ["\0Hello".to_owned(), "!".repeat(262_144) + "Hello"] {
+            assert!(
+                input()
+                    .transcribed(&serde_json::json!({"text":"Hello","words":[
+                {"text":word,"type":"word","start":0.1,"end":0.5}]}))
+                    .is_err()
+            );
+        }
+    }
     #[test]
     fn derived_transcription_retains_word_times_for_cached_lyric_repairs() {
         let words = serde_json::json!([

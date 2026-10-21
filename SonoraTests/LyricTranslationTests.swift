@@ -308,4 +308,27 @@ final class LyricTranslationTests: XCTestCase {
         XCTAssertEqual(calls, 4); XCTAssertEqual(maximumActive, 2)
         XCTAssertEqual(store.statuses[LyricUnderstanding.translationKey(second, source: "en", target: "es")], .ready)
     }
+    @MainActor func testProductionTransportFailureRetainsTranslationJobsUntilRetry() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "TranslationTransport.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        defaults.set("http://127.0.0.1:9", forKey: "metadata.endpoint")
+        let settings = MetadataAssistantSettings(defaults: defaults, tokens: MetadataTokenStore(service: suite), cache: .init(directory: root))
+        var fail = true, calls: [String] = []
+        let store = LyricTranslationStore(cache: MusicToolsCache(root: root), settings: settings, requests: CodexRequestPool()) { doc, _, _, _ in
+            calls.append(doc.lines[0].text)
+            if fail { try await failThroughMetadataTransport(diagnosticsRoot: root.appendingPathComponent("diagnostics")) }
+            return try LyricTranslation(lines: [0: "Traducción " + doc.lines[0].text], document: doc)
+        }
+        let a = LyricsDocument(text: "A"), b = LyricsDocument(text: "B")
+        store.setAutomaticQueue(["a", "b"], source: "en", target: "es")
+        await store.enqueue(a, source: "en", target: "es", owner: "a")
+        try await wait { store.automaticIssue != nil }
+        await store.enqueue(b, source: "en", target: "es", owner: "b")
+        XCTAssertEqual(calls, ["A"])
+        fail = false; store.retryAutomatic()
+        try await wait { store.results.count == 2 }
+        XCTAssertEqual(calls, ["A", "A", "B"])
+    }
+
 }

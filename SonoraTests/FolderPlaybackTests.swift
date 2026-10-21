@@ -1,6 +1,7 @@
 import AVFAudio
 import XCTest
 import MediaPlayer
+import SFBAudioEngine
 import UIKit
 import SonoraCore
 @testable import Sonora
@@ -186,11 +187,11 @@ final class FolderPlaybackTests: XCTestCase {
         defer { player.stop() }
         await player.loadFolder(root)
         try await waitUntil { player.isPlaying }
-        NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: nil,
+        NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance(),
             userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue])
         try await waitUntil { !player.isPlaying }
         player.pause()
-        NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: nil,
+        NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance(),
             userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue,
                        AVAudioSessionInterruptionOptionKey: AVAudioSession.InterruptionOptions.shouldResume.rawValue])
         try await Task.sleep(for: .milliseconds(300))
@@ -269,6 +270,7 @@ final class FolderPlaybackTests: XCTestCase {
         defer { restored.stop() }
         await restored.restoreFolder()
         XCTAssertEqual(restored.queue.tracks.map(\.id), ["01.wav"])
+        XCTAssertEqual(Set(restored.library.state.songs.values.map(\.relativePath)), ["01.wav", "02.wav"], "Restoring a reduced queue must retain the full source library")
         restored.remove(at: IndexSet(integer: 0))
         let empty = PlaybackController(defaults: defaults)
         defer { empty.stop() }
@@ -276,4 +278,286 @@ final class FolderPlaybackTests: XCTestCase {
         XCTAssertTrue(empty.queue.tracks.isEmpty)
         XCTAssertFalse(empty.isPlaying)
     }
+
+    func testManualPlayRecoversAfterInterruptionWithoutEndNotification() async throws {
+        for mode in [TransitionMode.continuous, .crossfade] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try fixture("01.wav", duration: 12, at: root)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let player = makePlayer(); defer { player.stop() }
+            player.setTransition(mode: mode, duration: 1)
+            await player.loadFolder(root)
+            try await waitUntil { player.isPlaying && player.currentTime > 0.15 }
+            NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance(),
+                userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue,
+                           AVAudioSessionInterruptionWasSuspendedKey: true])
+            try await waitUntil { !player.isPlaying }
+            let position = player.currentTime
+            // The user returns and presses Play; iOS need not send an ended event.
+            player.togglePlayback()
+            try await waitUntil({ player.isPlaying && player.currentTime > position + 0.1 }, timeout: 2)
+            XCTAssertNil(player.issue, "A manual Play must start playback or expose its failure")
+            let recoveredPosition = player.currentTime
+            NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance(),
+                userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue])
+            try await waitUntil { player.isPlaying && player.currentTime > recoveredPosition + 0.1 }
+        }
+    }
+    func testSelectingAnotherSongRecoversAfterInterruptionWithoutEndNotification() async throws {
+        for mode in [TransitionMode.continuous, .crossfade] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try fixture("01.wav", duration: 12, at: root); try fixture("02.wav", duration: 12, at: root)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let player = makePlayer(); defer { player.stop() }
+            player.setTransition(mode: mode, duration: 1)
+            await player.loadFolder(root)
+            try await waitUntil { player.isPlaying }
+            NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance(),
+                userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue])
+            try await waitUntil { !player.isPlaying }
+            player.play(index: 1)
+            try await waitUntil({ player.current?.id == "02.wav" && player.isPlaying && player.currentTime > 0.1 }, timeout: 2)
+            XCTAssertFalse(player.isPreparing)
+            XCTAssertNil(player.issue, "Selecting a song must start playback or expose its failure")
+        }
+    }
+
+    func testLibrarySelectionRecoversAfterInterruptionWithoutEndNotification() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fixture("01.wav", duration: 12, at: root); try fixture("02.wav", duration: 12, at: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let player = makePlayer(); defer { player.stop() }
+        await player.loadFolder(root)
+        try await waitUntil { player.isPlaying }
+        NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance(),
+            userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue])
+        try await waitUntil { !player.isPlaying }
+        let song = try XCTUnwrap(player.library.state.songs.values.first { $0.relativePath == "02.wav" })
+        player.playSongs([song.id])
+        try await waitUntil { player.current?.relativePath == "02.wav" && player.isPlaying && player.currentTime > 0.1 }
+        XCTAssertNil(player.issue)
+    }
+    func testNewInterruptionDuringSelectionStillPausesUntilAnotherPlay() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fixture("01.wav", duration: 12, at: root); try fixture("02.wav", duration: 12, at: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let player = makePlayer(); defer { player.stop() }
+        await player.loadFolder(root)
+        try await waitUntil { player.isPlaying }
+        player.play(index: 1)
+        player.interruptionBegan()
+        try await waitUntil { !player.isPreparing }
+        XCTAssertFalse(player.isPlaying)
+        player.interruptionEnded(shouldResume: false)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(player.isPlaying, "An interruption must not autoplay without a recommendation")
+        player.togglePlayback()
+        try await waitUntil { player.current?.id == "02.wav" && player.isPlaying && player.currentTime > 0.1 }
+    }
+    func testLateSystemInterruptionEndCannotRestartAudioAfterManualPause() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fixture("01.wav", duration: 12, at: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let audio = AudioPlayer()
+        let defaults = UserDefaults(suiteName: "SonoraTests.\(UUID())")!
+        let player = PlaybackController(defaults: defaults, audioPlayer: audio)
+        defer { player.stop() }
+        await player.loadFolder(root)
+        try await waitUntil { player.isPlaying && audio.isPlaying }
+        NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance(),
+            userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue])
+        try await waitUntil { !player.isPlaying && !audio.isPlaying }
+        player.resume()
+        try await waitUntil { player.isPlaying && audio.isPlaying }
+        player.pause()
+        NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance(),
+            userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue,
+                       AVAudioSessionInterruptionOptionKey: AVAudioSession.InterruptionOptions.shouldResume.rawValue])
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(audio.isPlaying, "The real engine must obey Pause even if SFB restores its pre-interruption flags")
+        XCTAssertFalse(player.isPlaying)
+    }
+
+    func testDeniedInterruptionResumeInvalidatesMetadataTransactionPlayIntent() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fixture("01.wav", duration: 12, at: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let audio = AudioPlayer()
+        let defaults = UserDefaults(suiteName: "SonoraTests.\(UUID())")!
+        let player = PlaybackController(defaults: defaults, audioPlayer: audio)
+        defer { player.stop() }
+        await player.loadFolder(root)
+        try await waitUntil { player.isPlaying }
+        await player.metadataTransaction { _ in
+            player.interruptionBegan()
+            player.interruptionEnded(shouldResume: false)
+        }
+        try await waitUntil { !player.isPreparing }
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(audio.isPlaying)
+        XCTAssertFalse(player.isPlaying, "A deferred metadata reload must not restore an invalidated Play intention")
+    }
+
+    func testAutomaticSystemInterruptionResumeRestartsTheRealEngine() async throws {
+        for mode in [TransitionMode.continuous, .crossfade] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try fixture("01.wav", duration: 12, at: root)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let audio = AudioPlayer()
+            let player = PlaybackController(defaults: UserDefaults(suiteName: "SonoraTests.AutoResume.\(UUID())")!, audioPlayer: audio)
+            defer { player.stop() }
+            player.setTransition(mode: mode, duration: 1)
+            await player.loadFolder(root)
+            try await waitUntil { player.isPlaying && player.currentTime > 0.1 }
+            NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance(),
+                userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue])
+            try await waitUntil { !player.isPlaying && !audio.isPlaying }
+            let position = player.currentTime
+            NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance(),
+                userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue,
+                           AVAudioSessionInterruptionOptionKey: AVAudioSession.InterruptionOptions.shouldResume.rawValue])
+            try await waitUntil { player.isPlaying && audio.isPlaying && player.currentTime > position + 0.1 }
+        }
+    }
+
+    func testDeniedAudioSessionKeepsHealthySelectedSongAndCanRetry() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        for name in ["01.wav", "02.wav", "03.wav"] { try fixture(name, duration: 12, at: root) }
+        defer { try? FileManager.default.removeItem(at: root) }
+        var deny = false, activations = 0
+        let player = PlaybackController(defaults: UserDefaults(suiteName: "SonoraTests.DeniedSession.\(UUID())")!, activateSession: {
+            activations += 1
+            if deny { throw NSError(domain: NSOSStatusErrorDomain, code: 561017449) }
+            try await AudioSessionCoordinator.shared.activate()
+        })
+        defer { player.stop() }
+        await player.loadFolder(root, autoPlay: false)
+        deny = true; player.play(index: 0)
+        try await waitUntil { !player.isPreparing && player.issue != nil }
+        XCTAssertEqual(player.current?.id, "01.wav", "An unavailable session does not make the audio file invalid")
+        XCTAssertEqual(activations, 1, "Do not walk through healthy songs retrying the same unavailable audio session")
+        XCTAssertFalse(player.isPlaying)
+        deny = false; player.resume()
+        try await waitUntil { player.isPlaying && player.currentTime > 0.1 }
+        XCTAssertEqual(player.current?.id, "01.wav")
+    }
+
+    func testNewInterruptionDuringFolderActivationWaitsForResumeRecommendation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fixture("01.wav", duration: 12, at: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let audio = AudioPlayer()
+        var gate: CheckedContinuation<Void, Never>?, activations = 0
+        let player = PlaybackController(defaults: UserDefaults(suiteName: "SonoraTests.LoadInterruption.\(UUID())")!, audioPlayer: audio, activateSession: {
+            activations += 1
+            if activations == 1 { await withCheckedContinuation { gate = $0 } }
+            try await AudioSessionCoordinator.shared.activate()
+        })
+        defer { gate?.resume(); player.stop() }
+        let loading = Task { await player.loadFolder(root) }
+        try await waitUntil { gate != nil }
+        player.interruptionBegan()
+        gate?.resume(); gate = nil
+        await loading.value
+        XCTAssertFalse(audio.isPlaying)
+        XCTAssertFalse(player.isPlaying)
+        player.interruptionEnded(shouldResume: true)
+        try await waitUntil { player.isPlaying && audio.isPlaying && player.currentTime > 0.1 }
+    }
+
+    func testLyricOffsetIdentitySeparatesFoldersButSharesLibraryAliases() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let first = root.appendingPathComponent("First"), second = root.appendingPathComponent("Second")
+        let name = "\(UUID()).wav"
+        try fixture(name, duration: 3, at: first); try fixture(name, duration: 3, at: second)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let player = makePlayer(); defer { player.stop(); player.library.cancelIndexing() }
+        var keys: Set<String> = []
+        defer { for key in keys { UserDefaults.standard.removeObject(forKey: key) } }
+        await player.loadFolder(first, autoPlay: false)
+        let track = try XCTUnwrap(player.current), source = try XCTUnwrap(player.libraryID(for: track)).components(separatedBy: "\0")[0]
+        let key = player.lyricsOffsetKey(for: track); keys.insert(key)
+        XCTAssertFalse(key.contains("\0"), "Preference keys must not contain the internal source separator")
+        UserDefaults.standard.set(2.0, forKey: key)
+        XCTAssertEqual(UserDefaults.standard.double(forKey: key), 2)
+        let repair = LyricsRepairSession(player: player, track: track.withSource(source))
+        XCTAssertTrue(repair.canListen, "The library alias of the current audio must allow auditioning repairs")
+        let alias = player.lyricsOffsetKey(for: track.withSource(source)); keys.insert(alias)
+        XCTAssertEqual(alias, key, "One file must retain its adjustment through folder or library playback")
+        XCTAssertEqual(UserDefaults.standard.double(forKey: alias), 2)
+        await player.loadFolder(second, autoPlay: false)
+        let other = player.lyricsOffsetKey(for: player.current); keys.insert(other)
+        XCTAssertNotEqual(other, key, "Identical relative paths in different sources must be independent")
+        XCTAssertEqual(UserDefaults.standard.double(forKey: other), 0)
+        XCTAssertFalse(repair.canListen, "A matching filename in another source must not enable the original repair preview")
+    }
+
+    func testLyricOffsetMigratesQualifiedLegacyValuesWithoutReplacingNewOverrides() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let name = "\(UUID()).wav"
+        try fixture(name, duration: 3, at: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let player = makePlayer(); defer { player.stop(); player.library.cancelIndexing() }
+        await player.loadFolder(root, autoPlay: false)
+        let track = try XCTUnwrap(player.current), identity = try XCTUnwrap(player.libraryID(for: track))
+        let key = player.lyricsOffsetKey(for: track)
+        defer { UserDefaults.standard.removeObject(forKey: key) }
+        // Registration is process-local and can expose a legacy key even when
+        // the preferences daemon cannot persist its embedded NUL separator.
+        UserDefaults.standard.register(defaults: ["lyricsOffset." + track.id: 8.0])
+        XCTAssertEqual(player.lyricsOffsetKey(for: track), key)
+        XCTAssertNil(UserDefaults.standard.object(forKey: key), "A relative-path preference has no proven source owner")
+        UserDefaults.standard.register(defaults: ["lyricsOffset." + identity: 1.5])
+        XCTAssertEqual(player.lyricsOffsetKey(for: track), key)
+        XCTAssertEqual(UserDefaults.standard.double(forKey: key), 1.5)
+        UserDefaults.standard.set(2.0, forKey: key)
+        XCTAssertEqual(player.lyricsOffsetKey(for: track), key)
+        XCTAssertEqual(UserDefaults.standard.double(forKey: key), 2, "A new adjustment must win over its legacy value")
+    }
+
+    func testEnqueueLibraryAliasMovesPrimarySongButKeepsOtherSourcesDistinct() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let first = root.appendingPathComponent("First"), second = root.appendingPathComponent("Second")
+        for name in ["A.wav", "B.wav", "C.wav"] { try fixture(name, duration: 3, at: first) }
+        try fixture("C.wav", duration: 3, at: second)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let player = makePlayer(); defer { player.stop(); player.library.cancelIndexing() }
+        await player.loadFolder(first, autoPlay: false)
+        let track = try XCTUnwrap(player.queue.tracks.last)
+        let source = try XCTUnwrap(player.library.state.sources.first?.id)
+        player.enqueue(track.withSource(source), playNext: false)
+        XCTAssertEqual(player.queue.tracks.map(\.relativePath), ["A.wav", "B.wav", "C.wav"])
+        player.enqueue(track.withSource(source), playNext: true)
+        XCTAssertEqual(player.queue.tracks.map(\.relativePath), ["A.wav", "C.wav", "B.wav"])
+        let other = try player.library.register(ScopedFolder(second), tracks: [track])
+        player.enqueue(track.withSource(other), playNext: false)
+        XCTAssertEqual(player.queue.tracks.count, 4)
+        XCTAssertEqual(player.queue.tracks.last?.sourceID, other)
+    }
+
+    func testPinnedSongActionRetainsOriginalSourceAcrossCarPlayQueueReplacement() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let first = root.appendingPathComponent("First"), second = root.appendingPathComponent("Second")
+        try fixture("song.wav", duration: 8, at: first); try fixture("song.wav", duration: 8, at: second)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let player = makePlayer(); defer { player.stop(); player.library.cancelIndexing() }
+        await player.loadFolder(first, autoPlay: false)
+        let raw = try XCTUnwrap(player.current), original = try await player.readMetadata(for: raw)
+        let request = SongActionRequest(player: player, track: raw, action: .information)
+        XCTAssertNotNil(request.track.sourceID)
+        let otherSource = try player.library.register(ScopedFolder(second), tracks: [raw])
+        let other = raw.withSource(otherSource)
+        player.playSongs([other.id]) // Same path as CarPlayCoordinator.play.
+        try await waitUntil { player.current?.id == other.id && !player.isPreparing }
+        player.pause()
+        let pinned = try await player.readMetadata(for: request.track)
+        XCTAssertEqual(pinned.fingerprint, original.fingerprint)
+        try await player.saveMetadata(for: request.track, expected: original.fingerprint, patch: MetadataPatch(values: [.title: "Pinned original"]))
+        let saved = try await player.readMetadata(for: request.track), untouched = try await player.readMetadata(for: other)
+        XCTAssertEqual(saved.values[.title], "Pinned original")
+        XCTAssertNotEqual(untouched.values[.title], "Pinned original")
+        player.playForLyricsEditing(request.track, at: 1)
+        try await waitUntil { player.isEditingTrackCurrent(request.track) && player.isPlaying && player.currentTime > 1 }
+    }
+
 }

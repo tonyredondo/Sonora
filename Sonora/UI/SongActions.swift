@@ -7,6 +7,9 @@ struct SongActionRequest: Identifiable {
     let id = UUID()
     let track: AudioTrack
     let action: Action
+    @MainActor init(player: PlaybackController, track: AudioTrack, action: Action) {
+        self.track = player.pinnedTrack(track); self.action = action
+    }
 }
 
 struct SongActions: View {
@@ -38,7 +41,7 @@ struct SongActions: View {
         Button("Analizar volumen", systemImage: "waveform") { select(.volume) }
             .accessibilityIdentifier("analyze-song:" + track.relativePath)
     }
-    private func select(_ action: SongActionRequest.Action) { open(.init(track: track, action: action)) }
+    private func select(_ action: SongActionRequest.Action) { open(.init(player: player, track: track, action: action)) }
 }
 
 struct SongActionSheet: View {

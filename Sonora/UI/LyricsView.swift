@@ -41,15 +41,16 @@ struct LyricsView: View {
     }
     @State private var repair: RepairRequest?
     private var selectedTrack: AudioTrack? { track ?? player.current }
+    private var selectedTrackKey: String? { selectedTrack.map { player.libraryID(for: $0) ?? $0.id } }
     private var interpretationContext: LyricsInterpretationContext {
-        guard let track = selectedTrack, loadedTrackID == track.id, let snapshot = meaningSnapshot else {
+        guard let track = selectedTrack, loadedTrackID == selectedTrackKey, let snapshot = meaningSnapshot else {
             return isCurrent ? player.currentInterpretationContext : .init()
         }
         return player.interpretationContext(for: track, folder: meaningFolder, values: snapshot.values, expected: snapshot.fingerprint)
     }
-    private var isCurrent: Bool { selectedTrack?.id == player.current?.id }
+    private var isCurrent: Bool { selectedTrackKey == player.current.map { player.libraryID(for: $0) ?? $0.id } }
     private var lyrics: LyricsDocument {
-        if loadedTrackID == selectedTrack?.id, let loadedLyrics { return loadedLyrics }
+        if loadedTrackID == selectedTrackKey, let loadedLyrics { return loadedLyrics }
         return isCurrent ? player.currentDetails?.lyrics ?? LyricsDocument(text: "") : LyricsDocument(text: "")
     }
     private var active: Int? { isCurrent ? lyrics.activeLine(at: player.currentTime, offset: offset) : nil }
@@ -113,7 +114,7 @@ struct LyricsView: View {
                 if let issue {
                     ContentUnavailableView("No se pudo leer la letra", systemImage: "exclamationmark.circle", description: Text(issue))
                     Button("Reintentar") { refresh = UUID() }.padding()
-                } else if loadedTrackID != selectedTrack?.id && lyrics.lines.isEmpty {
+                } else if loadedTrackID != selectedTrackKey && lyrics.lines.isEmpty {
                     ProgressView("Leyendo letra…").frame(maxHeight: .infinity)
                 } else if lyrics.lines.isEmpty {
                     ContentUnavailableView {
@@ -179,7 +180,7 @@ struct LyricsView: View {
                     }
                 }
             }
-            .task(id: "\(selectedTrack?.id ?? "")-\(refresh)") { await load() }
+            .task(id: "\(selectedTrackKey ?? "")-\(refresh)") { await load() }
             .task(id: translationKey) {
                 await player.lyricTranslations.restore(lyrics, source: translationSource, target: translationTarget)
             }
@@ -200,7 +201,7 @@ struct LyricsView: View {
                 }.id(sourceKey)
             }
             .onChange(of: offset) {
-                if let id = selectedTrack?.id, loadedTrackID == id { UserDefaults.standard.set(offset, forKey: "lyricsOffset.\(id)") }
+                if let track = selectedTrack, loadedTrackID == selectedTrackKey { UserDefaults.standard.set(offset, forKey: player.lyricsOffsetKey(for: track)) }
             }
             .onChange(of: repair) { if repair == nil { refresh = UUID() } }
             .sheet(item: $editor, onDismiss: { refresh = UUID() }) {
@@ -236,28 +237,36 @@ struct LyricsView: View {
     }
     private func edit(synchronize: Bool = false) {
         guard let track = selectedTrack else { return }
-        editor = EditorRequest(track: track, synchronize: synchronize)
+        editor = EditorRequest(track: player.pinnedTrack(track), synchronize: synchronize)
     }
-    private func openRepair() { if let track = selectedTrack { repair = RepairRequest(track: track) } }
+    private func openRepair() { if let track = selectedTrack { repair = RepairRequest(track: player.pinnedTrack(track)) } }
     private func load() async {
         guard let track = selectedTrack else { return }
+        let key = player.libraryID(for: track) ?? track.id
         issue = nil
-        if loadedTrackID != track.id { title = track.displayName; artist = ""; loadedLyrics = nil; meaningSnapshot = nil; meaningFolder = nil }
+        if loadedTrackID != key { title = track.displayName; artist = ""; loadedLyrics = nil; meaningSnapshot = nil; meaningFolder = nil }
         do {
             let folder = try player.folderAccess(for: track)
             let snapshot = try await player.readMetadata(for: track)
-            let text = try await LyricsAudioPreparation.existingText(track: track, folder: folder,
-                                                                   embedded: snapshot.values[.lyrics] ?? "", expected: snapshot.fingerprint)
+            let document = try await Self.readDocument(track: track, folder: folder, snapshot: snapshot)
             try Task.checkCancellation()
             title = snapshot.values[.title] ?? track.displayName; artist = snapshot.values[.artist] ?? ""
-            loadedLyrics = LyricsDocument(text: text); loadedTrackID = track.id
+            loadedLyrics = document; loadedTrackID = key
             meaningSnapshot = snapshot
             meaningFolder = folder
-            offset = UserDefaults.standard.double(forKey: "lyricsOffset.\(track.id)")
+            offset = UserDefaults.standard.double(forKey: player.lyricsOffsetKey(for: track))
         } catch is CancellationError { }
         catch {
-            guard !Task.isCancelled, selectedTrack?.id == track.id else { return }
+            guard !Task.isCancelled, selectedTrackKey == key else { return }
             issue = error.localizedDescription
         }
     }
+    static func readDocument(track: AudioTrack, folder: ScopedFolder, snapshot: MetadataSnapshot) async throws -> LyricsDocument {
+        let text = try await LyricsAudioPreparation.existingText(track: track, folder: folder,
+                                                               embedded: snapshot.values[.lyrics] ?? "", expected: snapshot.fingerprint)
+        let document = LyricsDocument(text: text)
+        guard let cue = track.cue else { return document }
+        return document.sliced(from: cue.startSeconds, duration: snapshot.duration)
+    }
+
 }

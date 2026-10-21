@@ -100,9 +100,13 @@ final class MusicLibrary {
             if let songs = segments[song.relativePath] { replacements[song.id] = songs.map { $0.withSource(source.id).id } }
         }
         let paths = Set(tracks.map(\.localID))
-        state.songs = state.songs.filter { $0.value.sourceID != source.id || paths.contains($0.value.audioTrack?.localID ?? "") }
+        let removed = Set(state.songs.values.filter { $0.sourceID == source.id && !paths.contains($0.audioTrack?.localID ?? "") }.map(\.id))
+        state.songs = state.songs.filter { !removed.contains($0.key) }
         let missing = tracks.map { CollectionSong(sourceID: source.id, relativePath: $0.relativePath, tags: $0.cue?.tags ?? [:], cue: $0.cue) }.filter { state.songs[$0.id] == nil }
-        state.upsert(missing); state.replaceSongReferences(replacements); persist(); rebuild()
+        state.upsert(missing); state.replaceSongReferences(replacements)
+        // Rewrite whole-file CUE references first, then remove genuinely missing
+        // songs so displayed playlist indices still match their stored order.
+        removeSongs(removed)
         startIndex(source: source.id, folder: access, tracks: tracks)
         return source.id
     }

@@ -110,4 +110,27 @@ final class QueueMetadataTests: XCTestCase {
         XCTAssertEqual(TrackRow(player: player, track: other).title, "Solo segunda carpeta")
         XCTAssertFalse(player.isPlaying)
     }
+    func testBatchRejectsMixedLyricsBeforeChangingAnyFile() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "fixture", withExtension: "flac"))
+        for name in ["one.flac", "two.flac"] { try FileManager.default.copyItem(at: fixture, to: root.appendingPathComponent(name)) }
+        let defaults = UserDefaults(suiteName: "SonoraTests.BatchLyrics.\(UUID())")!
+        let player = PlaybackController(defaults: defaults)
+        defer { player.stop(); player.library.cancelIndexing() }
+        await player.loadFolder(root, autoPlay: false)
+        var expected: [String: FileFingerprint] = [:], originals: [URL: Data] = [:]
+        for track in player.queue.tracks {
+            expected[track.id] = try await player.readMetadata(for: track).fingerprint
+            let url = root.appendingPathComponent(track.relativePath)
+            originals[url] = try Data(contentsOf: url)
+        }
+        let result = await player.saveMetadataBatch(player.queue.tracks, expected: expected,
+            patch: MetadataPatch(values: [.lyrics: "[00:01]First\nMissing cue"]), progress: { _ in })
+        XCTAssertEqual(result.written, 0)
+        XCTAssertEqual(result.failures.count, 2)
+        for (url, data) in originals { XCTAssertEqual(try Data(contentsOf: url), data) }
+    }
+
 }

@@ -55,10 +55,11 @@ public enum MetadataDiagnosticStage: String, Sendable {
     case network, responseValidation, cacheWrite, lyricsLoad, lyricsAnalysis, lyricsComparison, lyricsSave
 }
 
-struct MetadataTransportFailure: LocalizedError, Sendable {
-    let code: Int
-    let requestID: String
-    var errorDescription: String? {
+/// A sanitized URLSession failure that consumers can recognize without retaining URLs or credentials.
+public struct MetadataTransportFailure: LocalizedError, Sendable {
+    public let code: Int
+    public let requestID: String
+    public var errorDescription: String? {
         let message = code == URLError.timedOut.rawValue ? "Se agotó el tiempo de espera al conectar con el servidor." : "No se pudo completar la conexión con el servidor."
         return "\(message)\nNSURLErrorDomain \(code)\nReferencia: \(requestID)"
     }

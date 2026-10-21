@@ -63,4 +63,16 @@ final class LyricsDraftTests: XCTestCase {
         }
     }
 
+    func testPhraseEditNormalizesCompoundAndUnicodeOffsetHeadersExactlyOnce() throws {
+        for header in ["[ar:Example][offset:500]", "[ar:Example][offſet:500]", "[OFFSET:500][al:Record]"] {
+            let source = header + "\n[00:01.500]Hello\n[00:03.500]World"
+            let draft = LyricsDraft(text: source)
+            XCTAssertEqual(draft.lines.map(\.time), [1, 3])
+            let changed = try draft.replacing(draft.lines[0].id, text: "Hello again", time: 1, duration: 10)
+            XCTAssertEqual(LyricsDocument(text: changed).lines.map(\.time), [1, 3], header)
+            XCTAssertEqual(LyricsDocument(text: changed).lines.map(\.text), ["Hello again", "World"])
+            XCTAssertTrue(changed.contains(header.contains("ar:") ? "[ar:Example]" : "[al:Record]"))
+        }
+    }
+
 }

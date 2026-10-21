@@ -339,3 +339,55 @@ async fn oversized_provider_response_keeps_existing_bad_gateway_contract() {
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn invalid_tail_start_is_not_cached_and_next_explicit_request_can_recover() {
+    use sonora_proxy::providers::Error;
+    let root = TempDir::new().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let observed = hits.clone();
+    let app = Router::new().route(
+        "/v1/forced-alignment",
+        post(move || {
+            let hits = observed.clone();
+            async move {
+                let start = if hits.fetch_add(1, Ordering::SeqCst) == 0 {
+                    2.01
+                } else {
+                    1.99
+                };
+                axum::Json(serde_json::json!({"words":[{"text":"Hello","start":start,"end":2.02}]}))
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = Config::default();
+    config.cache.path = root.path().join("cache.sqlite");
+    config.metadata.path = root.path().join("metadata.sqlite");
+    config.elevenlabs.api_key = Some("fixture".into());
+    config.elevenlabs.base_url = Some(format!("http://{}", listener.local_addr().unwrap()));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = Client::new(config).unwrap();
+    let invalid = client
+        .align(wav(2).into(), "Hello".into(), Priority::Interactive)
+        .await;
+    assert!(matches!(invalid, Err(Error::InvalidResponse(_))));
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "Never retry a paid provider request automatically"
+    );
+    let recovered = client
+        .align(wav(2).into(), "Hello".into(), Priority::Interactive)
+        .await
+        .unwrap();
+    assert_eq!(recovered.cache, "miss");
+    assert_eq!(recovered.data.synced_lyrics, "[00:01.99]Hello");
+    let cached = client
+        .align(wav(2).into(), "Hello".into(), Priority::Interactive)
+        .await
+        .unwrap();
+    assert_eq!(cached.cache, "hit");
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+    server.abort();
+}

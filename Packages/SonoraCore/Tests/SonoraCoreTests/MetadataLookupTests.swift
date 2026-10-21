@@ -14,6 +14,7 @@ private actor LookupHTTPFixture: MetadataLookupTransport {
     }
     func stop() { fail = true }
     func rejectAuthorization() { response = MetadataHTTPResponse(data: Data(), status: 401, contentType: "application/json") }
+    func markNotFound() { response = MetadataHTTPResponse(data: Data(), status: 404, contentType: "application/json") }
 }
 
 final class MetadataLookupTests: XCTestCase {
@@ -113,6 +114,24 @@ final class MetadataLookupTests: XCTestCase {
         let fallback = try await client.search(query, offline: false, refresh: true)
         XCTAssertTrue(fallback.isCached); XCTAssertNotNil(fallback.warning)
         XCTAssertEqual(fallback.value.first?.title, "Fixture")
+    }
+    func testFreshNotFoundIsNotHiddenByNegativeCacheWriteFailure() async throws {
+        for hasOldSuccess in [false, true] {
+            let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+            let transport = LookupHTTPFixture(recordings)
+            let connection = try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture")
+            let query = MetadataSearch(title: "Fixture", artist: "Artist", album: "Album")
+            if hasOldSuccess {
+                let initial = MetadataLookupClient(connection: connection, cache: MetadataLookupCache(directory: root), transport: transport)
+                _ = try await initial.search(query, offline: false)
+            }
+            await transport.markNotFound()
+            let client = MetadataLookupClient(connection: connection, cache: MetadataLookupCache(directory: root, maxBytes: 1), transport: transport)
+            do {
+                _ = try await client.search(query, offline: false, refresh: true)
+                XCTFail("A fresh 404 must not turn into an obsolete successful result")
+            } catch MetadataLookupError.notFound { }
+        }
     }
 
     func testAuthenticationErrorsStayVisibleAndDoNotMasqueradeAsOfflineSuccess() async throws {

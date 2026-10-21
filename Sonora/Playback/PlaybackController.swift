@@ -46,6 +46,7 @@ final class PlaybackController: NSObject {
         }
     } }
 
+    @ObservationIgnored private let activateSession: () async throws -> Void
     @ObservationIgnored private let player: AudioPlayer
     @ObservationIgnored private var events: PlayerEvents!
     @ObservationIgnored private var folder: ScopedFolder?
@@ -373,18 +374,36 @@ final class PlaybackController: NSObject {
         return (library.state.sources.first { $0.id == source }?.name ?? extraFolders[source]?.url.lastPathComponent ?? "Carpeta") + "/" + track.relativePath
     }
     func libraryID(for track: AudioTrack) -> String? { (track.sourceID ?? primaryLibraryID).map { $0 + "\0" + track.localID } }
+    func pinnedTrack(_ track: AudioTrack) -> AudioTrack {
+        guard track.sourceID == nil, let primaryLibraryID else { return track }
+        return track.withSource(primaryLibraryID)
+    }
+    func lyricsOffsetKey(for track: AudioTrack?) -> String {
+        guard let track else { return "lyricsOffset.none" }
+        let qualifiedID = libraryID(for: track), identity = qualifiedID ?? track.id
+        // UserDefaults can discard keys containing the source separator (NUL).
+        let key = "lyricsOffset.v2." + Data(identity.utf8).base64EncodedString()
+        // Only source-qualified legacy values have an unambiguous owner.
+        if qualifiedID != nil, UserDefaults.standard.object(forKey: key) == nil,
+           let old = UserDefaults.standard.object(forKey: "lyricsOffset." + identity) as? NSNumber,
+           old.doubleValue.isFinite { UserDefaults.standard.set(old.doubleValue, forKey: key) }
+        return key
+    }
     func toggleFavorite(_ track: AudioTrack) { if let id = libraryID(for: track) { library.toggleFavorite(id) } }
     func isFavorite(_ track: AudioTrack) -> Bool { libraryID(for: track).map { library.state.favorites.contains($0) } ?? false }
     func readMetadata(for track: AudioTrack) async throws -> MetadataSnapshot {
         let access = try folderAccess(for: track)
         let value = try await MetadataService.read(url: track.url(in: access.url), folder: access)
         guard track.cue != nil else { return value }
+        let duration = try await LyricsAudioPreparation.duration(track: track, folder: access, expected: value.fingerprint)
         return MetadataSnapshot(values: track.tags(overriding: value.values), artwork: value.artwork, fingerprint: value.fingerprint,
-                                canWrite: false, fileDescription: value.fileDescription + " · Pista CUE", duration: track.duration(in: value.duration), replayGain: value.replayGain)
+                                canWrite: false, fileDescription: value.fileDescription + " · Pista CUE", duration: duration, replayGain: value.replayGain)
     }
     func saveMetadata(for track: AudioTrack, expected: FileFingerprint, patch: MetadataPatch) async throws {
         guard track.cue == nil else { throw MusicTextError.invalid("Una pista CUE comparte el archivo de audio. Sus etiquetas se leen del CUE; no se puede sobrescribir el archivo desde esta pista.") }
+        try patch.validate()
         let access = try folderAccess(for: track)
+        if let lyrics = patch.values[.lyrics] { try await LyricsAudioPreparation.validateReplacement(lyrics, track: track, folder: access, expected: expected) }
         let source = track.sourceID ?? primaryLibraryID
         let destination = metadataArchive?.destination
         let saved = try await metadataTransaction { token in
@@ -398,6 +417,19 @@ final class PlaybackController: NSObject {
         await backUpMetadata(saved, track:track, folder:access, server:destination)
     }
     func saveMetadataBatch(_ tracks: [AudioTrack], expected: [String: FileFingerprint], patch: MetadataPatch, progress: @escaping @MainActor (Int) -> Void) async -> MetadataBatchResult {
+        var patch = patch
+        do {
+            if let lyrics = patch.values[.lyrics] {
+                let trimmed = LyricsDraft.trimmingPhraseWhitespace(in: lyrics)
+                try LyricsDraft(text: trimmed).validateForPlayback()
+                patch.values[.lyrics] = trimmed
+            }
+            try patch.validate()
+        } catch {
+            return MetadataBatchResult(written: 0, failures: tracks.map {
+                MetadataWriteFailure(id: $0.id, filename: location(for: $0), message: error.localizedDescription)
+            })
+        }
         let primary = primaryLibraryID
         let destination = metadataArchive?.destination
         return await metadataTransaction { token in
@@ -410,6 +442,7 @@ final class PlaybackController: NSObject {
                     guard track.cue == nil else { throw MusicTextError.invalid("Las pistas CUE no permiten editar etiquetas del audio compartido.") }
                     guard let fingerprint = expected[track.id] else { throw MetadataIOError.changed }
                     let access = try folderAccess(for: track)
+                    if let lyrics = patch.values[.lyrics] { try await LyricsAudioPreparation.validateReplacement(lyrics, track: track, folder: access, expected: fingerprint) }
                     musicTools.invalidate(at: track.url(in: access.url))
                     let saved = try await MetadataService.save(url: track.url(in: access.url), folder: access, expected: fingerprint, patch: patch)
                     if let id = libraryID(for: track) { try volumeAnalysis.rebind(id, from: fingerprint, to: saved.fingerprint) }
@@ -445,7 +478,7 @@ final class PlaybackController: NSObject {
         return try await body(token)
     }
 
-    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil, musicTools: MusicToolsStore? = nil, lyricTranslations: LyricTranslationStore? = nil, lyricInterpretations: LyricInterpretationStore? = nil, albumInterpretations: AlbumInterpretationStore? = nil, audioCharacter: AudioCharacterStore? = nil) {
+    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil, musicTools: MusicToolsStore? = nil, lyricTranslations: LyricTranslationStore? = nil, lyricInterpretations: LyricInterpretationStore? = nil, albumInterpretations: AlbumInterpretationStore? = nil, audioCharacter: AudioCharacterStore? = nil, activateSession: (() async throws -> Void)? = nil) {
         self.defaults = defaults
         self.musicTools = musicTools ?? MusicToolsStore()
         self.audioCharacter = audioCharacter ?? AudioCharacterStore()
@@ -454,6 +487,7 @@ final class PlaybackController: NSObject {
         self.albumInterpretations = albumInterpretations ?? AlbumInterpretationStore()
         self.metadataArchive = metadataArchive
         player = audioPlayer
+        self.activateSession = activateSession ?? { try await AudioSessionCoordinator.shared.activate() }
         library = MusicLibrary(defaults: defaults)
         volumeAnalysis = VolumeAnalysisStore(defaults: defaults)
         localImports = LocalImportController(storage: localStorage)
@@ -515,7 +549,10 @@ final class PlaybackController: NSObject {
     }
     func enqueue(_ track: AudioTrack, playNext: Bool) {
         guard !isDeletingFiles else { return }
-        refresh(); queue.insert([track], afterCurrent: playNext); rebuildBufferedQueue(); save()
+        refresh(); queue.insert([queueTrack(track)], afterCurrent: playNext); rebuildBufferedQueue(); save()
+    }
+    private func queueTrack(_ track: AudioTrack) -> AudioTrack {
+        track.sourceID == primaryLibraryID && folder != nil ? track.withSource(nil) : track
     }
     func addFolderToLibrary(_ url: URL) {
         guard !isDeletingFiles else { return }
@@ -552,12 +589,8 @@ final class PlaybackController: NSObject {
         for id in ids {
             guard let song = library.state.songs[id] else { continue }
             do {
-                if song.sourceID == primaryLibraryID, folder != nil {
-                    if let track = song.audioTrack { tracks.append(track.withSource(nil)) }
-                } else {
-                    extraFolders[song.sourceID] = try library.access(song.sourceID)
-                    if let track = song.audioTrack { tracks.append(track) }
-                }
+                if song.sourceID != primaryLibraryID || folder == nil { extraFolders[song.sourceID] = try library.access(song.sourceID) }
+                if let track = song.audioTrack { tracks.append(queueTrack(track)) }
             } catch { issue = error.localizedDescription }
         }
         guard !tracks.isEmpty else { return }
@@ -669,6 +702,7 @@ final class PlaybackController: NSObject {
 
     private func load(_ url: URL, autoPlay: Bool, restoring savedSnapshot: FolderSnapshot?, name: String? = nil) async {
         guard !isDeletingFiles else { return }
+        if autoPlay { interrupted = false }
         var snapshot = savedSnapshot
         let request = UUID(); let intent = pauseRevision
         loadID = request; isLoading = true; issue = nil
@@ -676,7 +710,8 @@ final class PlaybackController: NSObject {
         do {
             let access = try ScopedFolder(url)
             let data = try access.bookmark()
-            var tracks = try await FolderScanService.scan(access)
+            let sourceTracks = try await FolderScanService.scan(access)
+            var tracks = sourceTracks
             try Task.checkCancellation()
             if let saved = snapshot {
                 let available = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
@@ -692,7 +727,7 @@ final class PlaybackController: NSObject {
                     guard loadID == request else { return }
                     detachSongAnalysis(); invalidatePlayback(); playIntent = false
                     folder = access; bookmark = data; folderName = url.lastPathComponent
-                    primaryLibraryID = nil; extraFolders = [:]
+                    primaryLibraryID = try library.register(access, tracks: sourceTracks, name: name ?? snapshot?.name); extraFolders = [:]
                     if case .endOfTrack = sleepTimer { storeSleepTimer(nil) }
                     queue = PlaybackQueue(); details = [:]; currentTime = 0; resumePosition = 0
                     if !saved.paths.isEmpty { issue = "Los archivos guardados ya no están disponibles. Vuelve a abrir la carpeta para crear una cola." }
@@ -709,10 +744,10 @@ final class PlaybackController: NSObject {
                 catch { if loadID == request { issue = "No se pudo abrir \(tracks[index].filename): \(error.localizedDescription)" } }
             }
             guard let (index, prepared) = first else { throw PlayerError.noPlayableFiles }
-            if autoPlay && pauseRevision == intent { try await AudioSessionCoordinator.shared.activate() }
+            if autoPlay && pauseRevision == intent && !interrupted { try await activateSession() }
             try Task.checkCancellation()
             guard loadID == request else { return }
-            let libraryID = try library.register(access, tracks: tracks, name: name ?? snapshot?.name)
+            let libraryID = try library.register(access, tracks: sourceTracks, name: name ?? snapshot?.name)
             invalidatePlayback()
             folder = access; bookmark = data; folderName = library.state.sources.first { $0.id == libraryID }?.name ?? url.lastPathComponent
             if case .endOfTrack = sleepTimer, snapshot == nil || sleepTimer != .endOfTrack(tracks[index].id) { storeSleepTimer(nil) }
@@ -723,7 +758,7 @@ final class PlaybackController: NSObject {
             currentTime = restoredPosition.isFinite ? max(0, min(restoredPosition, prepared.details.duration)) : 0
             resumePosition = currentTime
             playIntent = autoPlay && pauseRevision == intent
-            if playIntent { try submit(prepared, trackID: tracks[index].id) }
+            if playIntent && !interrupted { try submit(prepared, trackID: tracks[index].id) }
             prepareCurrentSongTools()
             updateNowPlaying(); save()
         } catch is CancellationError { }
@@ -753,6 +788,7 @@ final class PlaybackController: NSObject {
     @discardableResult
     private func loadQueue(tracks: [AudioTrack], scopes: [String: ScopedFolder], selected: String?, position: Double, name: String, autoPlay: Bool, primaryID: String?) async -> Bool {
         guard !isDeletingFiles else { return false }
+        if autoPlay { interrupted = false }
         let request = UUID(), intent = pauseRevision
         loadID = request; isLoading = true
         defer { if loadID == request { isLoading = false } }
@@ -768,7 +804,7 @@ final class PlaybackController: NSObject {
                 catch { if loadID == request { issue = "No se pudo abrir \(tracks[index].filename): \(error.localizedDescription)" } }
             }
             guard let (index, prepared) = first else { throw PlayerError.noPlayableFiles }
-            if autoPlay && pauseRevision == intent { try await AudioSessionCoordinator.shared.activate() }
+            if autoPlay && pauseRevision == intent && !interrupted { try await activateSession() }
             try Task.checkCancellation(); guard loadID == request else { return false }
             invalidatePlayback()
             folder = scopes[""]; bookmark = try folder?.bookmark()
@@ -779,7 +815,7 @@ final class PlaybackController: NSObject {
             let seconds = selected == tracks[index].id ? position : 0
             currentTime = seconds.isFinite ? max(0, min(seconds, prepared.details.duration)) : 0; resumePosition = currentTime
             playIntent = autoPlay && pauseRevision == intent
-            if playIntent { try submit(prepared, trackID: tracks[index].id) }
+            if playIntent && !interrupted { try submit(prepared, trackID: tracks[index].id) }
             prepareCurrentSongTools()
             updateNowPlaying(); save(); return true
         } catch is CancellationError { return false }
@@ -787,6 +823,7 @@ final class PlaybackController: NSObject {
     }
     func play(index: Int) {
         guard queue.tracks.indices.contains(index) else { return }
+        interrupted = false
         requestPlayback(trackID: queue.tracks[index].id, position: 0, start: true)
     }
     private func requestPlayback(trackID: String, position: Double, start: Bool) {
@@ -806,11 +843,22 @@ final class PlaybackController: NSObject {
                 try Task.checkCancellation()
                 guard generation == token else { return }
                 cache(prepared.details, for: trackID)
-                if playIntent && !interrupted { try await AudioSessionCoordinator.shared.activate() }
-                try Task.checkCancellation()
-                guard generation == token else { return }
-                isPreparing = false
-                if playIntent && !interrupted { try submit(prepared, trackID: trackID, position: position) }
+                do {
+                    if playIntent && !interrupted { try await activateSession() }
+                    try Task.checkCancellation()
+                    guard generation == token else { return }
+                    isPreparing = false
+                    if playIntent && !interrupted { try submit(prepared, trackID: trackID, position: position) }
+                } catch is CancellationError { return }
+                catch {
+                    guard generation == token else { return }
+                    // Session/output failures do not make this file corrupt.
+                    // Keep the selection and position available for an explicit retry.
+                    isPreparing = false; playIntent = false; player.pause(); isPlaying = false
+                    issue = "No se pudo iniciar la reproducción: \(error.localizedDescription)"
+                    updateNowPlaying(); save()
+                    return
+                }
                 prepareCurrentSongTools()
                 updateNowPlaying(); save()
             } catch is CancellationError { }
@@ -837,6 +885,7 @@ final class PlaybackController: NSObject {
         let target = existing ?? track
         do { _ = try folderAccess(for: target) }
         catch { issue = error.localizedDescription; return }
+        interrupted = false
         if existing == nil { queue.insert([target], afterCurrent: true) }
         if existing != nil, current?.id == target.id {
             if let position { seek(to: position) }
@@ -853,12 +902,15 @@ final class PlaybackController: NSObject {
     }
     func resume() {
         guard let current, !isPlaying, !(playIntent && isPreparing) else { return }
+        // iOS does not guarantee an ended notification. An explicit Play reclaims
+        // the session; setActive still decides whether activation is allowed.
+        interrupted = false
         if player.isPaused && player.isReady {
             playIntent = true; let token = generation
             preparation = Task { [weak self] in
                 guard let self else { return }
                 do {
-                    try await AudioSessionCoordinator.shared.activate()
+                    try await activateSession()
                     guard generation == token, playIntent, !interrupted else { return }
                     try player.play()
                 } catch { issue = error.localizedDescription }
@@ -1038,6 +1090,9 @@ final class PlaybackController: NSObject {
             if recoveringDecoder == id { recoveringDecoder = nil }
             if let tail = transitionTail { prepareTransition(after: tail.id) }
         case .state:
+            // SFB can restore pre-interruption playback after a newer user Pause.
+            // Reconcile the engine itself, not only the published UI state.
+            if player.isPlaying && (!playIntent || interrupted) { player.pause() }
             // SFB reports decodingAborted before stopping its empty engine. Our
             // asynchronous successor can be enqueued and played in that window.
             // Restart only that pending recovery after the delayed stop event.
@@ -1211,8 +1266,14 @@ final class PlaybackController: NSObject {
     }
     func interruptionBegan() { interrupted = true; refresh(); player.pause(); isPlaying = false; save(); updateNowPlaying() }
     func interruptionEnded(shouldResume: Bool) {
+        // A delayed end must not undo a newer explicit Play or track selection.
+        guard interrupted else { return }
         interrupted = false
-        if shouldResume && playIntent { resume() } else { playIntent = false }
+        if shouldResume && playIntent { resume() }
+        else {
+            pauseRevision = UUID()
+            playIntent = false; player.pause(); isPlaying = false; updateNowPlaying()
+        }
     }
     private func updateNowPlaying() {
         guard let current else { MPNowPlayingInfoCenter.default().nowPlayingInfo = nil; return }
