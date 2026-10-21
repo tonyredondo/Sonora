@@ -1,10 +1,11 @@
+import CryptoKit
 import Foundation
 import XCTest
 @testable import SonoraCore
 
 private actor InterpretationHTTP: MetadataLookupTransport {
     var calls: [URLRequest] = []
-    var response = MetadataHTTPResponse(data: Data(#"{"explanation":"A possible reading of growth and patience.","model":"gpt-6-astra","effort":"xhigh"}"#.utf8), status: 200, contentType: "application/json")
+    var response = MetadataHTTPResponse(data: Data(#"{"explanation":"A possible reading of growth and patience.","model":"gpt-6-astra","effort":"medium"}"#.utf8), status: 200, contentType: "application/json")
     func send(_ request: URLRequest) throws -> MetadataHTTPResponse { calls.append(request); return response }
     func set(_ data: String, status: Int) { response = MetadataHTTPResponse(data: Data(data.utf8), status: status, contentType: "application/json") }
 }
@@ -19,6 +20,7 @@ final class LyricsInterpretationTests: XCTestCase {
         let first = try await client.interpret(lyrics: "Leaves fall.", language: "es", context: context, offline: false)
         let calls = await http.calls
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(calls[0].httpBody)) as? [String: Any])
+        XCTAssertEqual(body["effort"] as? String, "medium")
         let song = try XCTUnwrap(body["context"] as? [String: Any])
         XCTAssertEqual(song["title"] as? String, "November")
         XCTAssertEqual(song["artist"] as? String, "Love Division")
@@ -62,7 +64,7 @@ final class LyricsInterpretationTests: XCTestCase {
         let cache = MetadataLookupCache(directory: root)
         let client = LyricsInterpretationClient(connection: connection, cache: cache, transport: http)
         let first = try await client.interpret(lyrics: "A tree grows", language: "es", offline: false)
-        await http.set(#"{"explanation":"A new reading.","model":"gpt-6-astra","effort":"xhigh"}"#, status: 200)
+        await http.set(#"{"explanation":"A new reading.","model":"gpt-6-astra","effort":"medium"}"#, status: 200)
         let updated = try await client.interpret(lyrics: "A tree grows", language: "es", offline: false, refresh: true)
         XCTAssertNotEqual(first, updated)
         var calls = await http.calls
@@ -115,8 +117,43 @@ final class LyricsInterpretationTests: XCTestCase {
         await http.set(#"{"error":"codex_limit","message":"private upstream message must not be displayed"}"#, status: 429)
         do { _ = try await client.interpret(lyrics: "Tree", language: "es", offline: false); XCTFail() }
         catch { XCTAssertTrue(error.localizedDescription.contains("límite")); XCTAssertFalse(error.localizedDescription.contains("private upstream")) }
-        await http.set(#"{"explanation":"Wrong model", "model":"other", "effort":"xhigh"}"#, status: 200)
-        do { _ = try await client.interpret(lyrics: "Tree", language: "es", offline: false); XCTFail() } catch MetadataLookupError.invalidResponse { }
+        for (model, effort) in [("other", "medium"), ("gpt-6-astra", "xhigh"), ("gpt-6-astra", "low")] {
+            let data = try JSONSerialization.data(withJSONObject: ["explanation": "Unexpected response", "model": model, "effort": effort])
+            await http.set(String(decoding: data, as: UTF8.self), status: 200)
+            do { _ = try await client.interpret(lyrics: "Tree", language: "es", offline: false); XCTFail() } catch MetadataLookupError.invalidResponse { }
+        }
         do { _ = try await client.interpret(lyrics: "Tree", language: "es", offline: true); XCTFail() } catch MetadataLookupError.notCached { }
+    }
+
+    func testPreviousSongCacheIsIgnoredAndMediumIsGeneratedOnce() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let http = InterpretationHTTP(), connection = try MetadataProxyConnection(endpoint: "http://localhost:8089", token: "")
+        let cache = MetadataLookupCache(directory: root)
+        struct Legacy: Encodable { let lyrics = "A tree grows"; let language = "es"; let context = LyricsInterpretationContext(); var effort: String? }
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let digest = SHA256.hash(data: try encoder.encode(Legacy())).map { String(format: "%02x", $0) }.joined()
+        let key = "codex-meaning-v2:gpt-6-astra:xhigh:\(connection.endpoint.absoluteString):\(digest)"
+        let legacy = Data(#"{"explanation":"Saved interpretation.","model":"gpt-6-astra","effort":"xhigh"}"#.utf8)
+        try await cache.store(legacy, key: key, status: 200)
+        let previousDigest = SHA256.hash(data: try encoder.encode(Legacy(effort: "medium"))).map { String(format: "%02x", $0) }.joined()
+        let previousKey = "codex-meaning-v2:gpt-6-astra:medium:\(connection.endpoint.absoluteString):\(previousDigest)"
+        let previous = Data(#"{"explanation":"Previous medium interpretation.","model":"gpt-6-astra","effort":"medium"}"#.utf8)
+        try await cache.store(previous, key: previousKey, status: 200)
+        let client = LyricsInterpretationClient(connection: connection, cache: cache, transport: http)
+        do { _ = try await client.interpret(lyrics: "A tree grows", language: "es", offline: true); XCTFail("Previous interpretation must not be shown after the reset") }
+        catch MetadataLookupError.notCached { }
+        let updated = try await client.interpret(lyrics: "A tree grows", language: "es", offline: false)
+        XCTAssertEqual(updated.effort, "medium")
+        let calls = await http.calls
+        XCTAssertEqual(calls.count, 1)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(try XCTUnwrap(calls.first).httpBody)) as? [String: Any])
+        XCTAssertEqual(body["effort"] as? String, "medium")
+        XCTAssertNil(body["refresh"])
+        let reopened = LyricsInterpretationClient(connection: connection, cache: .init(directory: root), transport: http)
+        let preferred = try await reopened.interpret(lyrics: "A tree grows", language: "es", offline: true)
+        XCTAssertEqual(preferred, updated)
+        let oldEntry = try await cache.read(key: key)
+        XCTAssertEqual(oldEntry?.data, legacy)
     }
 }

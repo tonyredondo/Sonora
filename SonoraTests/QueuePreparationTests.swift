@@ -8,7 +8,7 @@ private actor QueueMeaningHTTP: MetadataLookupTransport {
     private(set) var calls = 0
     func send(_ request: URLRequest) async throws -> MetadataHTTPResponse {
         calls += 1
-        return MetadataHTTPResponse(data: Data(#"{"explanation":"A possible reading of growth.","model":"gpt-6-astra","effort":"xhigh"}"#.utf8),
+        return MetadataHTTPResponse(data: Data(#"{"explanation":"A possible reading of growth.","model":"gpt-6-astra","effort":"medium"}"#.utf8),
                                     status: 200, contentType: "application/json")
     }
 }

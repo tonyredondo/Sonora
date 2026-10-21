@@ -63,6 +63,85 @@ final class MusicToolsUITests: XCTestCase {
     @MainActor func testManualRefreshControlAndOfflineOutcome() { checkManualRefresh(large: false) }
     @MainActor func testManualRefreshAtAccessibilitySize() { checkManualRefresh(large: true) }
 
+    @MainActor func testAlbumCarouselCacheExpansionAndSelectionAcrossSongs() {
+        let app = openPlayer(track: "07 - Traducción por frases QA.flac")
+        app.selectPlayerPage(4)
+        let pages = app.pageIndicators["playerPages"]
+        XCTAssertEqual(pages.value as? String, "Álbum, 5 de 5")
+        let paragraph = app.staticTexts["playerAlbumText"]
+        XCTAssertTrue(paragraph.waitForExistence(timeout: 10))
+        XCTAssertEqual(app.staticTexts["playerAlbumTitle"].label, "Sobre el álbum")
+        XCTAssertTrue(paragraph.label.contains("los encuentros y la ausencia"))
+        XCTAssertFalse(app.staticTexts["playerAlbumPreparation"].exists)
+        capture("carousel-album", app)
+        app.buttons["expandAlbum"].tap()
+        XCTAssertTrue(app.navigationBars["Sobre el álbum"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["playerAlbumText"].exists)
+        capture("album-expanded", app)
+        app.buttons["Listo"].tap()
+        XCTAssertEqual(pages.value as? String, "Álbum, 5 de 5")
+        app.buttons["playerQueue"].tap()
+        let instrumental = app.queueRow("09 - Pulso 180 BPM QA.flac")
+        for _ in 0..<10 where !instrumental.isHittable { app.swipeUp(velocity: .slow) }
+        XCTAssertTrue(instrumental.isHittable); instrumental.tap()
+        app.buttons["Listo"].tap()
+        XCTAssertEqual(pages.value as? String, "Álbum, 5 de 5")
+        XCTAssertTrue(paragraph.waitForExistence(timeout: 10), "An album reading is available even when this track has no lyrics")
+        XCTAssertTrue(paragraph.label.contains("Fin del álbum QA"))
+        let reader = app.scrollViews["playerAlbum"]
+        let start = reader.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.75))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -200)))
+        capture("carousel-album-ending", app)
+        XCTAssertTrue(app.buttons["Cerrar reproductor"].isHittable)
+        app.terminate()
+    }
+
+    /// Requires scripts/lyrics-interpretation-fixture.py on localhost:18096.
+    @MainActor func testAlbumPreparationBecomesContentWithoutSwipingOrRepeatingTheRequest() async throws {
+        let app = openPlayer(additionalArguments: ["-prepareQueueAudio", "NO", "-prepareQueueCharacter", "NO", "-prepareQueueTranslation", "NO", "-prepareQueueMeaning", "YES"])
+        connectToLyricsFixture(app)
+        app.selectPlayerPage(4)
+        XCTAssertTrue(app.staticTexts["Preparando «Sobre el álbum»…"].waitForExistence(timeout: 30))
+        capture("album-preparing", app)
+        let input = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:18096/album-input")!)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: input.0) as? [String: Any])
+        let album = try XCTUnwrap(body["album"] as? [String: Any])
+        let tracks = try XCTUnwrap(album["tracks"] as? [[String: Any]])
+        XCTAssertEqual(tracks.count, 9)
+        XCTAssertTrue(tracks.contains { ($0["lyrics"] as? String)?.contains("The sun rises over the mountains") == true })
+        let release = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:18096/release-album")!)
+        XCTAssertEqual((release.1 as? HTTPURLResponse)?.statusCode, 200)
+        let paragraph = app.staticTexts["playerAlbumText"]
+        XCTAssertTrue(paragraph.waitForExistence(timeout: 10))
+        XCTAssertTrue(paragraph.label.contains("Interpretación del álbum QA"))
+        XCTAssertFalse(app.staticTexts["playerAlbumPreparation"].exists)
+        capture("album-prepared-automatically", app)
+        app.selectPlayerPage(0); app.selectPlayerPage(4)
+        XCTAssertTrue(paragraph.exists)
+        let stats = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:18096/stats")!)
+        let counts = try XCTUnwrap(JSONSerialization.jsonObject(with: stats.0) as? [String: Int])
+        XCTAssertEqual(counts["album"], 1)
+        app.terminate()
+    }
+
+    @MainActor func testAlbumAtAccessibilitySizeKeepsFinalContentAboveDots() {
+        let app = openPlayer(large: true, track: "07 - Traducción por frases QA.flac")
+        app.selectPlayerPage(4)
+        XCTAssertTrue(app.staticTexts["playerAlbumText"].waitForExistence(timeout: 10))
+        let coverage = app.staticTexts["playerAlbumCoverage"], reader = app.scrollViews["playerAlbum"]
+        for _ in 0..<24 where !coverage.isHittable {
+            let start = reader.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.75))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -140)))
+        }
+        XCTAssertTrue(coverage.isHittable)
+        let start = reader.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.75))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -140)))
+        XCTAssertLessThanOrEqual(coverage.frame.maxY, app.pageIndicators["playerPages"].frame.minY - 8)
+        XCTAssertTrue(app.buttons["Cerrar reproductor"].isHittable)
+        capture("album-accessibility-ending", app)
+        app.terminate()
+    }
+
     @MainActor func testMeaningHeadingInCarouselAndExpandedView() {
         let app = openPlayer(track: "07 - Traducción por frases QA.flac")
         app.selectPlayerPage(3)
@@ -148,7 +227,7 @@ final class MusicToolsUITests: XCTestCase {
     @MainActor func testPlayerCarouselReadsCachedContentKeepsSelectionAndOpensExpandedContent() {
         let app = openPlayer(track: "07 - Traducción por frases QA.flac", refresh: true)
         let pages = app.pageIndicators["playerPages"]
-        XCTAssertEqual(pages.value as? String, "Letra, 2 de 4")
+        XCTAssertEqual(pages.value as? String, "Letra, 2 de 5")
         XCTAssertTrue(app.scrollViews["playerLyrics"].isHittable)
         let artwork = app.collectionViews["playerCarousel"]
         let expand = app.buttons["expandLyrics"], close = app.buttons["Cerrar reproductor"]
@@ -179,7 +258,7 @@ final class MusicToolsUITests: XCTestCase {
         XCTAssertEqual(artwork.buttons.count, 0, "The artwork-only page has no overlaid buttons")
         capture("carousel-artwork", app)
         pages.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5)).tap()
-        let pageChanged = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", "Portada, 1 de 4"), object: pages)
+        let pageChanged = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", "Portada, 1 de 5"), object: pages)
         XCTAssertEqual(XCTWaiter.wait(for: [pageChanged], timeout: 5), .completed, "The overlaid indicator must change pages")
         app.selectPlayerPage(0)
         app.buttons["expandLyrics"].tap()
@@ -187,7 +266,7 @@ final class MusicToolsUITests: XCTestCase {
         XCTAssertFalse(app.textViews["metadata-lyrics"].exists, "Expansion must not jump straight into editing")
         capture("toolbar-expanded-lyrics", app)
         app.buttons["Listo"].tap()
-        XCTAssertEqual(pages.value as? String, "Portada, 1 de 4")
+        XCTAssertEqual(pages.value as? String, "Portada, 1 de 5")
         app.selectPlayerPage(2)
         let translated = app.scrollViews["playerTranslatedLyrics"]
         XCTAssertTrue(translated.staticTexts["Un pájaro canta en el jardín."].waitForExistence(timeout: 10))
@@ -219,10 +298,10 @@ final class MusicToolsUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Sobre la canción"].exists)
         capture("meaning-expanded-heading", app)
         app.buttons["Listo"].tap()
-        XCTAssertEqual(pages.value as? String, "Significado, 4 de 4")
+        XCTAssertEqual(pages.value as? String, "Significado, 4 de 5")
         app.buttons["Siguiente"].tap()
         XCTAssertTrue(app.staticTexts["Última traducción QA"].waitForExistence(timeout: 10))
-        XCTAssertEqual(pages.value as? String, "Significado, 4 de 4")
+        XCTAssertEqual(pages.value as? String, "Significado, 4 de 5")
         let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "ausencia"), object: meaning)
         XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 10), .completed)
         app.selectPlayerPage(2)
@@ -233,15 +312,15 @@ final class MusicToolsUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Editar texto"].exists)
         app.buttons["Cancelar"].tap()
         app.buttons["Listo"].tap()
-        XCTAssertEqual(pages.value as? String, "Traducción, 3 de 4")
+        XCTAssertEqual(pages.value as? String, "Traducción, 3 de 5")
         app.selectPlayerPage(3)
-        XCTAssertEqual(pages.value as? String, "Significado, 4 de 4")
+        XCTAssertEqual(pages.value as? String, "Significado, 4 de 5")
         app.buttons["Cerrar reproductor"].tap()
         app.buttons["openNowPlaying"].tap()
-        XCTAssertEqual(pages.value as? String, "Significado, 4 de 4")
+        XCTAssertEqual(pages.value as? String, "Significado, 4 de 5")
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["openNowPlaying"].waitForExistence(timeout: 10)); app.buttons["openNowPlaying"].tap()
-        XCTAssertEqual(pages.value as? String, "Significado, 4 de 4")
+        XCTAssertEqual(pages.value as? String, "Significado, 4 de 5")
         XCTAssertTrue(meaning.waitForExistence(timeout: 10))
         let expansion = app.buttons["expandMeaning"]
         let header = app.coordinate(withNormalizedOffset: .zero)
@@ -291,10 +370,10 @@ final class MusicToolsUITests: XCTestCase {
         instrumental.tap()
         app.buttons["Listo"].tap()
         XCTAssertTrue(app.staticTexts["Pulso 180 BPM QA"].waitForExistence(timeout: 10))
-        XCTAssertEqual(app.pageIndicators["playerPages"].value as? String, "Significado, 4 de 4")
+        XCTAssertEqual(app.pageIndicators["playerPages"].value as? String, "Significado, 4 de 5")
         XCTAssertTrue(app.staticTexts["Esta canción todavía no tiene letra."].exists)
         app.selectPlayerPage(2)
-        XCTAssertEqual(app.pageIndicators["playerPages"].value as? String, "Traducción, 3 de 4")
+        XCTAssertEqual(app.pageIndicators["playerPages"].value as? String, "Traducción, 3 de 5")
         XCTAssertTrue(app.staticTexts["Esta canción todavía no tiene letra."].exists)
         app.selectPlayerPage(0)
         XCTAssertTrue(app.buttons["expandLyrics"].isHittable)
@@ -318,7 +397,7 @@ final class MusicToolsUITests: XCTestCase {
         XCTAssertTrue(text.waitForExistence(timeout: 10))
         XCTAssertTrue(text.label.contains("Interpretación preparada para la prueba"))
         XCTAssertFalse(app.staticTexts["Preparando significado…"].exists)
-        XCTAssertEqual(app.pageIndicators["playerPages"].value as? String, "Significado, 4 de 4")
+        XCTAssertEqual(app.pageIndicators["playerPages"].value as? String, "Significado, 4 de 5")
         capture("carousel-meaning-ready", app)
         app.selectPlayerPage(0); app.selectPlayerPage(2); app.selectPlayerPage(3)
         XCTAssertTrue(text.exists)
@@ -370,7 +449,7 @@ final class MusicToolsUITests: XCTestCase {
         app.buttons["translateLyrics"].tap()
         app.navigationBars["Comprender letra"].buttons["Listo"].tap()
         app.navigationBars["Letra"].buttons["Listo"].tap()
-        XCTAssertEqual(app.pageIndicators["playerPages"].value as? String, "Traducción, 3 de 4")
+        XCTAssertEqual(app.pageIndicators["playerPages"].value as? String, "Traducción, 3 de 5")
         let release = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:18096/release-translation")!)
         XCTAssertEqual((release.1 as? HTTPURLResponse)?.statusCode, 200)
         let reader = app.scrollViews["playerTranslatedLyrics"]
@@ -396,7 +475,7 @@ final class MusicToolsUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["playerElapsedTime"].label, "0:03")
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["openNowPlaying"].waitForExistence(timeout: 10)); app.buttons["openNowPlaying"].tap()
-        XCTAssertEqual(app.pageIndicators["playerPages"].value as? String, "Traducción, 3 de 4")
+        XCTAssertEqual(app.pageIndicators["playerPages"].value as? String, "Traducción, 3 de 5")
         XCTAssertTrue(app.staticTexts["saldremos a la calle."].firstMatch.waitForExistence(timeout: 10))
         capture("codex-translation-restored-offline", app)
         app.terminate()

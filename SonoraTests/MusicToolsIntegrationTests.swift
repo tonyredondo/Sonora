@@ -6,7 +6,7 @@ import XCTest
 
 private struct InterpretationResponseFixture: MetadataLookupTransport {
     func send(_ request: URLRequest) async throws -> MetadataHTTPResponse {
-        MetadataHTTPResponse(data: Data(#"{"explanation":"A possible reading of patience.","model":"gpt-6-astra","effort":"xhigh"}"#.utf8),
+        MetadataHTTPResponse(data: Data(#"{"explanation":"A possible reading of patience.","model":"gpt-6-astra","effort":"medium"}"#.utf8),
                              status: 200, contentType: "application/json")
     }
 }
@@ -138,9 +138,17 @@ final class MusicToolsIntegrationTests: XCTestCase {
             let data = try JSONSerialization.data(withJSONObject: ["explanation": "Reading \(meaningCalls)", "model": "gpt-6-astra", "effort": "xhigh"])
             return try JSONDecoder().decode(LyricsInterpretation.self, from: data)
         }
-        let player = PlaybackController(defaults: defaults, musicTools: tools, lyricTranslations: translations, lyricInterpretations: meanings, audioCharacter: character)
+        defaults.set("http://127.0.0.1:9", forKey: "metadata.endpoint")
+        let albumSettings = MetadataAssistantSettings(defaults: defaults, tokens: MetadataTokenStore(service: UUID().uuidString), cache: .init(directory: root.appendingPathComponent("album")))
+        let albums = AlbumInterpretationStore(settings: albumSettings, cache: cache) { album, _, _ in
+            XCTAssertEqual(album.tracks.first?.lyrics, document.lines.map(\.text).joined(separator: "\n"))
+            if failLyrics { throw URLError(.cannotConnectToHost) }
+            return try JSONDecoder().decode(LyricsInterpretation.self, from: Data(#"{"explanation":"Album reading.","model":"gpt-6-astra","effort":"xhigh"}"#.utf8))
+        }
+        let player = PlaybackController(defaults: defaults, musicTools: tools, lyricTranslations: translations, lyricInterpretations: meanings, albumInterpretations: albums, audioCharacter: character)
         defer { player.stop() }
         await player.loadFolder(originalFolder, autoPlay: false)
+        try await waitUntil { player.currentAlbum != nil && !player.library.isIndexing }
         let track = try XCTUnwrap(player.current), folder = try player.folderAccess(for: track)
         let before = try await tools.load(track: track, folder: folder, expected: fingerprint)
         let marker = SongMarker(time: 8, title: "Personal")
@@ -441,6 +449,8 @@ final class MusicToolsIntegrationTests: XCTestCase {
         var translated: [String] = []
         defaults.set("http://127.0.0.1:9", forKey: "metadata.endpoint")
         defaults.set(false, forKey: "prepareQueueMeaning")
+        // This test exercises local audio -> translation; remote character inference has its own injected integration tests.
+        defaults.set(false, forKey: "prepareQueueCharacter")
         let translationSettings = MetadataAssistantSettings(defaults: defaults, tokens: MetadataTokenStore(service: suite),
                                                             cache: MetadataLookupCache(directory: root.appendingPathComponent("metadata")))
         let translations = LyricTranslationStore(cache: cache, settings: translationSettings) { document, _, target, _ in

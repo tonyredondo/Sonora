@@ -4,7 +4,7 @@ extension XCUIApplication {
     @MainActor func selectPlayerPage(_ page: Int, file: StaticString = #filePath, line: UInt = #line) {
         let dots = pageIndicators["playerPages"]
         XCTAssertTrue(dots.waitForExistence(timeout: 5), file: file, line: line)
-        for _ in 0..<4 {
+        for _ in 0..<6 {
             let numbers = (dots.value as? String ?? "").split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
             guard let current = numbers.first else {
                 XCTFail("Missing page selection: \(String(describing: dots.value))", file: file, line: line); return

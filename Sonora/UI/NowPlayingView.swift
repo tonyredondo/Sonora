@@ -61,7 +61,17 @@ struct NowPlayingView: View {
             } message: { Text(player.songAnalysisIssue ?? "") }
             .sheet(isPresented: $showQueue) { QueueView(player: player) }
             .sheet(item: $expandedPage, onDismiss: { lyricsScrollRequest += 1 }) { page in
-                if page == .meaning, let lyrics = player.currentDetails?.lyrics {
+                if page == .album {
+                    NavigationStack {
+                        AlbumContextView(player: player)
+                            .background(theme.background)
+                            .navigationTitle("Sobre el álbum")
+                            .navigationBarTitleDisplayMode(.inline)
+                            .toolbar { ToolbarItem(placement: .confirmationAction) {
+                                Button("Listo") { expandedPage = nil }
+                            } }
+                    }
+                } else if page == .meaning, let lyrics = player.currentDetails?.lyrics {
                     let context = player.currentInterpretationContext, track = player.current, details = player.currentDetails
                     let folder = track.flatMap { try? player.folderAccess(for: $0) }
                     LyricUnderstandingView(document: lyrics, translation: nil, translations: player.lyricTranslations,
@@ -115,8 +125,8 @@ struct NowPlayingView: View {
                         .playerControlGlass(in: Circle())
                 }
                 .disabled(player.current == nil)
-                .accessibilityLabel(selectedPage == .meaning ? "Ampliar significado" : "Ampliar letra")
-                .accessibilityIdentifier(selectedPage == .meaning ? "expandMeaning" : "expandLyrics")
+                .accessibilityLabel(selectedPage == .album ? "Ampliar álbum" : selectedPage == .meaning ? "Ampliar significado" : "Ampliar letra")
+                .accessibilityIdentifier(selectedPage == .album ? "expandAlbum" : selectedPage == .meaning ? "expandMeaning" : "expandLyrics")
                 Menu {
                     Button("Sonido", systemImage: "slider.horizontal.3") { showListening = true }
                     Button("Temporizador", systemImage: "moon.zzz") { showTimer = true }

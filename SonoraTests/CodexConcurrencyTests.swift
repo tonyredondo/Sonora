@@ -90,6 +90,39 @@ final class CodexConcurrencyTests: XCTestCase {
         XCTAssertEqual(meanings.pendingCount + translations.pendingCount, 0)
     }
 
+    func testAlbumUsesTheSameFourSlotsAsSongTools() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "AlbumPool.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        let config = settings(root, defaults: defaults), pool = CodexRequestPool(), probe = CodexProbe(), reading = try response()
+        let meanings = LyricInterpretationStore(settings: config, requests: pool) { doc, _, _, mode in
+            if mode == .cachedOnly { throw MetadataLookupError.notCached }
+            try await probe.request(doc.lines[0].text); return reading
+        }
+        meanings.setAutomaticQueue(["1", "2", "3", "4"])
+        defer { meanings.setAutomaticQueue([]); probe.finishAll() }
+        for id in ["1", "2", "3", "4"] { await meanings.enqueue(LyricsDocument(text: id), language: "es", owner: id) }
+        try await wait { probe.active.count == 4 }
+        var library = MusicCollection(); library.sources = [.init(id: "s", name: "Source", bookmark: Data())]
+        library.upsert([.init(sourceID: "s", relativePath: "one.wav", tags: [.album: "Album"])])
+        let group = try XCTUnwrap(library.groups(byAlbum: true).first)
+        let request = AlbumPreparationRequest(group: group, songs: group.songIDs.compactMap { library.songs[$0] })
+        let album = AlbumInterpretationInput(title: "Album", artist: "Artist", tracks: [.init(context: .init(title: "One"), lyrics: "All words")])
+        let albums = AlbumInterpretationStore(settings: config, cache: MusicToolsCache(root: root), requests: pool) { _, _, _ in
+            try await probe.request("album"); return reading
+        }
+        let task = Task { try await albums.load(request, language: "es", character: false) { _, _ in album } }
+        await Task.yield()
+        XCTAssertEqual(probe.calls.count, 4)
+        probe.finish("1")
+        try await wait { probe.pending["album"] != nil }
+        XCTAssertEqual(probe.active.count, 4)
+        probe.finishAll()
+        _ = try await task.value
+        XCTAssertEqual(probe.peak, 4)
+        XCTAssertEqual(probe.calls.count, 5)
+    }
+
     func testMeaningLateSuccessCannotClearNewerFailureOrRepeatSuccessfulWork() async throws {
         try await checkLateSuccess(translation: false)
     }
