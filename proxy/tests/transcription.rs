@@ -78,6 +78,10 @@ async fn upstream(
     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     match s.mode {
         "not_found_once" if previous_hits == 0 => (StatusCode::NOT_FOUND, "{}"),
+        "invalid_word_once" if previous_hits == 0 => (
+            StatusCode::OK,
+            r#"{"text":"Hello","words":[{"text":"\u0000Hello","type":"word","start":0.1,"end":0.5}]}"#,
+        ),
         "failure" => (StatusCode::SERVICE_UNAVAILABLE, "{}"),
         "quota" => (
             StatusCode::TOO_MANY_REQUESTS,
@@ -486,4 +490,23 @@ async fn invalid_word_times_are_rejected_and_unicode_text_is_preserved() {
         }
         server.abort();
     }
+}
+
+#[tokio::test]
+async fn invalid_retained_words_are_not_cached_and_explicit_retry_recovers() {
+    let root = TempDir::new().unwrap();
+    let (app, _, state, server) = setup(&root, "invalid_word_once").await;
+    let first = app.clone().oneshot(upload(&wav(0))).await.unwrap();
+    assert_eq!(first.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(state.hits.load(Ordering::SeqCst), 1);
+    let recovered = app.clone().oneshot(upload(&wav(0))).await.unwrap();
+    assert_eq!(recovered.status(), StatusCode::OK);
+    let saved = app.oneshot(upload(&wav(0))).await.unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+    assert_eq!(
+        state.hits.load(Ordering::SeqCst),
+        2,
+        "One explicit retry, then a reusable cache hit"
+    );
+    server.abort();
 }
