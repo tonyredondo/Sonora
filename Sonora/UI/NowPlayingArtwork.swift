@@ -68,16 +68,17 @@ struct NowPlayingArtwork: View {
         .clipped()
         .overlay(alignment: .top) {
             Rectangle().fill(.ultraThinMaterial)
+                .opacity(0.45)
                 .mask {
-                    // Preserve contrast near the status bar while allowing
-                    // lyrics to remain recognizable behind the toolbar.
-                    LinearGradient(stops: [.init(color: .white.opacity(0.9), location: 0),
-                                           .init(color: .white.opacity(0.65), location: 0.35),
-                                           .init(color: .white.opacity(0.18), location: 0.68),
-                                           .init(color: .clear, location: 1)],
-                                   startPoint: .top, endPoint: .bottom)
+                    // Keep scrolling text recognizable through a light veil,
+                    // then dissolve the material below the toolbar.
+                    VStack(spacing: 0) {
+                        Color.white.frame(height: topSpace)
+                        LinearGradient(colors: [.white, .clear],
+                                       startPoint: .top, endPoint: .bottom)
+                    }
                 }
-                .frame(height: topSpace)
+                .frame(height: topSpace + 28)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
