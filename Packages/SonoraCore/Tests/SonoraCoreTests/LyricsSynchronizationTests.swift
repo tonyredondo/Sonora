@@ -49,6 +49,20 @@ final class LyricsSynchronizationTests: XCTestCase {
         XCTAssertEqual(result.value.source, .lrclib)
         let paths = await http.requests(); XCTAssertEqual(paths, ["/v1/lyrics"])
     }
+    func testIndentedCatalogHeadersDoNotTriggerPaidFallback() async throws {
+        for header in [" [ar:Artist] ", "\t[by:Someone]\t", " [ar:Artist][al:Album] "] {
+            let root = root(); defer { try? FileManager.default.removeItem(at: root) }
+            let http = LyricsHTTPFixture(catalog: 200, catalogText: header + "\n[00:00.10]Hello\n[00:01.10]Again")
+            let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http, diagnostics: MetadataDiagnostics(directory: root.appendingPathComponent("Diagnostics")))
+            let result = try await client.synchronize(query: query, duration: 2, lyrics: "Hello\nAgain", offline: false) {
+                XCTFail("Recognized LRC headers must not discard a free catalog match"); throw CancellationError()
+            }
+            XCTAssertEqual(result.value.source, .lrclib)
+            XCTAssertEqual(LyricsDocument(text: result.value.text).lines.map(\.text), ["Hello", "Again"])
+            let paths = await http.requests(); XCTAssertEqual(paths, ["/v1/lyrics"])
+        }
+        XCTAssertNil(LyricsSynchronizationResult.catalog(text: "[ar:Artist\n[00:00.10]Hello\n[00:01.10]Again", existing: "Hello\nAgain", duration: 2), "Incomplete metadata is still an untimed content row")
+    }
     func testFallbackPreservesTextAndReusesOfflineCacheAfterRecreation() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }
         let http = LyricsHTTPFixture(); let cache = MetadataLookupCache(directory: root)
@@ -67,6 +81,17 @@ final class LyricsSynchronizationTests: XCTestCase {
         let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http, diagnostics: MetadataDiagnostics(directory: root.appendingPathComponent("Diagnostics")))
         do { _ = try await client.synchronize(query: query, duration: 2, lyrics: "Hello\nAgain", offline: false) { XCTFail("No paid fallback on outage"); throw CancellationError() }; XCTFail("Must report outage") }
         catch { XCTAssertEqual(error as? MetadataLookupError, .unavailable) }
+    }
+    func testFreshCatalogCacheWriteFailureStillAllowsAlignment() async throws {
+        for status in [200, 404] {
+            let root = root(); defer { try? FileManager.default.removeItem(at: root) }
+            let http = LyricsHTTPFixture(catalog: status)
+            let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root, maxBytes: 1), transport: http, diagnostics: MetadataDiagnostics(directory: root.appendingPathComponent("Diagnostics")))
+            let result = try await client.synchronize(query: query, duration: 2, lyrics: "Hello\nAgain", offline: false) { pcmFixture() }
+            XCTAssertEqual(result.value.source, .elevenlabs)
+            XCTAssertNotNil(result.warning, "A successful analysis still reports that it could not be cached")
+            let paths = await http.requests(); XCTAssertEqual(paths, ["/v1/lyrics", "/v1/lyrics/align"])
+        }
     }
     func testCatalogRejectsDifferentEditionIncompleteTimingAndOutOfRangeLines() {
         for text in ["[00:00]Wrong\n[00:01]Again", "[00:00]Hello\nAgain", "[00:00]Hello\n[00:03]Again", "[00:02]Hello\n[00:01]Again"] {
@@ -123,6 +148,19 @@ final class LyricsSynchronizationTests: XCTestCase {
         pending.cancel()
         do { _ = try await pending.value; XCTFail("Cancelled audio cannot be uploaded") } catch is CancellationError { }
         let paths = await http.requests(); XCTAssertEqual(paths, ["/v1/lyrics"])
+    }
+
+    func testGlobalOffsetCatalogHitAvoidsPaidPreparationAndKeepsOrderValidation() async throws {
+        let root = root(); defer { try? FileManager.default.removeItem(at: root) }
+        let http = LyricsHTTPFixture(catalog: 200, catalogText: "[offset:1000]\n[00:01.00]Hello\n[00:03.00]Again")
+        let client = LyricsSynchronizationClient(connection: try MetadataProxyConnection(endpoint: "http://127.0.0.1:8089", token: "fixture"), cache: MetadataLookupCache(directory: root), transport: http)
+        let result = try await client.synchronize(query: query, duration: 2.5, lyrics: "Hello\nAgain", offline: false) {
+            XCTFail("A valid offset-adjusted catalog match must never prepare paid audio"); throw CancellationError()
+        }
+        XCTAssertEqual(result.value.source, .lrclib)
+        XCTAssertEqual(LyricsDocument(text: result.value.text).lines.map(\.time), [0, 2])
+        let paths = await http.requests(); XCTAssertEqual(paths, ["/v1/lyrics"])
+        XCTAssertNil(LyricsSynchronizationResult.catalog(text: "[offset:1000]\n[00:03]Hello\n[00:01]Again", existing: "Hello\nAgain", duration: 2.5))
     }
 
 }

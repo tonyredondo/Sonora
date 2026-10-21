@@ -13,6 +13,7 @@ public struct LyricsDraft: Sendable {
     public let lines: [Line]
     private let rawLines: [String]
     private static let cue = try! NSRegularExpression(pattern: #"^\[(\d{1,3}):([0-5]\d)(?:[.:](\d{1,3}))?\]"#)
+    private static let offsetInformation = try! NSRegularExpression(pattern: #"\[offset:[^\]]*\]"#, options: .caseInsensitive)
     private static let header = try! NSRegularExpression(pattern: #"^\[(ar|al|ti|au|by|re|ve|length|offset):.*\]$"#, options: .caseInsensitive)
 
     public init(text: String) {
@@ -97,9 +98,12 @@ public struct LyricsDraft: Sendable {
         var result: [String] = []
         let grouped = Dictionary(grouping: lines, by: \.source)
         for (index, raw) in rawLines.enumerated() {
-            if raw.trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("[offset:") { continue }
             let entries = grouped[index] ?? []
-            if entries.isEmpty { result.append(raw); continue }
+            if entries.isEmpty {
+                let header = Self.offsetInformation.stringByReplacingMatches(in: raw, range: NSRange(raw.startIndex..., in: raw), withTemplate: "")
+                if !header.trimmingCharacters(in: .whitespaces).isEmpty || raw.trimmingCharacters(in: .whitespaces).isEmpty { result.append(header) }
+                continue
+            }
             for entry in entries {
                 let value = entry.id == target.id ? replacement : entry.text
                 let start = entry.id == target.id ? time : entry.time

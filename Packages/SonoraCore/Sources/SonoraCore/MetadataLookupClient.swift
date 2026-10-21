@@ -175,7 +175,8 @@ public actor MetadataLookupClient {
         do {
             let response = try await transport.send(request)
             try Task.checkCancellation()
-            if response.status == 404 { try await cache.store(Data(), key: key, status: 404) }
+            // A fresh miss remains authoritative when its optional cache write fails.
+            if response.status == 404 { try? await cache.store(Data(), key: key, status: 404) }
             try check(response.status)
             guard response.data.count <= 10_000_000 else { throw MetadataLookupError.tooLarge }
             let value = try decode(response.data)

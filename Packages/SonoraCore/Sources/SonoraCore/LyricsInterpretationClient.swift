@@ -16,9 +16,9 @@ public struct LyricsInterpretationContext: Codable, Sendable, Equatable {
         self.styles = styles; self.moods = moods
     }
     public var isValid: Bool {
-        [title, artist, album].allSatisfy { $0.utf8.count <= 4096 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }
+        [title, artist, album].allSatisfy { $0.utf8.count <= 4096 && !$0.unicodeScalars.contains { $0.properties.generalCategory == .control } }
             && styles.count <= 2 && styles.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && $0.utf8.count <= 200 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }
+                && $0.utf8.count <= 200 && !$0.unicodeScalars.contains { $0.properties.generalCategory == .control } }
             && moods.count <= 2 && moods.allSatisfy { ["happy", "sad", "relaxed", "aggressive"].contains($0) }
     }
     public var cacheIdentity: String {

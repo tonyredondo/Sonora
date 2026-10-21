@@ -25,8 +25,8 @@ public struct AlbumInterpretationInput: Codable, Equatable, Sendable {
             && tracks.reduce(0, { $0 + $1.lyrics.utf8.count }) <= 262144
             && tracks.allSatisfy { track in
                 track.context.isValid && track.lyrics.utf8.count <= 65536
-                    && track.genre.utf8.count <= 4096 && !track.genre.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
-                    && !track.lyrics.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) && ![10, 13, 9].contains($0.value) }
+                    && track.genre.utf8.count <= 4096 && !track.genre.unicodeScalars.contains { $0.properties.generalCategory == .control }
+                    && !track.lyrics.unicodeScalars.contains { $0.properties.generalCategory == .control && ![10, 13, 9].contains($0.value) }
             }
     }
     public var cacheIdentity: String {

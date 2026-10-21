@@ -9,12 +9,14 @@ public struct LyricsSynchronizationResult: Codable, Sendable, Equatable {
     /// Require complete, ordered timing and the same edition/text when lyrics already exist.
     public static func catalog(text: String, existing: String, duration: Double) -> Self? {
         let document = LyricsDocument(text: text)
-        let content = text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty && $0.range(of: #"^\[(ar|al|ti|au|by|re|ve|length|offset):"#, options: [.regularExpression, .caseInsensitive]) == nil }
+        let content = LyricsDocument.removingInformation(from: text).components(separatedBy: .newlines)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         guard !document.lines.isEmpty, document.lines.count == content.count,
               document.lines.allSatisfy({ $0.time.map { $0.isFinite && $0 >= 0 && $0 <= duration } ?? false }) else { return nil }
         var previous = 0.0
+        let offset = LyricsDocument.timingOffset(in: text)?.tag ?? ""
         for raw in content {
-            let parsed = LyricsDocument(text: raw).lines
+            let parsed = LyricsDocument(text: offset + "\n" + raw).lines
             guard parsed.count == 1, let time = parsed.first?.time, time.isFinite, time >= previous, time <= duration else { return nil }
             previous = time
         }
@@ -89,7 +91,7 @@ public actor LyricsSynchronizationClient {
                     return attributed(MetadataLookupResult(value: result, savedAt: found.savedAt, warning: found.warning))
                 }
                 // A stale catalog result after a network error is not proof of a fresh miss.
-                if !offline && found.warning != nil { catalogFailure = .unavailable }
+                if !offline && found.savedAt != nil && found.warning != nil { catalogFailure = .unavailable }
                 if knownText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                    !found.value.instrumental, abs(found.value.duration - duration) <= 2,
                    let plain = found.value.plainLyrics, !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
