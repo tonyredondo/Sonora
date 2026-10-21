@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 
 enum NowPlayingPage: Int, CaseIterable, Identifiable {
-    case artwork, lyrics, translation, meaning
+    case artwork, lyrics, translation, meaning, album
     var id: Int { rawValue }
     var title: String {
         switch self {
@@ -11,6 +11,7 @@ enum NowPlayingPage: Int, CaseIterable, Identifiable {
         case .lyrics: "Letra"
         case .translation: "Traducción"
         case .meaning: "Significado"
+        case .album: "Álbum"
         }
     }
 }
@@ -107,7 +108,9 @@ struct NowPlayingArtwork: View {
         } else {
             ZStack(alignment: .bottomTrailing) {
                 Group {
-                    if let lyrics = player.currentDetails?.lyrics, !lyrics.lines.isEmpty {
+                    if page == .album {
+                        AlbumContextView(player: player)
+                    } else if let lyrics = player.currentDetails?.lyrics, !lyrics.lines.isEmpty {
                         switch page {
                         case .translation:
                             ArtworkTranslation(player: player, lyrics: lyrics, scrollRequest: scrollRequest, isVisible: selection == page)

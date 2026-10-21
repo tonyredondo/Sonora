@@ -86,7 +86,8 @@ All JSON provider responses use an envelope with `provider`, `sources` (upstream
 | POST | `/v1/lyrics/align` | Multipart `file` (canonical WAV) and UTF-8 `text`; returns validated synchronized LRC and audio/text SHA-256 digests |
 | POST | `/v1/lyrics/transcribe` | Multipart `file` (canonical WAV); returns validated Scribe v2 text, line-level LRC and audio SHA-256; valid no-voice results contain empty text |
 | POST | `/v1/lyrics/translate` | JSON `lines` (`id`, `text`), `source_language` and `target_language`; full-context Codex translation with one result per source ID |
-| POST | `/v1/lyrics/interpret` | JSON `lyrics`, `language` and optional song `context`; cached literary interpretation via the host user's Codex session, GPT-6-Astra at `xhigh` |
+| POST | `/v1/albums/interpret` | JSON `album` (title, artist, ordered tracks with song context, genre and full lyrics), `language`; cached album interpretation |
+| POST | `/v1/lyrics/interpret` | JSON `lyrics`, `language` and optional song `context`; cached literary interpretation via the host user's Codex session, GPT-6-Astra at `medium` |
 | POST | `/v1/identify` | JSON `fingerprint` and `duration`; AcoustID recording IDs and scores |
 | GET | `/v1/artwork/{release_mbid}` | Front artwork at the provider's 500-pixel variant; downloaded only when requested |
 | POST | `/v1/jobs` | Create a bounded batch; returns 202 and a `Location` to poll |
@@ -151,8 +152,16 @@ binary = "/absolute/path/to/codex"
 The adapter is verified with Codex CLI 0.162.0. It uses `codex exec` in an ephemeral,
 read-only session with user configuration, project instructions, shell tools,
 plugins, hooks, browsing and app connectors disabled. Interpretation requests select
-`gpt-6-astra` with reasoning effort `xhigh`; translation requests select `gpt-6.1-sol`
+`gpt-6-astra` with reasoning effort `medium`; translation requests select `gpt-6.1-sol`
 with `medium`. Both use the default service tier and ChatGPT auth.
+The app sends `effort: "medium"` for song and album interpretations. Omitted effort
+retains `xhigh` for compatibility with build 63 and earlier; only `medium` and
+`xhigh` are accepted. Responses report the actual effort used, with separate cache
+entries. The new app starts a fresh interpretation cache generation for song and
+album readings (`codex-meaning-v3` and `codex-album-v2`), so the same music is
+regenerated with `medium` once. Subsequent opens reuse those new results. Existing
+translations, audio analyses, collected album lyrics and personal annotations keep
+their cache identities. Older apps continue to use their existing `xhigh` caches.
 No API key is required. Each new analysis consumes the account's Codex allowance;
 this does not turn a ChatGPT login into an API key.
 
@@ -168,6 +177,21 @@ All fields are treated as data; tags are explicitly described as estimates,
 with lyrics as primary evidence and no claim of confirmed author intent. Results
 identify their model and effort. The iPhone labels them as AI interpretations.
 
+The protected `/v1/albums/interpret` route uses the same interpretation model and
+response shape. Its `album` contains `title`, `artist` and up to 100 ordered
+`tracks`, each with song `context`, `genre` and `lyrics`. Text limits are 64 KiB per
+track and 256 KiB across the album; JSON bodies are capped at 2 MiB. At least one
+track must have lyrics. Empty lyrics remain explicit, and the app reports the
+available lyric count. Oversized albums are rejected rather than truncated.
+The prompt describes recurring themes, emotional atmosphere and musical character
+across the supplied record, without external facts or separate tag commentary.
+The app collects all album members in its library, including tracks outside the
+playback queue, before generation. Results are shared between those songs and
+restored offline. The fifth player page only reads this shared state. The existing
+meaning preference covers songs and albums; manual analysis refresh includes the
+current album. Changes to the corpus, response language or prompt version use a
+separate cache entry. Timing-only lyric changes can reuse the generated response.
+
 The protected `/v1/lyrics/translate` route accepts up to 2000 nonempty lines and
 100 KB of lyric text (10 KB per line). Source can be `auto`; otherwise source and
 target are language tags such as `en`, `es` or `zh-Hans`. The complete document is
@@ -176,9 +200,9 @@ contains `lines` with the same IDs in the same order, plus `model` and `effort`.
 Every ID must occur exactly once with nonempty translated text. Source timestamps
 are never sent or generated. The client rejects incomplete or mismatched output.
 
-Up to four Codex processes run concurrently across both routes, with at most eight
+Up to four Codex processes run concurrently across all three routes, with at most eight
 active/waiting requests. The app also shares a four-request limit between its
-translation and interpretation queues.
+translation, song interpretation and album interpretation queues.
 The process deadline is 180 seconds and the total queue deadline 210 seconds.
 The proxy does not automatically start another Codex invocation after failure.
 Cancelling the owning task stops its child process. Requests for the same cache key
@@ -202,7 +226,7 @@ Update the app and proxy together when changing the translation model: the clien
 validates the response model and effort as well as the line IDs.
 
 Ordinary tests use a local stub CLI. The ignored
-`live_codex_astra_xhigh_interpretation_and_cache` test uses only synthetic text and
+`live_codex_astra_medium_interpretation_and_cache` test uses only synthetic text and
 requires explicitly setting `SONORA_LIVE_CODEX` to an approved CLI binary. It makes
 one real request, then verifies reuse with Codex disabled.
 

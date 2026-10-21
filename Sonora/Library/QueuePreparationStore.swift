@@ -4,7 +4,7 @@ import SonoraCore
 
 struct SongMetadataRefresh: Equatable {
     enum Step: String, CaseIterable, Identifiable {
-        case audio, character, translation, meaning
+        case audio, character, translation, meaning, album
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -12,6 +12,7 @@ struct SongMetadataRefresh: Equatable {
             case .character: "Estilo y ambiente"
             case .translation: "Traducción"
             case .meaning: "Significado"
+            case .album: "Sobre el álbum"
             }
         }
     }

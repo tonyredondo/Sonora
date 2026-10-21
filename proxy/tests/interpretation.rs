@@ -15,6 +15,7 @@ fn input(language: &str) -> InterpretationInput {
             .into(),
         language: language.into(),
         context: Default::default(),
+        effort: None,
         refresh: false,
     }
 }
@@ -183,6 +184,7 @@ async fn explicit_refresh_bypasses_cache_and_failure_preserves_last_good_result(
         lyrics: "A tree grows".into(),
         language: "es".into(),
         context: Default::default(),
+        effort: None,
         refresh: true,
     };
     assert!(service.interpret(request.clone()).await.is_err());
@@ -344,7 +346,7 @@ async fn api_authentication_and_disabled_state_do_not_start_codex() {
 /// Explicit opt-in only. Uses synthetic lyrics and the host user's existing Codex session.
 #[tokio::test]
 #[ignore = "requires explicit approval to use Codex plan usage"]
-async fn live_codex_astra_xhigh_interpretation_and_cache() {
+async fn live_codex_astra_medium_interpretation_and_cache() {
     let binary = std::env::var_os("SONORA_LIVE_CODEX")
         .expect("set SONORA_LIVE_CODEX to the approved binary");
     let tmp = TempDir::new().unwrap();
@@ -355,7 +357,9 @@ async fn live_codex_astra_xhigh_interpretation_and_cache() {
         },
         cache(tmp.path()),
     );
-    let value = service.interpret(input("es")).await.unwrap();
+    let mut request = input("es");
+    request.effort = Some("medium".into());
+    let value = service.interpret(request.clone()).await.unwrap();
     assert!(!value.explanation.is_empty());
     assert!(value.explanation.split_whitespace().count() > 20);
     println!(
@@ -368,6 +372,6 @@ async fn live_codex_astra_xhigh_interpretation_and_cache() {
     let cached = InterpretationService::new(CodexConfig::default(), cache(tmp.path()));
     assert_eq!(
         value.explanation,
-        cached.interpret(input("es")).await.unwrap().explanation
+        cached.interpret(request).await.unwrap().explanation
     );
 }

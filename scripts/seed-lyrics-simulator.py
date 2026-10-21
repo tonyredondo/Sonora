@@ -80,9 +80,9 @@ for title, times, text, translated in translations:
     meaning_cache = container / 'Library' / 'Application Support' / 'Sonora' / 'MetadataCache'
     meaning_cache.mkdir(parents=True, exist_ok=True)
     context = dict(title=title.split(' - ', 1)[-1], artist='Sonora Tests', album='Letras en portada', styles=[], moods=[])
-    request = json.dumps(dict(language='es', lyrics='\n'.join(text), context=context),
+    request = json.dumps(dict(language='es', lyrics='\n'.join(text), context=context, effort='medium'),
                          ensure_ascii=False, sort_keys=True, separators=(',', ':'))
-    meaning_key = 'codex-meaning-v2:gpt-6-astra:xhigh:http://127.0.0.1:9:' + hashlib.sha256(request.encode()).hexdigest()
+    meaning_key = 'codex-meaning-v3:gpt-6-astra:medium:http://127.0.0.1:9:' + hashlib.sha256(request.encode()).hexdigest()
     explanation = ('La canción observa los pequeños cambios del día: la luz, los encuentros y la calma de la noche. '
                    'El paisaje acompaña una sensación de esperanza y de empezar de nuevo.\n\n'
                    'Las imágenes del camino y del río pueden leerse como momentos compartidos. '
@@ -90,7 +90,7 @@ for title, times, text, translated in translations:
                    'El cierre invita a mirar hacia el mañana. Fin de la interpretación QA.')
     if title.startswith('08'):
         explanation = 'La repetición expresa la ausencia de varias personas y termina dirigiéndose a una en particular. Significado de la última traducción QA.'
-    body = json.dumps(dict(explanation=explanation, model='gpt-6-astra', effort='xhigh'), ensure_ascii=False).encode()
+    body = json.dumps(dict(explanation=explanation, model='gpt-6-astra', effort='medium'), ensure_ascii=False).encode()
     entry = dict(data=body, status=200, savedAt=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None), key=meaning_key)
     (meaning_cache / (hashlib.sha256(meaning_key.encode()).hexdigest() + '.plist')).write_bytes(
         plistlib.dumps(entry, fmt=plistlib.FMT_BINARY))

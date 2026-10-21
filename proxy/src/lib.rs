@@ -1,5 +1,6 @@
 //! Sonora's metadata and opt-in lyric alignment service. File access and tag writes stay on the device.
 
+pub mod album_interpretation;
 pub mod alignment;
 pub mod api;
 pub mod audio_character;

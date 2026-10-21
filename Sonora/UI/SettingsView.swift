@@ -66,14 +66,14 @@ struct QueuePreparationSettingsView: View {
                 Toggle("BPM y forma de onda", isOn: $audio).accessibilityIdentifier("prepareQueueAudio")
                 Toggle("Estilo y ambiente", isOn: $character).accessibilityIdentifier("prepareQueueCharacter")
                 Toggle("Traducción", isOn: $translation).accessibilityIdentifier("prepareQueueTranslation")
-                Toggle("Significado con IA", isOn: $meaning).accessibilityIdentifier("prepareQueueMeaning")
+                Toggle("Significado de canciones y álbumes", isOn: $meaning).accessibilityIdentifier("prepareQueueMeaning")
             } header: { Text("Toda la cola de reproducción") } footer: {
                 Text("Damos prioridad a la canción actual. Traducción y significado comparten hasta cuatro solicitudes simultáneas; el análisis de audio se prepara canción a canción. Los resultados se guardan para reutilizarlos. Al desactivar una función, terminan los análisis que ya hayan empezado.")
             }
             Section {
                 Text("Estilo y ambiente envían hasta 90 segundos de audio a tu servidor de Sonora, donde se analizan con Essentia sin servicios externos. Las etiquetas se guardan para consultarlas sin conexión.")
                     .font(.footnote).foregroundStyle(.secondary)
-                Text("Traducción y significado envían la letra completa a Codex a través de tu servidor y consumen uso de tu plan cuando falta un resultado guardado. Los resultados guardados funcionan sin conexión.")
+                Text("El significado del álbum reúne todas sus canciones disponibles en la biblioteca, aunque no estén en la cola. Traducción y significado envían las letras completas a Codex a través de tu servidor y consumen uso de tu plan cuando falta un resultado guardado. Los resultados guardados funcionan sin conexión.")
                     .font(.footnote).foregroundStyle(.secondary)
                 Text("La preparación avanza mientras iOS permite ejecutar Sonora. Si el sistema suspende la app, continúa al volver a abrirla.")
                     .font(.footnote).foregroundStyle(.secondary)

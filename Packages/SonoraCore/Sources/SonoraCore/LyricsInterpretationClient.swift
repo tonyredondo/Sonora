@@ -34,7 +34,7 @@ public struct LyricsInterpretation: Codable, Sendable, Equatable {
     public let model: String
     public let effort: String
     public var isValid: Bool {
-        model == "gpt-6-astra" && effort == "xhigh"
+        model == "gpt-6-astra" && ["medium", "xhigh"].contains(effort)
             && !explanation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && explanation.utf8.count <= 32768
     }
 }
@@ -45,6 +45,7 @@ public enum LyricsInterpretationError: LocalizedError {
         guard case let .service(code, reference) = self else { return nil }
         let message: String
         switch code {
+        case "album_unavailable": message = "Actualiza el servidor de Sonora para preparar el análisis del álbum."
         case "codex_disabled": message = "Activa Codex en la configuración del servidor de Sonora."
         case "codex_busy": message = "El servidor está interpretando otras letras. Inténtalo de nuevo en un momento."
         case "codex_limit": message = "Se ha alcanzado el límite de uso de Codex. Espera antes de volver a intentarlo."
@@ -61,7 +62,9 @@ public enum LyricsInterpretationError: LocalizedError {
 /// Callers choose whether to generate or read offline. Text, song context, language and prompt version
 /// identify reusable results; credentials never participate in the cache key.
 public actor LyricsInterpretationClient {
-    public static let version = "codex-meaning-v2"
+    // New generation: regenerate previous readings once when adopting medium.
+    public static let version = "codex-meaning-v3"
+    public static let effort = "medium"
     private let connection: MetadataProxyConnection
     private let cache: MetadataLookupCache
     private let transport: any MetadataLookupTransport
@@ -73,19 +76,19 @@ public actor LyricsInterpretationClient {
     public func interpret(lyrics: String, language: String, context: LyricsInterpretationContext = .init(), offline: Bool, refresh: Bool = false) async throws -> LyricsInterpretation {
         guard !lyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, lyrics.utf8.count <= 65536,
               context.isValid, ["es", "en", "fr", "de", "it", "pt"].contains(language) else { throw MetadataLookupError.invalidSearch }
-        struct Input: Encodable { let lyrics: String; let language: String; let context: LyricsInterpretationContext; var refresh: Bool? }
+        struct Input: Encodable { let lyrics: String; let language: String; let context: LyricsInterpretationContext; let effort: String; var refresh: Bool? }
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
-        let body = try encoder.encode(Input(lyrics: lyrics, language: language, context: context))
+        let body = try encoder.encode(Input(lyrics: lyrics, language: language, context: context, effort: Self.effort))
         var request = try connection.request(path: "v1/lyrics/interpret")
-        let key = "\(Self.version):gpt-6-astra:xhigh:\(connection.endpoint.absoluteString):" + SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+        let key = "\(Self.version):gpt-6-astra:\(Self.effort):\(connection.endpoint.absoluteString):" + SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
         try Task.checkCancellation()
         if !refresh, let old = try await cache.read(key: key), old.status == 200,
-           let value = try? JSONDecoder().decode(LyricsInterpretation.self, from: old.data), value.isValid {
+           let value = try? JSONDecoder().decode(LyricsInterpretation.self, from: old.data), value.isValid, value.effort == Self.effort {
             try Task.checkCancellation(); return value
         }
         guard !offline else { throw MetadataLookupError.notCached }
         request.httpMethod = "POST"
-        request.httpBody = refresh ? try encoder.encode(Input(lyrics: lyrics, language: language, context: context, refresh: true)) : body
+        request.httpBody = refresh ? try encoder.encode(Input(lyrics: lyrics, language: language, context: context, effort: Self.effort, refresh: true)) : body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let response = try await transport.send(request)
         try Task.checkCancellation()
@@ -97,7 +100,7 @@ public actor LyricsInterpretationClient {
         }
         guard response.data.count <= 131072 else { throw MetadataLookupError.tooLarge }
         let value = try JSONDecoder().decode(LyricsInterpretation.self, from: response.data)
-        guard value.isValid else { throw MetadataLookupError.invalidResponse }
+        guard value.isValid, value.effort == Self.effort else { throw MetadataLookupError.invalidResponse }
         try await cache.store(response.data, key: key, status: 200)
         try Task.checkCancellation()
         return value

@@ -11,6 +11,9 @@ final class PlaybackController: NSObject {
     let audioCharacter: AudioCharacterStore
     let lyricTranslations: LyricTranslationStore
     let lyricInterpretations: LyricInterpretationStore
+    let albumInterpretations: AlbumInterpretationStore
+    var currentAlbum: AlbumPreparationRequest?
+    var albumPreparationPreferences: QueuePreparationPreferences { QueuePreparationPreferences(defaults: defaults) }
     @ObservationIgnored lazy var queuePreparation = QueuePreparationStore { [weak self] item, preferences in
         try await self?.prepareQueuedSong(item, preferences: preferences)
     }
@@ -145,6 +148,7 @@ final class PlaybackController: NSObject {
             return
         }
         let preferences = QueuePreparationPreferences(defaults: defaults)
+        let album = currentAlbum
         Task(priority: .utility) { [self] in
             defer { songMetadataRefresh?.isRunning = false }
             let snapshot: MetadataSnapshot
@@ -174,25 +178,32 @@ final class PlaybackController: NSObject {
                 songMetadataRefresh?.steps[.character] = .updated
             } catch { songMetadataRefresh?.steps[.character] = .failed(error.localizedDescription) }
 
-            guard lyrics.lines.contains(where: { !$0.text.isEmpty }) else {
+            if !lyrics.lines.contains(where: { !$0.text.isEmpty }) {
                 songMetadataRefresh?.steps[.translation] = .skipped("Esta canción no tiene letra.")
                 songMetadataRefresh?.steps[.meaning] = .skipped("Esta canción no tiene letra.")
-                return
-            }
-            songMetadataRefresh?.steps[.translation] = .running
-            do {
-                _ = try await lyricTranslations.load(lyrics, source: preferences.source, target: preferences.target, refresh: true)
-                songMetadataRefresh?.steps[.translation] = .updated
-            } catch LyricTranslationIssue.sameLanguage {
-                songMetadataRefresh?.steps[.translation] = .skipped("La letra ya está en el idioma elegido.")
-            } catch { songMetadataRefresh?.steps[.translation] = .failed(error.localizedDescription) }
+            } else {
+                songMetadataRefresh?.steps[.translation] = .running
+                do {
+                    _ = try await lyricTranslations.load(lyrics, source: preferences.source, target: preferences.target, refresh: true)
+                    songMetadataRefresh?.steps[.translation] = .updated
+                } catch LyricTranslationIssue.sameLanguage {
+                    songMetadataRefresh?.steps[.translation] = .skipped("La letra ya está en el idioma elegido.")
+                } catch { songMetadataRefresh?.steps[.translation] = .failed(error.localizedDescription) }
 
-            songMetadataRefresh?.steps[.meaning] = .running
-            do {
-                let context = interpretationContext(for: track, folder: access, values: snapshot.values, expected: snapshot.fingerprint)
-                _ = try await lyricInterpretations.load(lyrics, language: preferences.meaningLanguage, context: context, refresh: true)
-                songMetadataRefresh?.steps[.meaning] = .updated
-            } catch { songMetadataRefresh?.steps[.meaning] = .failed(error.localizedDescription) }
+                songMetadataRefresh?.steps[.meaning] = .running
+                do {
+                    let context = interpretationContext(for: track, folder: access, values: snapshot.values, expected: snapshot.fingerprint)
+                    _ = try await lyricInterpretations.load(lyrics, language: preferences.meaningLanguage, context: context, refresh: true)
+                    songMetadataRefresh?.steps[.meaning] = .updated
+                } catch { songMetadataRefresh?.steps[.meaning] = .failed(error.localizedDescription) }
+            }
+            songMetadataRefresh?.steps[.album] = .running
+            if let album {
+                do {
+                    try await refreshAlbum(album, language: preferences.meaningLanguage, character: preferences.character)
+                    songMetadataRefresh?.steps[.album] = .updated
+                } catch { songMetadataRefresh?.steps[.album] = .failed(error.localizedDescription) }
+            } else { songMetadataRefresh?.steps[.album] = .skipped("Espera a que termine de leerse la biblioteca.") }
         }
     }
     func translationPreferencesDidChange() { preparationPreferencesDidChange() }
@@ -204,10 +215,12 @@ final class PlaybackController: NSObject {
         audioCharacter.retry()
         lyricTranslations.retryAutomatic()
         lyricInterpretations.retryAutomatic()
+        albumInterpretations.retry()
         refreshQueuePreparation(retry: true)
         retrySongAnalysis()
     }
     private func refreshQueuePreparation(retry: Bool = false) {
+        refreshAlbumPreparation()
         let preferences = QueuePreparationPreferences(defaults: defaults)
         // Current, upcoming, then already played songs. Reordering never
         // interrupts a decoder or provider request already writing its cache.
@@ -432,12 +445,13 @@ final class PlaybackController: NSObject {
         return try await body(token)
     }
 
-    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil, musicTools: MusicToolsStore? = nil, lyricTranslations: LyricTranslationStore? = nil, lyricInterpretations: LyricInterpretationStore? = nil, audioCharacter: AudioCharacterStore? = nil) {
+    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil, musicTools: MusicToolsStore? = nil, lyricTranslations: LyricTranslationStore? = nil, lyricInterpretations: LyricInterpretationStore? = nil, albumInterpretations: AlbumInterpretationStore? = nil, audioCharacter: AudioCharacterStore? = nil) {
         self.defaults = defaults
         self.musicTools = musicTools ?? MusicToolsStore()
         self.audioCharacter = audioCharacter ?? AudioCharacterStore()
         self.lyricTranslations = lyricTranslations ?? LyricTranslationStore()
         self.lyricInterpretations = lyricInterpretations ?? LyricInterpretationStore()
+        self.albumInterpretations = albumInterpretations ?? AlbumInterpretationStore()
         self.metadataArchive = metadataArchive
         player = audioPlayer
         library = MusicLibrary(defaults: defaults)
@@ -455,6 +469,7 @@ final class PlaybackController: NSObject {
         events = PlayerEvents(equalizer: equalizer.processor) { [weak self] event in Task { @MainActor in self?.handle(event) } }
         player.delegate = events
         systemControls = SystemPlaybackControls(owner: self)
+        observeAlbumLibrary()
         ticker = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))

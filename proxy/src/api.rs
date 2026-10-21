@@ -87,6 +87,10 @@ pub fn router(config: Config) -> Result<Router, Error> {
         .route("/v1/releases/{id}", get(release))
         .route("/v1/lyrics", get(lyrics))
         .route(
+            "/v1/albums/interpret",
+            post(interpret_album).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
+        )
+        .route(
             "/v1/lyrics/interpret",
             post(interpret).layer(DefaultBodyLimit::max(128 * 1024)),
         )
@@ -135,6 +139,7 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
     Json(json!({"providers":providers,"metadata_archive_version":1,
         "audio_character":{"enabled":app.client.config().audio_character.enabled,"version":crate::audio_character::VERSION},
         "lyric_translation":{"enabled":app.client.config().codex.enabled,"version":1,"model":crate::translation::MODEL,"effort":crate::translation::EFFORT},
+        "album_interpretation":{"enabled":app.client.config().codex.enabled,"version":crate::album_interpretation::VERSION},
         "lyric_interpretation":{"enabled":app.client.config().codex.enabled,"model":crate::interpretation::MODEL,"effort":crate::interpretation::EFFORT}}))
 }
 
@@ -172,6 +177,14 @@ async fn translate(
     Json(input): Json<crate::translation::TranslationInput>,
 ) -> Result<Json<crate::translation::Translation>, crate::interpretation::InterpretationError> {
     Ok(Json(app.interpretation.translate(input).await?))
+}
+
+async fn interpret_album(
+    State(app): State<App>,
+    Json(input): Json<crate::album_interpretation::AlbumInput>,
+) -> Result<Json<crate::interpretation::Interpretation>, crate::interpretation::InterpretationError>
+{
+    Ok(Json(app.interpretation.interpret_album(input).await?))
 }
 
 async fn interpret(

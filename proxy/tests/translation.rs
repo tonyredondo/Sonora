@@ -86,6 +86,7 @@ fn duplicate_translation_reuses_work_while_meaning_runs_and_cache_survives_resta
                 lyrics: "A tree grows.".into(),
                 language: "es".into(),
                 context: Default::default(),
+                effort: None,
                 refresh: false
             })
         );
@@ -139,6 +140,7 @@ async fn four_codex_processes_share_capacity_across_tools_without_duplicate_work
                         lyrics: format!("Song {index}"),
                         language: "es".into(),
                         context: Default::default(),
+                        effort: None,
                         refresh: false,
                     })
                     .await
@@ -254,7 +256,7 @@ async fn translation_route_is_authenticated_and_validates_before_starting_codex(
     assert_eq!(status["lyric_translation"]["model"], "gpt-6.1-sol");
     assert_eq!(status["lyric_translation"]["effort"], "medium");
     assert_eq!(status["lyric_interpretation"]["model"], "gpt-6-astra");
-    assert_eq!(status["lyric_interpretation"]["effort"], "xhigh");
+    assert_eq!(status["lyric_interpretation"]["effort"], "medium");
     let good = serde_json::to_value(input()).unwrap();
     for (token, body, status) in [
         ("wrong", good.clone(), 401),
