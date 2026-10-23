@@ -14,14 +14,28 @@ final class ZZPortableLibraryUITests: XCTestCase {
         XCTAssertTrue(picker.waitForExistence(timeout: 20), app.debugDescription)
         if !filePicker { XCTAssertTrue(app.buttons["DOCPicker.actionButton"].waitForExistence(timeout: 10)) }
         if picker.buttons["Browse"].exists { picker.buttons["Browse"].tap() }
-        if picker.staticTexts["On My iPhone"].exists {
-            picker.staticTexts["On My iPhone"].tap()
-            picker.staticTexts["Sonora"].tap()
+        let portable = picker.cells.containing(.staticText, identifier: "Sonora Portable QA").firstMatch
+        let onMyPhone = picker.staticTexts["On My iPhone"]
+        for _ in 0..<6 {
+            if picker.staticTexts["Concierto"].exists || portable.exists || onMyPhone.exists { break }
+            let back = app.buttons["DOC.navBarButton.backInHistory"].firstMatch
+            guard back.exists && back.isHittable else { break }
+            back.tap()
+        }
+        func openFolder(_ name: String) {
+            let folder = picker.cells.containing(.staticText, identifier: name).firstMatch
+            for _ in 0..<3 where !folder.isHittable { picker.swipeDown() }
+            for _ in 0..<6 where !folder.isHittable { picker.swipeUp() }
+            XCTAssertTrue(folder.waitForExistence(timeout: 8), app.debugDescription)
+            XCTAssertTrue(folder.isHittable, app.debugDescription)
+            folder.images.firstMatch.tap()
+        }
+        if !picker.staticTexts["Concierto"].exists, onMyPhone.exists {
+            onMyPhone.tap()
+            openFolder("Sonora")
         }
         if !picker.staticTexts["Concierto"].exists {
-            let folder = picker.cells.containing(.staticText, identifier: "Sonora Portable QA").firstMatch
-            XCTAssertTrue(folder.waitForExistence(timeout: 8), app.debugDescription)
-            folder.images.firstMatch.tap()
+            openFolder("Sonora Portable QA")
         }
         XCTAssertTrue(picker.staticTexts["Concierto"].waitForExistence(timeout: 8), app.debugDescription)
     }
@@ -33,9 +47,10 @@ final class ZZPortableLibraryUITests: XCTestCase {
         app.buttons["chooseM3U"].tap()
         portableFolder(app, filePicker: true)
         let picker = app.otherElements["Browse View (Picker)"].firstMatch
-        let file = picker.staticTexts.matching(NSPredicate(format: "label == %@ OR label == %@", "Ruta", "Ruta.m3u8")).firstMatch
+        // Files can contain a previous export folder with the same visible name.
+        let file = picker.cells["Ruta, m3u8"]
         XCTAssertTrue(file.exists, app.debugDescription)
-        picker.cells.containing(.staticText, identifier: file.label).firstMatch.images.firstMatch.tap()
+        file.images.firstMatch.tap()
         if app.buttons["DOCPicker.actionButton"].exists && app.buttons["DOCPicker.actionButton"].isHittable { app.buttons["DOCPicker.actionButton"].tap() }
         XCTAssertTrue(app.buttons["Elegir carpeta de música"].waitForExistence(timeout: 10))
         app.buttons["Elegir carpeta de música"].tap(); portableFolder(app); app.buttons["DOCPicker.actionButton"].tap()
@@ -49,9 +64,30 @@ final class ZZPortableLibraryUITests: XCTestCase {
         XCTAssertTrue(songs.staticTexts["Último acto"].waitForExistence(timeout: 10))
         XCTAssertTrue(songs.staticTexts["Primer acto"].exists)
         capture("playlist-cue-order-noche", app)
-        app.buttons["Exportar playlist"].tap(); app.buttons["saveM3U"].tap()
+        app.buttons["managePlaylist"].tap()
+        app.buttons["Exportar playlist"].tap()
+        XCTAssertTrue(app.buttons["playlistExportContent"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["playlistAudioFormat"].exists)
+        XCTAssertFalse(app.buttons["playlistReferenceFormat"].exists)
+        capture("playlist-folder-options-noche", app)
+        app.buttons["saveM3U"].tap()
         portableFolder(app); app.buttons["DOCPicker.actionButton"].tap()
         let exported = app.descendants(matching: .any)["playlistExportResult"].firstMatch
+        XCTAssertTrue(exported.waitForExistence(timeout: 30)); XCTAssertTrue(exported.label.contains("Ruta"))
+        XCTAssertFalse(exported.label.contains(".m3u8"))
+        XCTAssertTrue(app.staticTexts["Carpeta guardada"].exists)
+        capture("playlist-folder-export-noche", app)
+        app.buttons["playlistAudioFormat"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "MP3")).firstMatch.tap()
+        app.buttons["saveM3U"].tap()
+        portableFolder(app); app.buttons["DOCPicker.actionButton"].tap()
+        XCTAssertTrue(exported.waitForExistence(timeout: 30)); XCTAssertFalse(exported.label.contains(".m3u8"))
+        capture("playlist-mp3-folder-export-noche", app)
+        app.buttons["playlistExportContent"].tap(); app.buttons["Solo lista M3U"].tap()
+        XCTAssertTrue(app.buttons["playlistReferenceFormat"].exists)
+        XCTAssertFalse(app.buttons["playlistAudioFormat"].exists)
+        app.buttons["saveM3U"].tap()
+        portableFolder(app); app.buttons["DOCPicker.actionButton"].tap()
         XCTAssertTrue(exported.waitForExistence(timeout: 15)); XCTAssertTrue(exported.label.contains(".m3u8"))
         capture("playlist-export-noche", app)
     }

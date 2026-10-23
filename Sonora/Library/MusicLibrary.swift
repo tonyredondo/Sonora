@@ -148,12 +148,16 @@ final class MusicLibrary {
                     let directory = url.deletingLastPathComponent()
                     let key: String?
                     if snapshot.artwork != nil { key = try await storeArtwork(snapshot.artwork) }
-                    else if checkedSidecars.contains(directory) { key = sidecarKeys[directory] }
                     else {
-                        let data = await Task.detached(priority: .utility) { LocalArtwork.data(in: directory) }.value
-                        key = try await storeArtwork(data)
-                        if checkedSidecars.count >= 256 { checkedSidecars = []; sidecarKeys = [:] }
-                        checkedSidecars.insert(directory); sidecarKeys[directory] = key
+                        let specific = await Task.detached(priority: .utility) { LocalArtwork.songData(for: url) }.value
+                        if let specific { key = try await storeArtwork(specific) }
+                        else if checkedSidecars.contains(directory) { key = sidecarKeys[directory] }
+                        else {
+                            let data = await Task.detached(priority: .utility) { LocalArtwork.data(in: directory) }.value
+                            key = try await storeArtwork(data)
+                            if checkedSidecars.count >= 256 { checkedSidecars = []; sidecarKeys = [:] }
+                            checkedSidecars.insert(directory); sidecarKeys[directory] = key
+                        }
                     }
                     try Task.checkCancellation(); guard indexID == token else { return }
                     if metadataRevisions[songID] == revision {
@@ -187,11 +191,11 @@ final class MusicLibrary {
         guard state.songs[id] != nil, !suspendedIndexSources.contains(source) else { return }
         metadataRevisions[source + "\0" + track.relativePath] = UUID()
         do {
-            let value = try await MetadataService.read(url: track.url(in: folder.url), folder: folder)
-            let directory = track.url(in: folder.url).deletingLastPathComponent()
+            let url = track.url(in: folder.url)
+            let value = try await MetadataService.read(url: url, folder: folder)
             let data: Data?
             if let embedded = value.artwork { data = embedded }
-            else { data = await Task.detached(priority: .utility) { LocalArtwork.data(in: directory) }.value }
+            else { data = await Task.detached(priority: .utility) { LocalArtwork.data(for: url) }.value }
             let key = try await storeArtwork(data)
             guard state.songs[id] != nil, !suspendedIndexSources.contains(source) else { return }
             state.upsert([CollectionSong(sourceID: source, relativePath: track.relativePath, tags: value.values, duration: value.duration,

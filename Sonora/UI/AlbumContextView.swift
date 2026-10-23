@@ -18,12 +18,12 @@ struct AlbumContextView: View {
                 if let result {
                     Text("Sobre el álbum").font(.headline).accessibilityAddTraits(.isHeader)
                         .accessibilityIdentifier("playerAlbumTitle")
-                    Text(result.album.title).font(.subheadline).foregroundStyle(.secondary)
+                    Text(result.title).font(.subheadline).foregroundStyle(.secondary)
                     Text(result.interpretation.explanation).font(.body)
                         .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                         .accessibilityIdentifier("playerAlbumText")
-                    if result.album.missingLyrics > 0 {
-                        Text("Letras disponibles: \(result.album.tracks.count - result.album.missingLyrics) de \(result.album.tracks.count) canciones de tu biblioteca.")
+                    if result.missingLyrics > 0 {
+                        Text("Letras usadas en el análisis: \(result.trackCount - result.missingLyrics) de \(result.trackCount) canciones.")
                             .font(.caption).foregroundStyle(.secondary)
                             .accessibilityIdentifier("playerAlbumCoverage")
                     }

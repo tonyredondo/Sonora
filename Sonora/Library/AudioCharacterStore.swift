@@ -41,15 +41,20 @@ final class AudioCharacterStore {
     func status(_ track: AudioTrack, folder: ScopedFolder) -> Status? { statuses[key(track, folder: folder)] }
     func retry() { availability = nil; statuses = statuses.filter { $0.value == .preparing || $0.value == .ready } }
 
+    /// Restore a completed file binding without decoding, hashing or joining active analysis.
+    func restore(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint) async throws -> AudioCharacter? {
+        if let result = summary(track, folder: folder, expected: expected) { return result }
+        let key = key(track, folder: folder)
+        guard let binding = try await cache.read(Binding.self, key: key), binding.fingerprint == expected, binding.result.isValid else { return nil }
+        if let newer = summary(track, folder: folder, expected: expected) { return newer }
+        bindings[key] = binding; statuses[key] = .ready
+        return binding.result
+    }
+
     func load(track: AudioTrack, folder: ScopedFolder, expected: FileFingerprint, preparedAudio: SongToolsResult? = nil,
               refresh: Bool = false, cachedOnly: Bool = false) async throws -> AudioCharacter {
         let key = key(track, folder: folder)
-        if !refresh {
-            if let result = summary(track, folder: folder, expected: expected) { return result }
-            if let binding = try await cache.read(Binding.self, key: key), binding.fingerprint == expected, binding.result.isValid {
-                bindings[key] = binding; statuses[key] = .ready; return binding.result
-            }
-        }
+        if !refresh, let result = try await restore(track: track, folder: folder, expected: expected) { return result }
         if let job = pending[key] {
             if job.fingerprint == expected && (!refresh || job.refresh) { return try await job.task.value }
             _ = try? await job.task.value
