@@ -70,7 +70,7 @@ private final class CoordinatedRead: @unchecked Sendable {
                     duration: decoder.length > 0 ? Double(decoder.length) / decoder.processingFormat.sampleRate : file?.properties.duration ?? 0,
                     format: localURL.pathExtension.uppercased() + bits + String(format: " / %.1f kHz", decoder.processingFormat.sampleRate / 1000),
                     sampleRate: decoder.processingFormat.sampleRate,
-                    artwork: (metadata?.attachedPictures(ofType: .frontCover).first?.imageData ?? data).flatMap(Self.thumbnail) ?? Self.sidecarArtwork(in: localURL.deletingLastPathComponent()),
+                    artwork: (metadata?.attachedPictures(ofType: .frontCover).first?.imageData ?? data).flatMap(Self.thumbnail) ?? Self.sidecarArtwork(for: localURL),
                     tags: tags, replayGain: replayGain, normalizationGain: gain, rhythm: rhythm, fingerprint: try FileFingerprint(localURL)
                 ))
             }
@@ -94,8 +94,8 @@ private final class CoordinatedRead: @unchecked Sendable {
               ] as CFDictionary) else { return nil }
         return UIImage(cgImage: image)
     }
-    private static func sidecarArtwork(in folder: URL) -> UIImage? {
-        LocalArtwork.data(in: folder).flatMap(thumbnail)
+    private static func sidecarArtwork(for audio: URL) -> UIImage? {
+        LocalArtwork.data(for: audio).flatMap(thumbnail)
     }
 }
 

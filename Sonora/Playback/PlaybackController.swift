@@ -503,6 +503,7 @@ final class PlaybackController: NSObject {
         events = PlayerEvents(equalizer: equalizer.processor) { [weak self] event in Task { @MainActor in self?.handle(event) } }
         player.delegate = events
         systemControls = SystemPlaybackControls(owner: self)
+        configurePortableInterpretations()
         observeAlbumLibrary()
         ticker = Task { [weak self] in
             while !Task.isCancelled {

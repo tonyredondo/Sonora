@@ -68,7 +68,9 @@ enum AudioContentIdentity {
 
 /// The identity protocol defines sample precision, integer alignment and byte order
 /// explicitly, independently of playback converters and their processing formats.
-private struct IdentityPCMLayout {
+// Lossless CUE export shares this reader to handle integer alignment and byte
+// order without reducing sample precision.
+struct IdentityPCMLayout {
     let interleaved: Bool
     let frameBytes: Int
     let sampleBytes: Int

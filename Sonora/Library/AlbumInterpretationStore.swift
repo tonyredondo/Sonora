@@ -32,8 +32,23 @@ final class AlbumInterpretationStore {
     // Collected source text stays reusable when only the interpretation is reset.
     private static let corpusVersion = "codex-album-v1"
     struct Prepared: Codable, Sendable {
-        let album: AlbumInterpretationInput
+        let album: AlbumInterpretationInput?
         let interpretation: LyricsInterpretation
+        let embedded: PortableInterpretations.Album?
+        init(album: AlbumInterpretationInput, interpretation: LyricsInterpretation) {
+            self.album = album; self.interpretation = interpretation; embedded = nil
+        }
+        init(embedded: PortableInterpretations.Album) {
+            album = nil; interpretation = embedded.interpretation; self.embedded = embedded
+        }
+        var isValid: Bool {
+            guard interpretation.isValid else { return false }
+            if let album { return embedded == nil && album.isValid }
+            return embedded?.isValid == true && embedded?.interpretation == interpretation
+        }
+        var title: String { album?.title ?? embedded?.title ?? "" }
+        var trackCount: Int { album?.tracks.count ?? embedded?.trackCount ?? 0 }
+        var missingLyrics: Int { album?.missingLyrics ?? embedded?.missingLyrics ?? 0 }
     }
     enum Status: Equatable {
         case queued, collecting, interpreting, ready, waiting, failed(String)
@@ -41,6 +56,7 @@ final class AlbumInterpretationStore {
     }
     typealias Collector = @MainActor (AlbumPreparationRequest, Bool) async throws -> AlbumInterpretationInput
     typealias Interpreter = @MainActor (AlbumInterpretationInput, String, Bool) async throws -> LyricsInterpretation
+    @ObservationIgnored var readEmbedded: (@MainActor (AlbumPreparationRequest, String) async -> PortableInterpretations.Album?)?
     private(set) var results: [String: Prepared] = [:]
     private(set) var statuses: [String: Status] = [:]
     private(set) var automaticIssue: String?
@@ -103,6 +119,22 @@ final class AlbumInterpretationStore {
             // The queued status reserves capacity before this task starts.
         }
     }
+    /// A completed result or an embedded reading, without joining or starting remote work.
+    func cachedResult(_ album: AlbumPreparationRequest, language: String, character: Bool) async throws -> Prepared? {
+        let key = key(album, language: language, character: character)
+        if let result = results[key] { return result }
+        let result: Prepared
+        if let cached = try await cache.read(Prepared.self, key: key), cached.isValid { result = cached }
+        else if let saved = await readEmbedded?(album, language), saved.isValid {
+            result = Prepared(embedded: saved)
+            try await cache.write(result, key: key)
+        } else { return nil }
+        // A refresh may have finished while the file/cache read was suspended.
+        if let newer = results[key] { return newer }
+        results[key] = result; statuses[key] = .ready
+        return result
+    }
+
     /// Refresh waits for an older request, then coalesces into one explicit regeneration.
     /// Active work finishes into its own revision even if the playing album changes.
     func load(_ album: AlbumPreparationRequest, language: String, character: Bool, refresh: Bool = false,
@@ -120,10 +152,7 @@ final class AlbumInterpretationStore {
         let task = Task { [self] () throws -> Prepared in
             defer { pending[key] = nil; start() }
             do {
-                if !refresh, let saved = try await cache.read(Prepared.self, key: key),
-                   saved.album.isValid, saved.interpretation.isValid {
-                    results[key] = saved; statuses[key] = .ready; return saved
-                }
+                if !refresh, let saved = try await cachedResult(album, language: language, character: character) { return saved }
                 guard !cachedOnly, !waitingForConnection else { throw MetadataLookupError.notCached }
                 statuses[key] = .collecting
                 let corpusKey = "album-corpus:\(Self.corpusVersion):\(AudioCharacter.version):\(character):\(album.id):\(album.revision)"

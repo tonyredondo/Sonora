@@ -23,6 +23,7 @@ struct MetadataSnapshot: Sendable {
     let fileDescription: String
     let duration: Double
     var replayGain = ReplayGain()
+    var portableInterpretations = PortableInterpretations()
 }
 
 struct MetadataWriteFailure: Identifiable, Sendable {
@@ -97,7 +98,9 @@ enum MetadataService {
         return MetadataSnapshot(values: values(file.metadata), artwork: art, fingerprint: try FileFingerprint(url),
                                 canWrite: writableExtensions.contains(url.pathExtension.lowercased()) && FileManager.default.isWritableFile(atPath: url.path),
                                 fileDescription: "\(url.pathExtension.uppercased()) · \(Int(file.properties.sampleRate ?? 0)) Hz", duration: file.properties.duration ?? 0,
-                                replayGain: replayGain(file.metadata))
+                                replayGain: replayGain(file.metadata),
+                                portableInterpretations: url.pathExtension.lowercased() == "mp3"
+                                    ? PortableInterpretations.read((try? ID3ExportTags.read(from: url)) ?? [:]) : .init())
     }
 }
 

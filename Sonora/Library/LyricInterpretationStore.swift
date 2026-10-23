@@ -12,6 +12,7 @@ final class LyricInterpretationStore {
         case queued, interpreting, ready, failed(String)
         var busy: Bool { self == .queued || self == .interpreting }
     }
+    @ObservationIgnored var readEmbedded: (@MainActor (LyricsDocument, String, LyricsInterpretationContext) async -> LyricsInterpretation?)?
     private(set) var results: [String: LyricsInterpretation] = [:]
     private(set) var statuses: [String: Status] = [:]
     private(set) var automaticIssue: String?
@@ -50,10 +51,22 @@ final class LyricInterpretationStore {
         // Same inputs as the existing disk cache; timing edits reuse meaning.
         LyricsInterpretationClient.version + ":" + settings.endpoint + ":" + language + ":" + context.cacheIdentity + ":" + MusicToolsCache.digest(document.lines.map(\.text).joined(separator: "\n"))
     }
-    func restore(_ document: LyricsDocument, language: String, context: LyricsInterpretationContext = .init()) async {
+    /// Completed memory/disk results only; export supplies its own validated file readings.
+    func cachedResult(_ document: LyricsDocument, language: String, context: LyricsInterpretationContext = .init()) async -> LyricsInterpretation? {
         let key = key(document, language: language, context: context)
-        guard results[key] == nil, let value = try? await interpret(document, language, context, .cachedOnly),
-              value.isValid, results[key] == nil else { return }
+        if let value = results[key] { return value }
+        guard let value = try? await interpret(document, language, context, .cachedOnly), value.isValid else { return results[key] }
+        if results[key] == nil {
+            results[key] = value
+            if jobs[key] == nil { statuses[key] = .ready }
+        }
+        return results[key]
+    }
+
+    func restore(_ document: LyricsDocument, language: String, context: LyricsInterpretationContext = .init()) async {
+        guard await cachedResult(document, language: language, context: context) == nil else { return }
+        let key = key(document, language: language, context: context)
+        guard let value = await readEmbedded?(document, language, context), value.isValid, results[key] == nil else { return }
         results[key] = value
         if jobs[key] == nil { statuses[key] = .ready }
     }
