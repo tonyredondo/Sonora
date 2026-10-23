@@ -113,7 +113,7 @@ struct PlaylistExportView: View {
                         .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).accessibilityIdentifier("saveM3U")
                 } footer: {
                     if content == .songs {
-                        Text("Crea una carpeta nueva con las canciones numeradas y una lista M3U8 que conserva su orden al moverla. Incluye información, carátulas y letras disponibles. Si ya existe ese nombre, se crea otra carpeta.")
+                        Text("Guarda las canciones numeradas y una lista M3U8 directamente en la carpeta elegida. Incluye información, carátulas y letras disponibles; en MP3, la letra va incrustada. Si un archivo ya existe, añade un número al nombre sin sobrescribirlo.")
                     } else {
                         Text("Guarda la lista junto a tu música para conservar sus rutas relativas al mover la carpeta. La lista contiene referencias; no incluye copias del audio. Si ya existe una con ese nombre, se crea otra.")
                     }
@@ -131,7 +131,7 @@ struct PlaylistExportView: View {
                 if working {
                     Section("Exportando") {
                         if let progress {
-                            ProgressView("Exportando canciones…", value: progress.fraction).accessibilityIdentifier("playlistExportProgress")
+                            ProgressView(progress.phase == .saving ? "Guardando archivos…" : "Exportando canciones…", value: progress.fraction).accessibilityIdentifier("playlistExportProgress")
                             Text("\(progress.completed) de \(progress.total) canciones").monospacedDigit()
                             Text(progress.filename).font(.caption).foregroundStyle(.secondary)
                         } else { ProgressView(content == .songs ? "Preparando canciones…" : "Guardando playlist…") }
@@ -141,7 +141,7 @@ struct PlaylistExportView: View {
                     }
                 }
                 if let saved {
-                    Section(saved.content == .songs ? "Carpeta guardada" : "Playlist guardada") {
+                    Section(saved.content == .songs ? "Archivos guardados" : "Playlist guardada") {
                         Label(saved.url.lastPathComponent, systemImage: "checkmark.circle").accessibilityIdentifier("playlistExportResult")
                     }
                 }

@@ -1,4 +1,5 @@
 import AVFAudio
+import CryptoKit
 import MediaPlayer
 import Observation
 import SFBAudioEngine
@@ -37,6 +38,7 @@ final class PlaybackController: NSObject {
     private(set) var songMetadataRefresh: SongMetadataRefresh?
     var isDeletingFiles: Bool { library.isDeletingFiles }
     private(set) var folderName = "Tu música"
+    private(set) var openedAudioFileID: UUID?
     var issue: String?
     var repeatMode: RepeatMode = .off { didSet { if oldValue != repeatMode { rebuildBufferedQueue() } } }
     var shuffle = false { didSet {
@@ -524,6 +526,31 @@ final class PlaybackController: NSObject {
         loadTask?.cancel()
         loadTask = Task { await loadFolder(url, name: name) }
     }
+    /// Accept only the selected file. No folder scan, managed copy or library
+    /// registration occurs; the normal reader and transport own its file grant.
+    @discardableResult func openAudioFile(_ url: URL) -> Bool {
+        do {
+            guard !isDeletingFiles else { throw MusicTextError.invalid("Espera a que termine la eliminación de archivos para abrir esta canción.") }
+            guard url.isFileURL, FolderScanner.defaultExtensions.contains(url.pathExtension.lowercased()) else {
+                throw MusicTextError.invalid("Este archivo no es un formato de audio compatible con Sonora.")
+            }
+            // Acquire access before the system's URL callback returns.
+            let access = try ScopedFolder(document: url)
+            let sourceID = "document:" + SHA256.hash(data: Data(url.standardizedFileURL.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
+            guard let track = AudioTrack(relativePath: url.lastPathComponent, sourceID: sourceID) else {
+                throw CocoaError(.fileReadInvalidFileName)
+            }
+            cancelLoading(); issue = nil
+            loadTask = Task {
+                guard !Task.isCancelled else { return }
+                if await loadQueue(tracks: [track], scopes: [sourceID: access], selected: track.id, position: 0,
+                                   name: url.lastPathComponent, autoPlay: true, primaryID: nil) {
+                    openedAudioFileID = UUID()
+                }
+            }
+            return true
+        } catch { issue = error.localizedDescription; return false }
+    }
     func cancelLoading() { loadTask?.cancel(); loadID = UUID(); isLoading = false }
     func appendFolder(_ url: URL, playNext: Bool = false) async {
         guard !isDeletingFiles else { return }
@@ -775,7 +802,9 @@ final class PlaybackController: NSObject {
                 let restored = await loadQueue(tracks: resolved.tracks, scopes: resolved.folders, selected: snapshot.selectedID, position: snapshot.position,
                                                name: snapshot.name, autoPlay: false, primaryID: snapshot.primaryLibraryID)
                 if restored && resolved.tracks.count < snapshot.tracks.count { issue = "Algunos archivos o carpetas ya no están disponibles. Se ha recuperado el resto de la cola." }
-            } catch { issue = "Vuelve a abrir las carpetas para recuperar la cola: \(error.localizedDescription)" }
+            } catch {
+                if loadID == request && !Task.isCancelled { issue = "Vuelve a abrir las carpetas para recuperar la cola: \(error.localizedDescription)" }
+            }
             return
         }
         guard let data = defaults.data(forKey: "folderSnapshot") else { return }
@@ -1247,6 +1276,7 @@ final class PlaybackController: NSObject {
     }
     private func cache(_ value: TrackDetails, for id: String) {
         details[id] = value
+        if current?.id == id, let track = current, (try? folderAccess(for: track).documentURL) != nil { refreshAlbumPreparation() }
         if let track = queue.tracks.first(where: { $0.id == id }), let source = track.sourceID ?? primaryLibraryID {
             library.update(value, source: source, track: track)
         }

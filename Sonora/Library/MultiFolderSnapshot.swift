@@ -16,16 +16,20 @@ struct MultiFolderSnapshot: Codable, Sendable {
                 try Task.checkCancellation()
                 var stale = false
                 if let url = try? URL(resolvingBookmarkData: data, options: .withoutUI, relativeTo: nil, bookmarkDataIsStale: &stale),
-                   let access = try? ScopedFolder(url) { folders[id] = access }
+                   let grant = try? ScopedFolder(url) {
+                    // Determine the bookmarked resource while holding its grant;
+                    // a file bookmark must never turn into parent-folder access.
+                    if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { folders[id] = grant }
+                    else if let access = try? withExtendedLifetime(grant, { try ScopedFolder(document: url) }) { folders[id] = access }
+                }
             }
             let available = tracks.compactMap { saved -> AudioTrack? in
                 guard let track = AudioTrack(relativePath: saved.relativePath, sourceID: saved.sourceID, cue: saved.cue),
                       let folder = folders[track.sourceID ?? ""] else { return nil }
                 let file = track.url(in: folder.url)
-                let root = folder.url.resolvingSymlinksInPath().standardizedFileURL.path + "/"
                 guard let info = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
                       info.isRegularFile == true, info.isSymbolicLink != true,
-                      file.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(root) else { return nil }
+                      folder.permits(file) else { return nil }
                 return track
             }
             guard !available.isEmpty else { throw CocoaError(.fileReadNoPermission) }

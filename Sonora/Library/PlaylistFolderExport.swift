@@ -12,10 +12,12 @@ enum PlaylistFolderExport {
         var title: String { self == .original ? "Originales" : "MP3 · 320 kb/s" }
     }
     struct Progress: Sendable {
+        enum Phase: Sendable { case preparing, saving }
         let filename: String
         let completed: Int
         let total: Int
         let fraction: Double
+        var phase: Phase = .preparing
     }
     @MainActor static func exportPlaylist(_ id: String, library: MusicLibrary, folder: URL, name: String, format: Format,
                                           interpretations: [String: PortableInterpretations] = [:],
@@ -36,10 +38,15 @@ enum PlaylistFolderExport {
         let worker = Task.detached(priority: .userInitiated) {
             defer { withExtendedLifetime((scopes, destination)) {} }
             do { return try job.export(songs, scopes: scopes, destination: destination.url, name: name, format: format, interpretations: interpretations, progress: progress) }
-            catch { if Task.isCancelled { throw CancellationError() }; throw error }
+            catch {
+                // An incomplete rollback must remain visible even when the user
+                // cancelled; otherwise retained files would go unreported.
+                if Task.isCancelled && !(error is MusicTextError) { throw CancellationError() }
+                throw error
+            }
         }
-        // Once the final rename succeeds the export is committed, even if a
-        // cancellation races with returning its URL. Never delete a published folder.
+        // Publishing the playlist commits the export, even if cancellation races
+        // with returning its URL. Never remove files after that commit.
         return try await withTaskCancellationHandler { try await worker.value } onCancel: {
             worker.cancel(); job.destination.cancel(); job.source.cancel(); job.lyrics.cancel()
         }
@@ -47,6 +54,14 @@ enum PlaylistFolderExport {
 }
 
 private final class FolderExportJob: @unchecked Sendable {
+    private struct PreparedSong {
+        let entry: M3UEntry
+        let filenames: [String]
+    }
+    private struct PublishedFile {
+        let url: URL
+        let fingerprint: FileFingerprint
+    }
     let destination = NSFileCoordinator()
     let source = NSFileCoordinator()
     let lyrics = NSFileCoordinator()
@@ -60,103 +75,247 @@ private final class FolderExportJob: @unchecked Sendable {
             try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: false)
             return stage
         }
-        defer { try? FileManager.default.removeItem(at: stage) }
-        var entries: [M3UEntry] = []
-        let digits = max(2, String(songs.count).count)
-        for (index, song) in songs.enumerated() {
-            try Task.checkCancellation()
-            guard let track = song.audioTrack, let folder = scopes[song.sourceID] else { throw CocoaError(.fileReadNoPermission) }
-            let entry = try read(track: track, folder: folder) { url in
-                let native = try metadata(at: url)
-                let tags = track.tags(overriding: MetadataService.values(native))
-                let title = tags[.title].flatMap { $0.isEmpty ? nil : $0 } ?? track.displayName
-                let artist = tags[.artist].flatMap { $0.isEmpty ? nil : $0 }
-                let ext = format == .mp3 ? "mp3" : track.cue == nil ? url.pathExtension.lowercased() : "wav"
-                let number = String(repeating: "0", count: max(0, digits - String(index + 1).count)) + String(index + 1)
-                let filename = "\(number) - \(safeName([artist, title].compactMap { $0 }.joined(separator: " - "))).\(ext)"
-                let output = stage.appendingPathComponent(filename)
-                let report = ExportProgress(filename: filename, index: index, total: songs.count, callback: progress)
-                report.update(0, force: true)
-                var text = LyricsSource.read(for: url, embedded: native.lyrics ?? "", coordinator: lyrics).text
-                let externalArt = native.attachedPictures.isEmpty ? LocalArtwork.data(for: url) : nil
-                let converts = track.cue != nil || (format == .mp3 && url.pathExtension.lowercased() != "mp3")
-                let id3Extras = converts && ["mp3", "wav", "wave", "aif", "aiff"].contains(url.pathExtension.lowercased()) ? try ID3ExportTags.read(from: url) : [:]
-                if converts {
-                    let decoder = try AudioDecoders.openForIdentity(url, cue: track.cue)
-                    defer { try? decoder.close() }
-                    if let cue = track.cue, LyricsDocument(text: text).isTimed {
-                        let sliced = LyricsDocument(text: text).sliced(from: cue.startSeconds, duration: Double(decoder.length) / decoder.processingFormat.sampleRate)
-                        text = ([sliced.isAITranscribed ? LyricsDocument.aiTranscriptionMarker : nil,
-                                 sliced.isAIRepaired ? LyricsDocument.aiRepairMarker : nil].compactMap { $0 } +
-                                sliced.lines.map { LyricsDraft.timestamp($0.time ?? 0) + $0.text }).joined(separator: "\n")
-                    }
-                    if format == .mp3 { try mp3(decoder, to: output, progress: report) }
-                    else { try wav(decoder, to: output, progress: report) }
-                } else { try copy(url, to: output, progress: report) }
-                if converts || text != (native.lyrics ?? "") || externalArt != nil {
-                    if MetadataService.writableExtensions.contains(ext) {
-                        let desired = AudioMetadata()
-                        desired.copyMetadata(from: native); desired.copyAttachedPicturesFrom(native)
-                        if converts {
-                            apply(tags, to: desired)
-                            desired.title = title
-                        }
-                        desired.lyrics = text.isEmpty ? nil : text
-                        if let externalArt { desired.attachPicture(AttachedPicture(imageData: externalArt, type: .frontCover)) }
-                        try save(desired, to: output, preserving: id3Extras, converted: converts)
-                    } else if let externalArt {
-                        // Raw AAC/CAF have no writable tag container in Sonora.
-                        // Keep external artwork alongside their unchanged audio.
-                        let imageType = CGImageSourceCreateWithData(externalArt as CFData, nil).flatMap { CGImageSourceGetType($0) }
-                        let ext = imageType as String? == "public.png" ? "png" : "jpg"
-                        try externalArt.write(to: output.deletingPathExtension().appendingPathExtension("cover").appendingPathExtension(ext), options: .withoutOverwriting)
-                    }
+        defer {
+            if FileManager.default.fileExists(atPath: stage.path) {
+                // Cancellation also cancels destination's claims. Cleanup needs
+                // a fresh coordinator so the provider observes the deletion.
+                var error: NSError?
+                NSFileCoordinator().coordinate(writingItemAt: stage, options: .forDeleting, error: &error) { local in
+                    try? FileManager.default.removeItem(at: local)
                 }
-                if ext == "mp3", let reading = interpretations[song.id], !reading.isEmpty {
-                    let context = LyricsInterpretationContext(title: title, artist: artist ?? "", album: tags[.album] ?? "")
-                    let albumArtist = (tags[.albumArtist].flatMap { $0.isEmpty ? nil : $0 }) ?? (artist ?? "")
-                    guard reading.songs.allSatisfy({ $0.value.matches(LyricsDocument(text: text), language: $0.key, context: context) }),
-                          reading.albums.allSatisfy({ $0.value.matches(language: $0.key, title: tags[.album] ?? "", artist: albumArtist) }) else {
-                        throw MetadataIOError.changed
-                    }
-                    let additional = try reading.tags()
-                    try ID3ExportTags.write(additional, to: output)
-                    let saved = try ID3ExportTags.read(from: output)
-                    guard additional.allSatisfy({ saved[$0.key] == $0.value }) else { throw MetadataLookupError.invalidResponse }
-                }
-                if !text.isEmpty {
-                    let sidecar = output.deletingPathExtension().appendingPathExtension(LyricsDocument(text: text).isTimed ? "lrc" : "txt")
-                    try Data(text.utf8).write(to: sidecar, options: .withoutOverwriting)
-                }
-                try Task.checkCancellation()
-                report.update(1, force: true)
-                return M3UEntry(path: filename, title: title)
             }
-            entries.append(entry)
         }
         let base = safeName(name)
-        try M3UPlaylist(entries: entries).encoded().write(to: stage.appendingPathComponent(base).appendingPathExtension("m3u8"), options: .withoutOverwriting)
+        // Keep the provider's claim until all child files and metadata are final.
+        // An ordinary directory write does not cover changes to its children.
+        let prepared = try write(in: stage, options: .forReplacing) { stage in
+            var prepared: [PreparedSong] = []
+            let digits = max(2, String(songs.count).count)
+            for (index, song) in songs.enumerated() {
+                try Task.checkCancellation()
+                guard let track = song.audioTrack, let folder = scopes[song.sourceID] else { throw CocoaError(.fileReadNoPermission) }
+                let entry = try read(track: track, folder: folder) { url in
+                    let native = try metadata(at: url)
+                    let tags = track.tags(overriding: MetadataService.values(native))
+                    let title = tags[.title].flatMap { $0.isEmpty ? nil : $0 } ?? track.displayName
+                    let artist = tags[.artist].flatMap { $0.isEmpty ? nil : $0 }
+                    let ext = format == .mp3 ? "mp3" : track.cue == nil ? url.pathExtension.lowercased() : "wav"
+                    let number = String(repeating: "0", count: max(0, digits - String(index + 1).count)) + String(index + 1)
+                    let filename = "\(number) - \(safeName([artist, title].compactMap { $0 }.joined(separator: " - "))).\(ext)"
+                    let output = stage.appendingPathComponent(filename)
+                    var filenames = [filename]
+                    let report = ExportProgress(filename: filename, index: index, total: songs.count, callback: progress)
+                    report.update(0, force: true)
+                    var text = LyricsSource.read(for: url, embedded: native.lyrics ?? "", coordinator: lyrics).text
+                    let externalArt = native.attachedPictures.isEmpty ? LocalArtwork.data(for: url) : nil
+                    let converts = track.cue != nil || (format == .mp3 && url.pathExtension.lowercased() != "mp3")
+                    let id3Extras = converts && ["mp3", "wav", "wave", "aif", "aiff"].contains(url.pathExtension.lowercased()) ? try ID3ExportTags.read(from: url) : [:]
+                    if converts {
+                        let decoder = try AudioDecoders.openForIdentity(url, cue: track.cue)
+                        defer { try? decoder.close() }
+                        if let cue = track.cue, LyricsDocument(text: text).isTimed {
+                            let sliced = LyricsDocument(text: text).sliced(from: cue.startSeconds, duration: Double(decoder.length) / decoder.processingFormat.sampleRate)
+                            text = ([sliced.isAITranscribed ? LyricsDocument.aiTranscriptionMarker : nil,
+                                     sliced.isAIRepaired ? LyricsDocument.aiRepairMarker : nil].compactMap { $0 } +
+                                    sliced.lines.map { LyricsDraft.timestamp($0.time ?? 0) + $0.text }).joined(separator: "\n")
+                        }
+                        if format == .mp3 { try mp3(decoder, to: output, progress: report) }
+                        else { try wav(decoder, to: output, progress: report) }
+                    } else { try copy(url, to: output, progress: report) }
+                    if converts || text != (native.lyrics ?? "") || externalArt != nil {
+                        if MetadataService.writableExtensions.contains(ext) {
+                            let desired = AudioMetadata()
+                            desired.copyMetadata(from: native); desired.copyAttachedPicturesFrom(native)
+                            if converts {
+                                apply(tags, to: desired)
+                                desired.title = title
+                            }
+                            desired.lyrics = text.isEmpty ? nil : text
+                            if let externalArt { desired.attachPicture(AttachedPicture(imageData: externalArt, type: .frontCover)) }
+                            try save(desired, to: output, preserving: id3Extras, converted: converts)
+                        } else if let externalArt {
+                            // Raw AAC/CAF have no writable tag container in Sonora.
+                            // Keep external artwork alongside their unchanged audio.
+                            let imageType = CGImageSourceCreateWithData(externalArt as CFData, nil).flatMap { CGImageSourceGetType($0) }
+                            let ext = imageType as String? == "public.png" ? "png" : "jpg"
+                            let artwork = output.deletingPathExtension().appendingPathExtension("cover").appendingPathExtension(ext)
+                            try externalArt.write(to: artwork, options: .withoutOverwriting)
+                            filenames.append(artwork.lastPathComponent)
+                        }
+                    }
+                    if ext == "mp3", let reading = interpretations[song.id], !reading.isEmpty {
+                        let context = LyricsInterpretationContext(title: title, artist: artist ?? "", album: tags[.album] ?? "")
+                        let albumArtist = (tags[.albumArtist].flatMap { $0.isEmpty ? nil : $0 }) ?? (artist ?? "")
+                        guard reading.songs.allSatisfy({ $0.value.matches(LyricsDocument(text: text), language: $0.key, context: context) }),
+                              reading.albums.allSatisfy({ $0.value.matches(language: $0.key, title: tags[.album] ?? "", artist: albumArtist) }) else {
+                            throw MetadataIOError.changed
+                        }
+                        let additional = try reading.tags()
+                        try ID3ExportTags.write(additional, to: output)
+                        let saved = try ID3ExportTags.read(from: output)
+                        guard additional.allSatisfy({ saved[$0.key] == $0.value }) else { throw MetadataLookupError.invalidResponse }
+                    }
+                    if !text.isEmpty && ext != "mp3" {
+                        let sidecar = output.deletingPathExtension().appendingPathExtension(LyricsDocument(text: text).isTimed ? "lrc" : "txt")
+                        try Data(text.utf8).write(to: sidecar, options: .withoutOverwriting)
+                        filenames.append(sidecar.lastPathComponent)
+                    }
+                    try Task.checkCancellation()
+                    report.update(1, force: true)
+                    return PreparedSong(entry: M3UEntry(path: filename, title: title), filenames: filenames)
+                }
+                prepared.append(entry)
+            }
+            for file in try FileManager.default.contentsOfDirectory(at: stage, includingPropertiesForKeys: nil) {
+                try makeVisible(file)
+            }
+            let contents = try sizes(in: stage)
+            guard prepared.flatMap(\.filenames).allSatisfy({ (contents[$0] ?? 0) > 0 }) else {
+                throw MusicTextError.invalid("Faltan canciones en la carpeta preparada. No se ha exportado la playlist.")
+            }
+            return (songs: prepared, sizes: contents)
+        }
         return try write(in: root) { directory in
             try Task.checkCancellation()
-            // Coordinate name selection and publication together. A failed move
-            // cannot replace an existing directory, including a provider collision.
-            for suffix in 1...1000 {
-                let output = directory.appendingPathComponent(suffix == 1 ? base : "\(base) \(suffix)", isDirectory: true)
-                if FileManager.default.fileExists(atPath: output.path) { continue }
-                try FileManager.default.moveItem(at: stage, to: output)
-                return output
+            var reserved = Set(try FileManager.default.contentsOfDirectory(atPath: directory.path).map(nameKey))
+            var moves: [(from: String, to: String)] = [], entries: [M3UEntry] = []
+            for song in prepared.songs {
+                let stem = (song.entry.path as NSString).deletingPathExtension
+                let extensions = song.filenames.map { String($0.dropFirst(stem.count)) }
+                // Avoid adopting old lyrics/artwork when the new audio is read
+                // from this folder, including MP3s with embedded lyrics only.
+                let companions = [".lrc", ".txt", ".cover.jpg", ".cover.png"]
+                let selected = try availableName(stem, extensions: Array(Set(extensions + companions)), reserved: &reserved)
+                moves += zip(song.filenames, extensions).map { ($0.0, selected + $0.1) }
+                entries.append(M3UEntry(path: selected + "." + (song.entry.path as NSString).pathExtension, title: song.entry.title))
             }
-            throw CocoaError(.fileWriteFileExists)
+            let listName = try availableName(base, extensions: [".m3u8"], reserved: &reserved) + ".m3u8"
+            let list = stage.appendingPathComponent(listName)
+            let listSize = try write(in: stage, options: .forReplacing) { stage in
+                let list = stage.appendingPathComponent(listName)
+                let data = try M3UPlaylist(entries: entries).encoded()
+                try data.write(to: list, options: .withoutOverwriting)
+                try makeVisible(list)
+                return UInt64(data.count)
+            }
+            var published: [PublishedFile] = []
+            do {
+                for (index, move) in moves.enumerated() {
+                    guard let size = prepared.sizes[move.from] else { throw MetadataIOError.changed }
+                    try publish(stage.appendingPathComponent(move.from), to: directory.appendingPathComponent(move.to), expectedSize: UInt64(size), tracking: &published)
+                    progress(.init(filename: move.to, completed: songs.count, total: songs.count,
+                                   fraction: 0.9 + 0.09 * Double(index + 1) / Double(moves.count), phase: .saving))
+                }
+                try Task.checkCancellation()
+                // Verify only files owned by this export; unrelated content in
+                // the selected folder is neither validated nor modified.
+                for file in published { try verify(file) }
+                // The playlist is the commit marker and always appears last.
+                try publish(list, to: directory.appendingPathComponent(listName), expectedSize: listSize, tracking: &published)
+            } catch {
+                if !rollback(published) {
+                    throw MusicTextError.invalid("No se ha completado la exportación. Algunos archivos no se han podido retirar o han cambiado; revisa la carpeta elegida antes de volver a exportar.")
+                }
+                throw error
+            }
+            progress(.init(filename: listName, completed: songs.count, total: songs.count, fraction: 1, phase: .saving))
+            return directory
         }
     }
 
-    private func write<T>(in root: URL, _ body: (URL) throws -> T) throws -> T {
+    private func nameKey(_ name: String) -> String {
+        name.precomposedStringWithCanonicalMapping.lowercased()
+    }
+    private func availableName(_ stem: String, extensions: [String], reserved: inout Set<String>) throws -> String {
+        for suffix in 1...1000 {
+            let candidate = suffix == 1 ? stem : "\(stem) \(suffix)"
+            let keys = extensions.map { nameKey(candidate + $0) }
+            if keys.allSatisfy({ !reserved.contains($0) }) {
+                reserved.formUnion(keys)
+                return candidate
+            }
+        }
+        throw CocoaError(.fileWriteFileExists)
+    }
+
+    private func write<T>(in root: URL, options: NSFileCoordinator.WritingOptions = [], _ body: (URL) throws -> T) throws -> T {
         var result: Result<T, Error>?, error: NSError?
-        destination.coordinate(writingItemAt: root, options: [], error: &error) { directory in result = Result { try body(directory) } }
+        destination.coordinate(writingItemAt: root, options: options, error: &error) { directory in result = Result { try body(directory) } }
         if let error { throw error }
         guard let result else { throw CancellationError() }
         return try result.get()
     }
+    private func publish(_ input: URL, to output: URL, expectedSize: UInt64, tracking published: inout [PublishedFile]) throws {
+        var result: Result<Void, Error>?, error: NSError?
+        destination.coordinate(writingItemAt: input, options: .forMoving, writingItemAt: output, options: [], error: &error) { source, target in
+            result = Result {
+                try Task.checkCancellation()
+                // A provider may redirect either URL during coordination.
+                guard !FileManager.default.fileExists(atPath: target.path),
+                      (try? target.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == nil else { throw CocoaError(.fileWriteFileExists) }
+                let expected = try FileFingerprint(source)
+                guard expected.size == expectedSize else { throw MetadataIOError.changed }
+                destination.item(at: source, willMoveTo: target)
+                try FileManager.default.moveItem(at: source, to: target)
+                defer { destination.item(at: source, didMoveTo: target) }
+                let file = PublishedFile(url: target, fingerprint: (try? FileFingerprint(target)) ?? expected)
+                published.append(file)
+                try makeVisible(target)
+                guard file.fingerprint.size == expected.size else { throw MetadataIOError.changed }
+                try verify(file)
+            }
+        }
+        if let error { throw error }
+        guard let result else { throw CancellationError() }
+        try result.get()
+    }
+
+    private func verify(_ file: PublishedFile) throws {
+        var url = file.url
+        url.removeAllCachedResourceValues()
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isHiddenKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true, values.isHidden == false,
+              file.fingerprint.size > 0, try FileFingerprint(file.url) == file.fingerprint else { throw MetadataIOError.changed }
+    }
+
+    private func rollback(_ files: [PublishedFile]) -> Bool {
+        var complete = true
+        for file in files.reversed() {
+            var error: NSError?
+            NSFileCoordinator().coordinate(writingItemAt: file.url, options: .forDeleting, error: &error) { local in
+                guard FileManager.default.fileExists(atPath: local.path) else { return }
+                // A user or provider may have replaced a file since publication.
+                // Never delete an item whose ownership can no longer be proved.
+                guard (try? FileFingerprint(local)) == file.fingerprint,
+                      (try? local.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == false else { complete = false; return }
+                do { try FileManager.default.removeItem(at: local) } catch { complete = false }
+            }
+            if error != nil { complete = false }
+        }
+        return complete
+    }
+
+    private func makeVisible(_ file: URL) throws {
+        var file = file, values = URLResourceValues()
+        values.isHidden = false
+        try file.setResourceValues(values)
+        file.removeAllCachedResourceValues()
+        guard try file.resourceValues(forKeys: [.isHiddenKey]).isHidden == false else {
+            throw MusicTextError.invalid("La carpeta o uno de sus archivos sigue oculto. No se ha confirmado la exportación.")
+        }
+    }
+
+    private func sizes(in directory: URL) throws -> [String: Int] {
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        return try Dictionary(uniqueKeysWithValues: files.map { file in
+            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true, let size = values.fileSize, size > 0 else {
+                throw MusicTextError.invalid("La carpeta exportada contiene un archivo vacío o incompleto.")
+            }
+            return (file.lastPathComponent, size)
+        })
+    }
+
     private func read<T>(track: AudioTrack, folder: ScopedFolder, _ body: (URL) throws -> T) throws -> T {
         let url = track.url(in: folder.url)
         let base = folder.url.resolvingSymlinksInPath().standardizedFileURL.path + "/"
@@ -389,7 +548,7 @@ private final class ExportProgress {
         guard force || now.timeIntervalSince(last) >= 0.1 else { return }
         last = now
         callback(.init(filename: filename, completed: index + (part >= 1 ? 1 : 0), total: total,
-                       fraction: (Double(index) + max(0, min(1, part))) / Double(total)))
+                       fraction: 0.9 * (Double(index) + max(0, min(1, part))) / Double(total)))
     }
 }
 

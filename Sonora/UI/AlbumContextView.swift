@@ -45,9 +45,16 @@ struct AlbumContextView: View {
         }
         .contentMargins(.bottom, 104, for: .scrollContent)
         .accessibilityIdentifier("playerAlbum")
+        .task(id: key) {
+            guard let album, let track = player.current, (try? player.folderAccess(for: track).documentURL) != nil else { return }
+            _ = try? await player.albumInterpretations.cachedResult(album, language: language, character: character)
+        }
     }
     private func message(_ status: AlbumInterpretationStore.Status?) -> String {
         if case .failed(let error) = status { return error }
+        if let track = player.current, (try? player.folderAccess(for: track).documentURL) != nil {
+            return "Este archivo no incluye información guardada sobre el álbum."
+        }
         if player.library.isIndexing { return "Leyendo las canciones del álbum…" }
         if status == .collecting { return "Reuniendo las letras y etiquetas del álbum…" }
         if status == .interpreting { return "Preparando «Sobre el álbum»…" }

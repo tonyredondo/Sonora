@@ -10,7 +10,14 @@ struct AlbumPreparationRequest {
     let songs: [CollectionSong]
     let revision: String
     init(group: CollectionGroup, songs: [CollectionSong]) {
-        id = group.id; title = group.title; artist = group.subtitle; self.songs = songs
+        self.init(id: group.id, title: group.title, artist: group.subtitle, songs: songs)
+    }
+    /// Metadata context for reading a saved album interpretation from one file.
+    init(document: CollectionSong) {
+        self.init(id: document.albumID, title: document.album, artist: document.albumArtist, songs: [document])
+    }
+    private init(id: String, title: String, artist: String, songs: [CollectionSong]) {
+        self.id = id; self.title = title; self.artist = artist; self.songs = songs
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
         struct SongRevision: Encodable {
             let id: String

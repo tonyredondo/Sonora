@@ -15,7 +15,8 @@ extension PlaybackController {
     }
     func refreshAlbumPreparation() {
         let preferences = albumPreparationPreferences
-        guard !library.isIndexing else { currentAlbum = nil; return }
+        let document = documentAlbum()
+        guard !library.isIndexing else { currentAlbum = document; return }
         let collection = library.state
         let queued = Set(queue.tracks.compactMap { libraryID(for: $0) })
         let selected = current.flatMap { libraryID(for: $0) }
@@ -23,12 +24,22 @@ extension PlaybackController {
         let albums = groups.filter { !$0.songIDs.allSatisfy { !queued.contains($0) } }.map { group in
             AlbumPreparationRequest(group: group, songs: group.songIDs.compactMap { collection.songs[$0] })
         }
-        currentAlbum = albums.first { $0.songs.contains { $0.id == selected } }
+        currentAlbum = albums.first { $0.songs.contains { $0.id == selected } } ?? document
         let ordered = albums.sorted { $0.id == currentAlbum?.id && $1.id != currentAlbum?.id }
         albumInterpretations.update(ordered, preferences: preferences) { [weak self] album, character in
             guard let self else { throw CancellationError() }
             return try await collectAlbum(album, character: character)
         }
+    }
+    /// An external file can carry a complete saved album reading. Expose that
+    /// metadata without indexing its parent or generating an album from one song.
+    private func documentAlbum() -> AlbumPreparationRequest? {
+        guard let track = current, let source = track.sourceID, let details = currentDetails,
+              (try? folderAccess(for: track).documentURL) != nil,
+              let album = details.tags[.album], !album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let song = CollectionSong(sourceID: source, relativePath: track.relativePath, tags: details.tags,
+                                  duration: details.duration, modified: details.fingerprint?.modified)
+        return AlbumPreparationRequest(document: song)
     }
     /// Resolve every security scope before the first suspension. CUE tracks keep
     /// their own title and sliced lyrics even when they share an audio file.

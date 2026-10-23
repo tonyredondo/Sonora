@@ -38,9 +38,37 @@ import XCTest
         library.add(try paths.map { path in try XCTUnwrap(tracks.first { $0.relativePath == path }).withSource(sourceID).id }, to: id)
         return id
     }
-    private func entries(_ folder: URL) throws -> [M3UEntry] {
-        let list = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).first { $0.pathExtension == "m3u8" })
+    private func entries(_ folder: URL, named name: String? = nil) throws -> [M3UEntry] {
+        let list = try name.map { folder.appendingPathComponent($0).appendingPathExtension("m3u8") }
+            ?? XCTUnwrap(FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).first { $0.pathExtension == "m3u8" })
         return try M3UPlaylist.decode(Data(contentsOf: list), utf8Only: true).entries
+    }
+    func testSavesDirectlyInSelectedFolderAndPreservesCollidingFiles() async throws {
+        let input = try copy("fixture.wav", as: "song.wav")
+        let native = try AudioFile(readingPropertiesAndMetadataFrom: input)
+        native.metadata.title = "Song"; native.metadata.artist = "Artist"; try native.writeMetadata()
+        let text = "[00:00.10]One\n[00:00.20]Two"
+        try text.write(to: source.appendingPathComponent("song.lrc"), atomically: true, encoding: .utf8)
+        let keep = Data("keep existing files".utf8)
+        // A lyric filename collision must rename the audio and its sidecar together.
+        let lyric = destination.appendingPathComponent("01 - Artist - Song.lrc")
+        try keep.write(to: lyric)
+        let oldList = destination.appendingPathComponent("Viaje.m3u8")
+        try keep.write(to: oldList)
+        let id = try playlist(["song.wav"])
+        for suffix in [2, 3] {
+            let folder = try await PlaylistFolderExport.exportPlaylist(id, library: library, folder: destination, name: "Viaje", format: .original)
+            XCTAssertEqual(folder.standardizedFileURL, destination.standardizedFileURL)
+            let listURL = destination.appendingPathComponent("Viaje \(suffix).m3u8")
+            guard FileManager.default.fileExists(atPath: listURL.path) else { XCTFail("Playlist must be directly in the selected folder"); return }
+            let entry = try XCTUnwrap(entries(destination, named: "Viaje \(suffix)").first)
+            XCTAssertEqual(entry.path, "01 - Artist - Song \(suffix).wav")
+            let audio = destination.appendingPathComponent(entry.path)
+            XCTAssertEqual(try AudioFile(readingPropertiesAndMetadataFrom: audio).metadata.lyrics, text)
+            XCTAssertEqual(try String(contentsOf: audio.deletingPathExtension().appendingPathExtension("lrc"), encoding: .utf8), text)
+            XCTAssertEqual(try Data(contentsOf: lyric), keep); XCTAssertEqual(try Data(contentsOf: oldList), keep)
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(at: destination, includingPropertiesForKeys: [.isDirectoryKey]).contains { try $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true })
+        }
     }
     func testOriginalFolderIsPortableOrderedAndDoesNotOverwriteAnything() async throws {
         let first = try copy("fixture.flac", as: "B.flac"), second = try copy("fixture.mp3", as: "A.mp3")
@@ -50,7 +78,7 @@ import XCTest
         try FileManager.default.createDirectory(at: existing, withIntermediateDirectories: true)
         try Data("keep".utf8).write(to: existing.appendingPathComponent("mine.txt"))
         let folder = try await PlaylistFolderExport.exportPlaylist(id, library: library, folder: destination, name: "Viaje", format: .original)
-        XCTAssertNotEqual(folder, existing)
+        XCTAssertEqual(folder.standardizedFileURL, destination.standardizedFileURL)
         let list = try entries(folder)
         XCTAssertEqual(list.count, 2)
         XCTAssertTrue(list[0].path.hasPrefix("01 - ")); XCTAssertTrue(list[1].path.hasPrefix("02 - "))
@@ -65,7 +93,7 @@ import XCTest
         }
         XCTAssertEqual(try [first, second].map { try Data(contentsOf: $0) }, originals)
     }
-    func testWAVToMP3PreservesTagsPicturesSidecarLyricsAndSource() async throws {
+    func testWAVToMP3EmbedsTimedLyricsWithoutSidecarAndPreservesTagsPicturesAndSource() async throws {
         let input = try copy("fixture.wav", as: "song.wav")
         let artFile = try AudioFile(readingPropertiesAndMetadataFrom: XCTUnwrap(Bundle(for: Self.self).url(forResource: "fixture-cover", withExtension: "flac")))
         let cover = try XCTUnwrap(artFile.metadata.attachedPictures.first?.imageData)
@@ -87,6 +115,9 @@ import XCTest
         let saved = try AudioFile(readingPropertiesAndMetadataFrom: output)
         for (field, value) in MetadataService.values(file.metadata) where field != .lyrics { XCTAssertEqual(MetadataService.values(saved.metadata)[field], value, "\(field)") }
         XCTAssertEqual(saved.metadata.lyrics, lyric)
+        let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+        XCTAssertFalse(files.contains { ["lrc", "txt"].contains($0.pathExtension) }, "MP3 lyrics and timestamps must live in its metadata without duplicate sidecars")
+        XCTAssertEqual(LyricsDocument(text: saved.metadata.lyrics ?? "").lines.compactMap(\.time), [0.1, 0.2])
         XCTAssertEqual(saved.metadata.attachedPictures.first?.imageData, cover)
         XCTAssertEqual(saved.metadata.isrc, "ESABC2600001"); XCTAssertEqual(saved.metadata.bpm, 123)
         XCTAssertEqual(saved.metadata.replayGainTrackGain ?? 0, -4.25, accuracy: 0.006)
@@ -176,7 +207,7 @@ import XCTest
             try writePCM(name, rate: rate, channels: channels)
             let id = try playlist([name])
             let folder = try await PlaylistFolderExport.exportPlaylist(id, library: library, folder: destination, name: name, format: .mp3)
-            let output = folder.appendingPathComponent(try XCTUnwrap(entries(folder).first?.path))
+            let output = folder.appendingPathComponent(try XCTUnwrap(entries(folder, named: name).first?.path))
             let decoder = try AudioDecoders.open(output); defer { try? decoder.close() }
             XCTAssertEqual(decoder.processingFormat.sampleRate, 44100)
             XCTAssertEqual(decoder.processingFormat.channelCount, channels)
@@ -240,7 +271,7 @@ import XCTest
             let input = try copy(fixture, as: fixture), before = try Data(contentsOf: input)
             let id = try playlist([fixture])
             let folder = try await PlaylistFolderExport.exportPlaylist(id, library: library, folder: destination, name: fixture, format: .mp3)
-            let output = folder.appendingPathComponent(try XCTUnwrap(entries(folder).first?.path))
+            let output = folder.appendingPathComponent(try XCTUnwrap(entries(folder, named: fixture).first?.path))
             let original = try AudioDecoders.openForIdentity(input), actual = try AudioDecoders.open(output)
             defer { try? original.close(); try? actual.close() }
             XCTAssertEqual(Double(actual.length) / actual.processingFormat.sampleRate, Double(original.length) / original.processingFormat.sampleRate, accuracy: 0.001, fixture)
@@ -256,7 +287,7 @@ import XCTest
             try "Lyrics".write(to: source.appendingPathComponent("song.txt"), atomically: true, encoding: .utf8)
             let id = try playlist(["song.\(ext)"])
             let folder = try await PlaylistFolderExport.exportPlaylist(id, library: library, folder: destination, name: ext, format: .original)
-            let name = try XCTUnwrap(entries(folder).first?.path), output = folder.appendingPathComponent(name)
+            let name = try XCTUnwrap(entries(folder, named: ext).first?.path), output = folder.appendingPathComponent(name)
             XCTAssertEqual(try Data(contentsOf: output), before)
             XCTAssertEqual(LocalArtwork.data(for: output), cover)
             let prepared = try await MediaReader.prepare(XCTUnwrap(AudioTrack(relativePath: name)), folder: ScopedFolder(folder))
@@ -313,12 +344,169 @@ import XCTest
         XCTAssertLessThanOrEqual(cursor, data.count, "MPEG end \(cursor), file bytes \(data.count)")
         if cursor <= data.count { XCTAssertTrue(cursor == data.count || data[cursor...].starts(with: Data("TAG".utf8))) }
     }
+    func testPublishesIndividualFileMovesToFilePresentersInBothFormats() async throws {
+        try copy("fixture.wav", as: "song.wav")
+        let id = try playlist(["song.wav"])
+        for format in PlaylistFolderExport.Format.allCases {
+            let expected = destination.appendingPathComponent(format.rawValue + ".m3u8")
+            let published = expectation(description: "Provider observes complete \(format.rawValue) playlist")
+            let presenter = ExportFolderPresenter(destination) { url in
+                guard url.standardizedFileURL == expected.standardizedFileURL else { return }
+                do {
+                    let entries = try M3UPlaylist.decode(Data(contentsOf: url), utf8Only: true).entries
+                    guard entries.count == 1 else { return }
+                    let audio = url.deletingLastPathComponent().appendingPathComponent(entries[0].path)
+                    guard audio.pathExtension == (format == .mp3 ? "mp3" : "wav"),
+                          try audio.resourceValues(forKeys: [.isHiddenKey, .fileSizeKey]).isHidden == false,
+                          (try audio.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) > 0 else { return }
+                    published.fulfill()
+                } catch { XCTFail("Published playlist is incomplete: \(error)") }
+            }
+            NSFileCoordinator.addFilePresenter(presenter)
+            defer { NSFileCoordinator.removeFilePresenter(presenter) }
+            let folder = try await PlaylistFolderExport.exportPlaylist(id, library: library, folder: destination, name: format.rawValue, format: format)
+            XCTAssertEqual(folder.standardizedFileURL, destination.standardizedFileURL)
+            await fulfillment(of: [published], timeout: 3)
+        }
+    }
+
+    func testPublishedFilesRemainVisibleWhenProviderMarksStagingHidden() async throws {
+        try copy("fixture.wav", as: "song.wav")
+        let id = try playlist(["song.wav"]), destination = self.destination
+        for format in PlaylistFolderExport.Format.allCases {
+            let folder = try await PlaylistFolderExport.exportPlaylist(id, library: library, folder: destination, name: format.rawValue, format: format) { value in
+                guard value.phase == .preparing && value.completed == value.total else { return }
+                // A provider can retain a hidden flag on a dot-named staging
+                // directory. A rename alone does not clear that filesystem flag.
+                let stages = (try? FileManager.default.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil)) ?? []
+                for var stage in stages where stage.lastPathComponent.hasPrefix(".sonora-export-") {
+                    var hidden = URLResourceValues(); hidden.isHidden = true
+                    do {
+                        try stage.setResourceValues(hidden)
+                        let children = try FileManager.default.contentsOfDirectory(at: stage, includingPropertiesForKeys: nil)
+                        for var child in children { try child.setResourceValues(hidden) }
+                    } catch { XCTFail("Could not establish hidden provider metadata: \(error)") }
+                }
+            }
+            XCTAssertEqual(folder.standardizedFileURL, destination.standardizedFileURL)
+            let visible = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil, options: .skipsHiddenFiles)
+            let audio = folder.appendingPathComponent(try XCTUnwrap(entries(folder, named: format.rawValue).first).path)
+            XCTAssertTrue(visible.contains(audio), "Exported audio must be visible in Files")
+            XCTAssertTrue(visible.contains(folder.appendingPathComponent(format.rawValue + ".m3u8")))
+            XCTAssertFalse(visible.contains { $0.lastPathComponent.hasPrefix(".sonora-export-") })
+        }
+    }
+
+    func testMissingPreparedAudioCannotBeReportedAsSaved() async throws {
+        let input = try copy("fixture.wav", as: "song.wav"), original = try Data(contentsOf: input)
+        let id = try playlist(["song.wav"])
+        let destination = self.destination
+        for format in PlaylistFolderExport.Format.allCases {
+            do {
+                _ = try await PlaylistFolderExport.exportPlaylist(id, library: library, folder: destination, name: format.rawValue, format: format) { value in
+                    guard value.phase == .preparing && value.completed == value.total else { return }
+                    // Model a provider losing the prepared audio before publication.
+                    // The exporter must check the artifact, not just its return code.
+                    let folders = (try? FileManager.default.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil)) ?? []
+                    for folder in folders where folder.lastPathComponent.hasPrefix(".sonora-export-") {
+                        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+                        for file in files where ["wav", "mp3"].contains(file.pathExtension) { try? FileManager.default.removeItem(at: file) }
+                    }
+                }
+                XCTFail("Missing audio must not return a saved folder for \(format.rawValue)")
+            } catch {
+                XCTAssertFalse(error is CancellationError)
+            }
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: destination.path), [])
+        }
+        XCTAssertEqual(try Data(contentsOf: input), original)
+    }
+
     func testFailureAfterFirstSongLeavesNoPartialExport() async throws {
         try copy("fixture.flac", as: "good.flac"); try copy("fixture.flac", as: "missing.flac")
         let id = try playlist(["good.flac", "missing.flac"])
         try FileManager.default.removeItem(at: source.appendingPathComponent("missing.flac"))
         do { _ = try await PlaylistFolderExport.exportPlaylist(id, library: library, folder: destination, name: "Viaje", format: .original); XCTFail("Missing audio must fail explicitly") } catch { }
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: destination.path), [])
+    }
+    func testCancellationAfterPublishingAudioRollsBackOnlyNewFiles() async throws {
+        let input = try copy("fixture.wav", as: "song.wav"), before = try Data(contentsOf: input)
+        let id = try playlist(["song.wav"])
+        let keep = destination.appendingPathComponent("mine.txt"), bytes = Data("keep".utf8)
+        try bytes.write(to: keep)
+        for format in PlaylistFolderExport.Format.allCases {
+            do {
+                _ = try await PlaylistFolderExport.exportPlaylist(id, library: library, folder: destination, name: "Viaje", format: format) { value in
+                    if value.phase == .saving { withUnsafeCurrentTask { $0?.cancel() } }
+                }
+                XCTFail("Expected cancellation before publishing the playlist")
+            } catch is CancellationError { }
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: destination.path), ["mine.txt"])
+            XCTAssertEqual(try Data(contentsOf: keep), bytes)
+        }
+        XCTAssertEqual(try Data(contentsOf: input), before)
+    }
+    func testFailureAfterPublishingAudioRemovesOnlyNewFiles() async throws {
+        try copy("fixture.wav", as: "one.wav"); try copy("fixture.wav", as: "two.wav")
+        let id = try playlist(["one.wav", "two.wav"]), destination = self.destination
+        let keep = destination.appendingPathComponent("mine.txt"), bytes = Data("keep".utf8)
+        try bytes.write(to: keep)
+        do {
+            _ = try await PlaylistFolderExport.exportPlaylist(id, library: library, folder: destination, name: "Viaje", format: .mp3) { value in
+                guard value.phase == .saving else { return }
+                let stages = (try? FileManager.default.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil)) ?? []
+                for stage in stages where stage.lastPathComponent.hasPrefix(".sonora-export-") {
+                    let files = (try? FileManager.default.contentsOfDirectory(at: stage, includingPropertiesForKeys: nil)) ?? []
+                    for file in files where file.pathExtension == "mp3" { try? FileManager.default.removeItem(at: file) }
+                }
+            }
+            XCTFail("Losing the second prepared song must fail")
+        } catch { XCTAssertFalse(error is CancellationError) }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: destination.path), ["mine.txt"])
+        XCTAssertEqual(try Data(contentsOf: keep), bytes)
+    }
+    func testCancellationAfterPlaylistCommitKeepsCompletedFiles() async throws {
+        try copy("fixture.mp3", as: "song.mp3")
+        let folder = try await PlaylistFolderExport.exportPlaylist(playlist(["song.mp3"]), library: library, folder: destination, name: "Viaje", format: .mp3) { value in
+            if value.fraction == 1 { withUnsafeCurrentTask { $0?.cancel() } }
+        }
+        let list = try entries(folder)
+        XCTAssertEqual(list.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent(list[0].path).path))
+    }
+    func testRollbackPreservesAnExternallyReplacedFileAndReportsIncompleteExport() async throws {
+        try copy("fixture.mp3", as: "song.mp3")
+        let id = try playlist(["song.mp3"]), destination = self.destination
+        let replacement = Data("replaced by another writer".utf8)
+        do {
+            _ = try await PlaylistFolderExport.exportPlaylist(id, library: library, folder: destination, name: "Viaje", format: .mp3) { value in
+                guard value.phase == .saving else { return }
+                do { try replacement.write(to: destination.appendingPathComponent(value.filename), options: .atomic) }
+                catch { XCTFail("Could not establish external replacement: \(error)") }
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+            XCTFail("An incomplete rollback must be reported")
+        } catch {
+            XCTAssertFalse(error is CancellationError, "Retained files must not be silently treated as a clean cancellation")
+            XCTAssertTrue(error.localizedDescription.contains("revisa la carpeta"))
+        }
+        let files = try FileManager.default.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil)
+        XCTAssertEqual(files.count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(files.first)), replacement)
+    }
+    func testMP3DoesNotAdoptExistingLyricsFromDestination() async throws {
+        let input = try copy("fixture.mp3", as: "song.mp3")
+        let native = try AudioFile(readingPropertiesAndMetadataFrom: input)
+        native.metadata.title = "Song"; native.metadata.artist = "Artist"; native.metadata.lyrics = "[00:00.10]Embedded"; try native.writeMetadata()
+        let unrelated = destination.appendingPathComponent("01 - Artist - Song.lrc")
+        try "[00:00.10]Unrelated".write(to: unrelated, atomically: true, encoding: .utf8)
+        let folder = try await PlaylistFolderExport.exportPlaylist(playlist(["song.mp3"]), library: library, folder: destination, name: "Viaje", format: .mp3)
+        let entry = try XCTUnwrap(entries(folder).first)
+        XCTAssertEqual(entry.path, "01 - Artist - Song 2.mp3")
+        let prepared = try await MediaReader.prepare(XCTUnwrap(AudioTrack(relativePath: entry.path)), folder: ScopedFolder(folder))
+        defer { try? prepared.decoder.close() }
+        XCTAssertEqual(prepared.details.lyrics.lines.map(\.text), ["Embedded"])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil).filter { $0.pathExtension == "lrc" }, [unrelated])
     }
     func testCancellationDuringExportRemovesStagingAndPreservesSources() async throws {
         let input = try copy("fixture.wav", as: "song.wav"), before = try Data(contentsOf: input)
@@ -341,8 +529,8 @@ import XCTest
         let track = try XCTUnwrap(tracks.first { $0.cue?.number == 2 })
         let id = try XCTUnwrap(library.createPlaylist("CUE")); library.add([track.withSource(sourceID).id], to: id)
         for format in PlaylistFolderExport.Format.allCases {
-            let folder = try await PlaylistFolderExport.exportPlaylist(id, library: library, folder: destination, name: "CUE", format: format)
-            let entry = try XCTUnwrap(entries(folder).first), output = folder.appendingPathComponent(entry.path)
+            let folder = try await PlaylistFolderExport.exportPlaylist(id, library: library, folder: destination, name: "CUE-" + format.rawValue, format: format)
+            let entry = try XCTUnwrap(entries(folder, named: "CUE-" + format.rawValue).first), output = folder.appendingPathComponent(entry.path)
             XCTAssertEqual(output.pathExtension, format == .original ? "wav" : "mp3")
             let expected = try AudioDecoders.open(track.url(in: source), cue: track.cue), actual = try AudioDecoders.open(output)
             defer { try? expected.close(); try? actual.close() }
@@ -354,4 +542,18 @@ import XCTest
             XCTAssertEqual(try XCTUnwrap(lyrics.lines.first?.time), 0.15 - 10.0 / 75, accuracy: 0.002)
         }
     }
+}
+
+/// A real directory presenter exercises the same move notifications a document
+/// provider consumes; filesystem existence alone cannot prove publication.
+private final class ExportFolderPresenter: NSObject, NSFilePresenter, @unchecked Sendable {
+    let presentedItemURL: URL?
+    let presentedItemOperationQueue: OperationQueue = {
+        let queue = OperationQueue(); queue.maxConcurrentOperationCount = 1; return queue
+    }()
+    private let moved: @Sendable (URL) -> Void
+    init(_ root: URL, moved: @escaping @Sendable (URL) -> Void) {
+        presentedItemURL = root; self.moved = moved
+    }
+    func presentedSubitem(at oldURL: URL, didMoveTo newURL: URL) { moved(newURL) }
 }

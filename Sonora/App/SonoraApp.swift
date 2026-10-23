@@ -19,6 +19,7 @@ struct SonoraApp: App {
             LibraryView(player: player)
                 .preferredColorScheme(appearance.colorScheme)
                 .task { await AppServices.shared.restore() }
+                .onOpenURL { AppServices.shared.openAudioFile($0) }
                 .onChange(of: translationSource) { player.translationPreferencesDidChange() }
                 .onChange(of: translationTarget) { player.translationPreferencesDidChange() }
                 .onChange(of: meaningLanguage) { player.preparationPreferencesDidChange() }
