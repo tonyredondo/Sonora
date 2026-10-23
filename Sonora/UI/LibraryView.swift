@@ -8,6 +8,7 @@ struct LibraryView: View {
     @Environment(\.dynamicTypeSize) private var textSize
     @State private var sheet: LibrarySheet?
     @State private var showPlayer = false
+    @State private var showOpenedFileAfterDismissal = false
     @State private var reset = false
     @State private var categoryDestination: LibraryCategory?
     @State private var selectedAlbum: CollectionGroup?
@@ -63,7 +64,9 @@ struct LibraryView: View {
             playerTab { LibrarySearchView(player: player) }
                 .tabItem { Label("Buscar", systemImage: "magnifyingglass") }
         }
-        .sheet(item: $sheet) { destination in
+        .sheet(item: $sheet, onDismiss: {
+            if showOpenedFileAfterDismissal { showOpenedFileAfterDismissal = false; showPlayer = true }
+        }) { destination in
             switch destination {
             case .sources: LibrarySourcesView(player: player)
             case .addMusic: AddMusicView(player: player)
@@ -72,6 +75,11 @@ struct LibraryView: View {
             }
         }
         .fullScreenCover(isPresented: $showPlayer) { NowPlayingView(player: player) }
+        .onChange(of: player.openedAudioFileID, initial: true) {
+            guard player.openedAudioFileID != nil else { return }
+            if sheet != nil { showOpenedFileAfterDismissal = true; sheet = nil }
+            else { showPlayer = true }
+        }
         .tint(theme.accent)
         .onChange(of: phase) { if phase == .background { player.localImports.cancel() } }
     }

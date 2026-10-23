@@ -35,4 +35,23 @@
 <key>UIBackgroundModes</key><array><string>audio</string></array>
 <key>UIFileSharingEnabled</key><true/>
 <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+<key>CFBundleDocumentTypes</key><array><dict>
+<key>CFBundleTypeName</key><string>Audio</string>
+<key>CFBundleTypeRole</key><string>Viewer</string>
+<key>LSHandlerRank</key><string>Alternate</string>
+<key>LSItemContentTypes</key><array>
+<string>public.audio</string>
+<string>com.wavpack.wavpack</string>
+<string>com.monkeysaudio.ape</string>
+<string>org.musepack.mpc</string>
+<string>org.trueaudio.tta</string>
+<string>org.xiph.speex</string>
+</array></dict></array>
+<key>UTImportedTypeDeclarations</key><array>
+<dict><key>UTTypeIdentifier</key><string>com.wavpack.wavpack</string><key>UTTypeDescription</key><string>WavPack audio</string><key>UTTypeConformsTo</key><array><string>public.audio</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>wv</string></array></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>com.monkeysaudio.ape</string><key>UTTypeDescription</key><string>Monkey’s Audio</string><key>UTTypeConformsTo</key><array><string>public.audio</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>ape</string></array></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>org.musepack.mpc</string><key>UTTypeDescription</key><string>Musepack audio</string><key>UTTypeConformsTo</key><array><string>public.audio</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>mpc</string></array></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>org.trueaudio.tta</string><key>UTTypeDescription</key><string>True Audio</string><key>UTTypeConformsTo</key><array><string>public.audio</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>tta</string></array></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>org.xiph.speex</string><key>UTTypeDescription</key><string>Speex audio</string><key>UTTypeConformsTo</key><array><string>public.audio</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>spx</string></array></dict></dict>
+</array>
 </dict></plist>

@@ -73,9 +73,9 @@ final class ZZPortableLibraryUITests: XCTestCase {
         app.buttons["saveM3U"].tap()
         portableFolder(app); app.buttons["DOCPicker.actionButton"].tap()
         let exported = app.descendants(matching: .any)["playlistExportResult"].firstMatch
-        XCTAssertTrue(exported.waitForExistence(timeout: 30)); XCTAssertTrue(exported.label.contains("Ruta"))
+        XCTAssertTrue(exported.waitForExistence(timeout: 30)); XCTAssertTrue(exported.label.contains("Sonora Portable QA"))
         XCTAssertFalse(exported.label.contains(".m3u8"))
-        XCTAssertTrue(app.staticTexts["Carpeta guardada"].exists)
+        XCTAssertTrue(app.staticTexts["Archivos guardados"].exists)
         capture("playlist-folder-export-noche", app)
         app.buttons["playlistAudioFormat"].tap()
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "MP3")).firstMatch.tap()
