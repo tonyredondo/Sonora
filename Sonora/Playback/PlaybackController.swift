@@ -13,6 +13,7 @@ final class PlaybackController: NSObject {
     let lyricTranslations: LyricTranslationStore
     let lyricInterpretations: LyricInterpretationStore
     let albumInterpretations: AlbumInterpretationStore
+    let generatedArtwork: GeneratedArtworkStore?
     var currentAlbum: AlbumPreparationRequest?
     var albumPreparationPreferences: QueuePreparationPreferences { QueuePreparationPreferences(defaults: defaults) }
     @ObservationIgnored lazy var queuePreparation = QueuePreparationStore { [weak self] item, preferences in
@@ -93,7 +94,13 @@ final class PlaybackController: NSObject {
         let preferences: QueuePreparationPreferences
     }
     var current: AudioTrack? { queue.current }
-    var currentDetails: TrackDetails? { current.flatMap { details[$0.id] } }
+    var currentDetails: TrackDetails? {
+        guard let track = current, var value = details[track.id] else { return nil }
+        if value.artwork == nil, let fingerprint = value.fingerprint, let access = try? folderAccess(for: track) {
+            value.artwork = generatedArtwork?.image(owner: GeneratedArtworkStore.owner(track, folder: access), fingerprint: fingerprint)
+        }
+        return value
+    }
     var currentSongTools: SongToolsResult? {
         guard let track = current, let folder = try? folderAccess(for: track),
               let result = musicTools.summary(for: track, folder: folder), result.fingerprint == currentDetails?.fingerprint else { return nil }
@@ -211,6 +218,7 @@ final class PlaybackController: NSObject {
     }
     func translationPreferencesDidChange() { preparationPreferencesDidChange() }
     func preparationPreferencesDidChange() {
+        generatedArtwork?.retry()
         refreshQueuePreparation()
         prepareCurrentSongTools()
     }
@@ -219,6 +227,7 @@ final class PlaybackController: NSObject {
         lyricTranslations.retryAutomatic()
         lyricInterpretations.retryAutomatic()
         albumInterpretations.retry()
+        generatedArtwork?.retry()
         refreshQueuePreparation(retry: true)
         retrySongAnalysis()
     }
@@ -236,7 +245,7 @@ final class PlaybackController: NSObject {
         lyricTranslations.setAutomaticQueue(preferences.translation ? items.map(\.id) : [], source: preferences.source, target: preferences.target)
         lyricInterpretations.setAutomaticQueue(preferences.meaning ? items.map(\.id) : [], language: preferences.meaningLanguage)
         queuePreparation.update(
-            preferences.audio || preferences.character || preferences.translation || preferences.meaning
+            preferences.audio || preferences.character || preferences.translation || preferences.meaning || (preferences.artwork && generatedArtwork != nil)
                 ? items.filter { $0.track.id != current?.id } : [],
             preferences: preferences, retry: retry
         )
@@ -245,6 +254,11 @@ final class PlaybackController: NSObject {
         // Let the selected song reach the audio/translation stores first.
         await songAnalysisTask?.value
         let snapshot = try await MetadataService.read(url: item.track.url(in: item.folder.url), folder: item.folder)
+        if preferences.artwork && !preferences.audio && !preferences.character && !preferences.translation && !preferences.meaning {
+            _ = try? await audioCharacter.restore(track: item.track, folder: item.folder, expected: snapshot.fingerprint)
+            enqueueGeneratedArtwork(track: item.track, folder: item.folder, expected: snapshot.fingerprint, preferences: preferences)
+            return
+        }
         let lyrics = await Task.detached(priority: .utility) {
             let text = LyricsSource.read(for: item.track.url(in: item.folder.url),
                                          embedded: snapshot.values[.lyrics] ?? "", coordinator: NSFileCoordinator()).text
@@ -264,6 +278,7 @@ final class PlaybackController: NSObject {
         } catch { if prepareCharacter { audioIssue = audioIssue ?? error } }
         let context = interpretationContext(for: item.track, folder: item.folder, values: snapshot.values, expected: snapshot.fingerprint)
         await prepareLyrics(lyrics, context: context, owner: item.id, preferences: preferences)
+        enqueueGeneratedArtwork(track: item.track, folder: item.folder, expected: snapshot.fingerprint, preferences: preferences)
         if let audioIssue { throw audioIssue }
     }
     private func prepareLyrics(_ lyrics: LyricsDocument, context: LyricsInterpretationContext, owner: String, preferences: QueuePreparationPreferences) async {
@@ -291,6 +306,7 @@ final class PlaybackController: NSObject {
         let metadata = currentDetails?.tags ?? [:]
         let preferences = QueuePreparationPreferences(defaults: defaults)
         let source = preferences.source, target = preferences.target
+        generatedArtwork?.select(owner: GeneratedArtworkStore.owner(track, folder: access), fingerprint: fingerprint)
         let request = SongAnalysisRequest(url: track.url(in: access.url).standardizedFileURL,
                                           localID: track.localID, fingerprint: fingerprint,
                                           translationKey: LyricUnderstanding.translationKey(lyrics, source: source, target: target),
@@ -330,6 +346,7 @@ final class PlaybackController: NSObject {
             if let self {
                 let context = interpretationContext(for: track, folder: access, values: metadata, expected: fingerprint)
                 await prepareLyrics(lyrics, context: context, owner: QueuePreparationStore.Item.id(track, folder: access), preferences: preferences)
+                enqueueGeneratedArtwork(track: track, folder: access, expected: fingerprint, preferences: preferences)
             }
         }
     }
@@ -480,13 +497,14 @@ final class PlaybackController: NSObject {
         return try await body(token)
     }
 
-    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil, musicTools: MusicToolsStore? = nil, lyricTranslations: LyricTranslationStore? = nil, lyricInterpretations: LyricInterpretationStore? = nil, albumInterpretations: AlbumInterpretationStore? = nil, audioCharacter: AudioCharacterStore? = nil, activateSession: (() async throws -> Void)? = nil) {
+    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil, musicTools: MusicToolsStore? = nil, lyricTranslations: LyricTranslationStore? = nil, lyricInterpretations: LyricInterpretationStore? = nil, albumInterpretations: AlbumInterpretationStore? = nil, audioCharacter: AudioCharacterStore? = nil, generatedArtwork: GeneratedArtworkStore? = nil, activateSession: (() async throws -> Void)? = nil) {
         self.defaults = defaults
         self.musicTools = musicTools ?? MusicToolsStore()
         self.audioCharacter = audioCharacter ?? AudioCharacterStore()
         self.lyricTranslations = lyricTranslations ?? LyricTranslationStore()
         self.lyricInterpretations = lyricInterpretations ?? LyricInterpretationStore()
         self.albumInterpretations = albumInterpretations ?? AlbumInterpretationStore()
+        self.generatedArtwork = generatedArtwork
         self.metadataArchive = metadataArchive
         player = audioPlayer
         self.activateSession = activateSession ?? { try await AudioSessionCoordinator.shared.activate() }
@@ -502,6 +520,7 @@ final class PlaybackController: NSObject {
         transitionSettings = defaults.data(forKey: "transitionSettings")
             .flatMap { try? JSONDecoder().decode(TransitionSettings.self, from: $0) }?.validated ?? TransitionSettings()
         super.init()
+        self.generatedArtwork?.onImageChanged = { [weak self] in self?.updateNowPlaying() }
         events = PlayerEvents(equalizer: equalizer.processor) { [weak self] event in Task { @MainActor in self?.handle(event) } }
         player.delegate = events
         systemControls = SystemPlaybackControls(owner: self)

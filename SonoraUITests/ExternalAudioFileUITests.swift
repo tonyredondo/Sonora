@@ -51,7 +51,7 @@ final class ExternalAudioFileUITests: XCTestCase {
     }
     @MainActor func testWarmOpenFromFilesDismissesSettingsAndReplacesOnlyQueue() throws {
         continueAfterFailure = false
-        let app = XCUIApplication(); app.launchArguments = ["-appearance", "noche"]; app.launch(); app.assertLibraryHome()
+        let app = XCUIApplication(); app.launchArguments = ["-appearance", "noche", "-metadata.offline", "YES", "-prepareQueueArtwork", "NO", "-nowPlayingPage", "0"]; app.launch(); app.assertLibraryHome()
         app.buttons["Ajustes"].tap()
         let files = XCUIApplication(bundleIdentifier: "com.apple.DocumentsApp")
         files.terminate(); files.launch()

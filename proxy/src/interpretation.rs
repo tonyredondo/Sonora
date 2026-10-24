@@ -188,6 +188,71 @@ pub(crate) struct CodexPrompt {
     pub schema: Value,
 }
 impl InterpretationService {
+    /// Image jobs share text admission and capacity, but only their isolated CLI
+    /// enables native image generation. Text workers retain their tool ban.
+    pub async fn generate_artwork(
+        &self,
+        input: crate::generated_artwork::ArtworkInput,
+    ) -> Result<bytes::Bytes, InterpretationError> {
+        use InterpretationError as E;
+        input.validate()?;
+        let key = input.key()?;
+        if let Some(image) = self.cached_artwork(&key).await? {
+            return Ok(image);
+        }
+        if !self.config.enabled {
+            return Err(E::Disabled);
+        }
+        let _place = self.queue.try_acquire().map_err(|_| E::Busy)?;
+        let flight = {
+            let mut flights = self.flights.lock().map_err(|_| E::Unavailable)?;
+            flights.retain(|_, flight| flight.strong_count() > 0);
+            if let Some(flight) = flights.get(&key).and_then(Weak::upgrade) {
+                flight
+            } else {
+                let flight = Arc::new(AsyncMutex::new(()));
+                flights.insert(key.clone(), Arc::downgrade(&flight));
+                flight
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(210), async {
+            let _flight = flight.lock().await;
+            if let Some(image) = self.cached_artwork(&key).await? {
+                return Ok(image);
+            }
+            let _worker = self.worker.acquire().await.map_err(|_| E::Unavailable)?;
+            let image = crate::generated_artwork::run(&self.config, &input).await?;
+            let now = unix_time();
+            self.cache
+                .put(
+                    &key,
+                    CacheEntry {
+                        status: 200,
+                        headers: ResponseHeaders {
+                            content_type: Some("image/png".into()),
+                            ..Default::default()
+                        },
+                        body: image.clone(),
+                        stored_at: now,
+                        expires_at: now + 365 * 86400,
+                    },
+                )
+                .await
+                .map_err(|_| E::Cache)?;
+            Ok(image)
+        })
+        .await
+        .map_err(|_| E::Timeout)?
+    }
+    async fn cached_artwork(&self, key: &str) -> Result<Option<bytes::Bytes>, InterpretationError> {
+        Ok(self
+            .cache
+            .get(key)
+            .await
+            .map_err(|_| InterpretationError::Cache)?
+            .filter(|entry| entry.status == 200 && crate::generated_artwork::valid_png(&entry.body))
+            .map(|entry| entry.body))
+    }
     pub fn new(config: CodexConfig, cache: Cache) -> Self {
         Self {
             config,

@@ -112,6 +112,10 @@ pub fn router(config: Config) -> Result<Router, Error> {
         )
         .route("/v1/identify", post(identify))
         .route("/v1/artwork/{id}", get(artwork))
+        .route(
+            "/v1/artwork/generate",
+            post(generate_artwork).layer(DefaultBodyLimit::max(64 * 1024)),
+        )
         .route("/v1/jobs", post(create_job))
         .route("/v1/jobs/{id}", get(job).delete(cancel_job))
         .layer(DefaultBodyLimit::max(256 * 1024))
@@ -137,10 +141,26 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
         })
         .collect();
     Json(json!({"providers":providers,"metadata_archive_version":1,
+        "generated_artwork":{"enabled":app.client.config().codex.enabled,"version":1},
         "audio_character":{"enabled":app.client.config().audio_character.enabled,"version":crate::audio_character::VERSION},
         "lyric_translation":{"enabled":app.client.config().codex.enabled,"version":1,"model":crate::translation::MODEL,"effort":crate::translation::EFFORT},
         "album_interpretation":{"enabled":app.client.config().codex.enabled,"version":crate::album_interpretation::VERSION},
         "lyric_interpretation":{"enabled":app.client.config().codex.enabled,"model":crate::interpretation::MODEL,"effort":crate::interpretation::EFFORT}}))
+}
+
+async fn generate_artwork(
+    State(app): State<App>,
+    Json(input): Json<crate::generated_artwork::ArtworkInput>,
+) -> Result<Response, crate::interpretation::InterpretationError> {
+    let image = app.interpretation.generate_artwork(input).await?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "private, no-store"),
+        ],
+        image,
+    )
+        .into_response())
 }
 
 #[derive(serde::Deserialize)]
