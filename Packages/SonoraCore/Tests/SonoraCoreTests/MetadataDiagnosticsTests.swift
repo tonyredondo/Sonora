@@ -131,7 +131,7 @@ final class MetadataDiagnosticsTests: XCTestCase {
             XCTFail("The provider failure must remain an error")
         } catch {
             let description = error.localizedDescription
-            XCTAssertTrue(description.contains("ElevenLabs"), description)
+            XCTAssertTrue(description.contains("El servicio de análisis"), description)
             XCTAssertTrue(description.contains("429") && description.contains("502"), description)
             XCTAssertTrue(description.contains("quota_exceeded"), description)
             XCTAssertTrue(description.contains("b0b3276b-6850-49c2-858a-8f1ae4976b25"), description)

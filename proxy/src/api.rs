@@ -28,11 +28,13 @@ struct App {
     uploads: Arc<tokio::sync::Semaphore>,
     metadata: MetadataArchive,
     interpretation: crate::interpretation::InterpretationService,
+    artwork_jobs: crate::artwork_jobs::ArtworkJobs,
     character: crate::audio_character::CharacterService,
     character_uploads: Arc<tokio::sync::Semaphore>,
 }
 
-/// Must be constructed inside a Tokio runtime. Dropping the last router cancels its jobs.
+/// Must be constructed inside a Tokio runtime. Accepted artwork tasks outlive HTTP callers;
+/// unfinished artwork can be recovered from disk after a server restart.
 pub fn router(config: Config) -> Result<Router, Error> {
     let token = config
         .server
@@ -42,16 +44,23 @@ pub fn router(config: Config) -> Result<Router, Error> {
     let client = Client::new(config)?;
     let metadata =
         MetadataArchive::open(&client.config().metadata).map_err(|_| Error::Configuration)?;
+    let interpretation = crate::interpretation::InterpretationService::new(
+        client.config().codex.clone(),
+        client.scheduler.cache(),
+    );
     let state = App {
         character_uploads: Arc::new(tokio::sync::Semaphore::new(8)),
         character: crate::audio_character::CharacterService::new(
             client.config().audio_character.clone(),
             client.scheduler.cache(),
         ),
-        interpretation: crate::interpretation::InterpretationService::new(
-            client.config().codex.clone(),
+        artwork_jobs: crate::artwork_jobs::ArtworkJobs::new(
+            interpretation.clone(),
             client.scheduler.cache(),
+            client.config().codex.enabled,
+            client.config().server.max_jobs,
         ),
+        interpretation,
         metadata,
         jobs: Jobs::new(client.clone()),
         uploads: Arc::new(tokio::sync::Semaphore::new(4)),
@@ -113,6 +122,12 @@ pub fn router(config: Config) -> Result<Router, Error> {
         .route("/v1/identify", post(identify))
         .route("/v1/artwork/{id}", get(artwork))
         .route(
+            "/v1/artwork/jobs",
+            post(create_artwork_job).layer(DefaultBodyLimit::max(64 * 1024)),
+        )
+        .route("/v1/artwork/jobs/{id}", get(artwork_job))
+        .route("/v1/artwork/jobs/{id}/image", get(artwork_job_image))
+        .route(
             "/v1/artwork/generate",
             post(generate_artwork).layer(DefaultBodyLimit::max(64 * 1024)),
         )
@@ -141,7 +156,7 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
         })
         .collect();
     Json(json!({"providers":providers,"metadata_archive_version":1,
-        "generated_artwork":{"enabled":app.client.config().codex.enabled,"version":1},
+        "generated_artwork":{"enabled":app.client.config().codex.enabled,"version":1,"jobs_version":1},
         "audio_character":{"enabled":app.client.config().audio_character.enabled,"version":crate::audio_character::VERSION},
         "lyric_translation":{"enabled":app.client.config().codex.enabled,"version":1,"model":crate::translation::MODEL,"effort":crate::translation::EFFORT},
         "album_interpretation":{"enabled":app.client.config().codex.enabled,"version":crate::album_interpretation::VERSION},
@@ -161,6 +176,40 @@ async fn generate_artwork(
         image,
     )
         .into_response())
+}
+
+#[derive(Default, serde::Deserialize)]
+struct ArtworkJobOptions {
+    #[serde(default)]
+    retry_failed: bool,
+}
+async fn create_artwork_job(
+    State(app): State<App>,
+    Query(options): Query<ArtworkJobOptions>,
+    Json(input): Json<crate::generated_artwork::ArtworkInput>,
+) -> Result<impl IntoResponse, crate::artwork_jobs::JobError> {
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(app.artwork_jobs.create(input, options.retry_failed).await?),
+    ))
+}
+async fn artwork_job(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, crate::artwork_jobs::JobError> {
+    Ok(Json(app.artwork_jobs.snapshot(&id).await?))
+}
+async fn artwork_job_image(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, crate::artwork_jobs::JobError> {
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "private, no-store"),
+        ],
+        app.artwork_jobs.image(&id).await?,
+    ))
 }
 
 #[derive(serde::Deserialize)]

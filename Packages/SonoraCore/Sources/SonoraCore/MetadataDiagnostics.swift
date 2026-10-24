@@ -31,7 +31,7 @@ public struct MetadataServiceFailure: LocalizedError, Equatable, Sendable {
         self.requestID = Self.reference(response.requestID) ?? Self.reference(body?.request_id) ?? Self.reference(requestID)
     }
     public var errorDescription: String? {
-        let service = ["elevenlabs":"ElevenLabs", "musicbrainz":"MusicBrainz", "lrclib":"LRCLIB", "cover_art":"Cover Art Archive", "acoustid":"AcoustID"][provider ?? ""] ?? "El servidor"
+        let service = ["elevenlabs":"El servicio de análisis", "musicbrainz":"MusicBrainz", "lrclib":"LRCLIB", "cover_art":"Cover Art Archive", "acoustid":"AcoustID"][provider ?? ""] ?? "El servidor"
         let message: String
         switch reason ?? code {
         case "quota_exceeded": message = "\(service) indica que se ha agotado la cuota de la cuenta."

@@ -66,7 +66,7 @@ final class LyricsSynchronizationUITests: XCTestCase {
         let app = XCUIApplication(); open(app, filename: "02 - Tiempos Eleven QA.flac", theme: "papel")
         app.buttons["synchronizeLyrics"].tap()
         let source = app.staticTexts["lyricsSynchronizationSource"]
-        XCTAssertTrue(source.waitForExistence(timeout: 20)); XCTAssertEqual(source.label, "ElevenLabs")
+        XCTAssertTrue(source.waitForExistence(timeout: 20)); XCTAssertEqual(source.label, "Sincronización por IA")
         let onlineCounts = try await counts()
         XCTAssertEqual(onlineCounts["alignment"], 1, "The real Rust proxy must reach the synthetic alignment provider exactly once")
         capture("synchronization-aligned-preview-papel", app)
@@ -83,7 +83,7 @@ final class LyricsSynchronizationUITests: XCTestCase {
         for _ in 0..<15 where !search.isHittable { app.swipeUp() }
         XCTAssertTrue(search.isHittable); search.tap()
         for _ in 0..<15 where !source.isHittable { app.swipeUp() }
-        XCTAssertTrue(source.waitForExistence(timeout: 20)); XCTAssertEqual(source.label, "ElevenLabs")
+        XCTAssertTrue(source.waitForExistence(timeout: 20)); XCTAssertEqual(source.label, "Sincronización por IA")
         let offlineCounts = try await counts(); XCTAssertEqual(offlineCounts, onlineCounts, "Offline reuse must not contact either provider")
         let apply = app.buttons["applySynchronizedLyrics"]
         for _ in 0..<15 where !apply.isHittable { app.swipeUp() }
@@ -108,10 +108,10 @@ final class LyricsSynchronizationUITests: XCTestCase {
         let before = try await counts()
         app.buttons["synchronizeLyrics"].tap()
         let source = app.staticTexts["lyricsSynchronizationSource"]
-        XCTAssertTrue(source.waitForExistence(timeout: 20)); XCTAssertEqual(source.label, "ElevenLabs · Scribe v2")
+        XCTAssertTrue(source.waitForExistence(timeout: 20)); XCTAssertEqual(source.label, "Transcripción por IA")
         let attribution = app.staticTexts["transcriptionAttribution"]
         for _ in 0..<8 where !attribution.isHittable { app.swipeUp() }
-        XCTAssertEqual(attribution.label, "Transcrita por IA · ElevenLabs")
+        XCTAssertEqual(attribution.label, "Transcrita por IA")
         capture("transcription-preview-noche", app)
         let online = try await counts()
         XCTAssertEqual(online["transcription"], (before["transcription"] ?? 0) + 1)
@@ -130,7 +130,7 @@ final class LyricsSynchronizationUITests: XCTestCase {
         for _ in 0..<15 where !search.isHittable { app.swipeUp() }
         search.tap()
         for _ in 0..<15 where !source.isHittable { app.swipeUp() }
-        XCTAssertTrue(source.waitForExistence(timeout: 20)); XCTAssertEqual(source.label, "ElevenLabs · Scribe v2")
+        XCTAssertTrue(source.waitForExistence(timeout: 20)); XCTAssertEqual(source.label, "Transcripción por IA")
         for _ in 0..<15 where !attribution.isHittable { app.swipeUp() }
         capture("transcription-offline-preview-papel-large-text", app)
         let apply = app.buttons["applySynchronizedLyrics"]
@@ -141,11 +141,11 @@ final class LyricsSynchronizationUITests: XCTestCase {
         app.launchArguments = ["-appearance", "noche", "-metadata.offline", "YES", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryL"]
         app.launch(); XCTAssertTrue(app.buttons["openNowPlaying"].waitForExistence(timeout: 15)); app.buttons["openNowPlaying"].tap()
         XCTAssertTrue(app.staticTexts["playerLyricsAttribution"].waitForExistence(timeout: 10))
-        XCTAssertEqual(app.staticTexts["playerLyricsAttribution"].label, "Transcrita por IA · ElevenLabs")
+        XCTAssertEqual(app.staticTexts["playerLyricsAttribution"].label, "Transcrita por IA")
         capture("transcription-player-noche-after-relaunch", app)
         app.buttons["expandLyrics"].tap()
         XCTAssertTrue(app.buttons["lyricLine0"].waitForExistence(timeout: 10))
-        XCTAssertEqual(app.staticTexts["lyricsSource"].label, "Transcrita por IA · ElevenLabs")
+        XCTAssertEqual(app.staticTexts["lyricsSource"].label, "Transcrita por IA")
         capture("transcription-expanded-noche", app)
         let after = try await counts(); XCTAssertEqual(after, online, "Offline preview/save/relaunch must not call either provider")
     }

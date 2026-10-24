@@ -77,7 +77,7 @@ struct QueuePreparationSettingsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
                 Text("El significado del álbum reúne todas sus canciones disponibles en la biblioteca, aunque no estén en la cola. Traducción y significado envían las letras completas a Codex a través de tu servidor y consumen uso de tu plan cuando falta un resultado guardado. Los resultados guardados funcionan sin conexión.")
                     .font(.footnote).foregroundStyle(.secondary)
-                Text("La preparación avanza mientras iOS permite ejecutar Sonora. Si el sistema suspende la app, continúa al volver a abrirla.")
+                Text("Las portadas aceptadas siguen preparándose en el servidor aunque bloquees el iPhone. Sonora recupera su estado y descarga el resultado al volver. Los demás análisis avanzan mientras iOS permite ejecutar la app.")
                     .font(.footnote).foregroundStyle(.secondary)
                 Text("Si falta una portada, Codex crea una imagen a partir de la descripción disponible del álbum, el título y las etiquetas. Consume uso de tu plan y se guarda para verla sin conexión. No modifica el archivo ni sustituye una portada existente.")
                     .font(.footnote).foregroundStyle(.secondary)

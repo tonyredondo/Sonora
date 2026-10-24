@@ -69,7 +69,7 @@ Completed alignments are checked against the entire transcript, preserving Unico
 
 Paid-provider errors, including HTTP 404, are not cached as audio analyses. Older negative audio-cache records are ignored on lookup so an explicit retry can recover after the provider is fixed; the proxy still never retries paid requests automatically. Catalog not-found responses keep their normal short cache lifetime.
 
-The app shows the provider and a preview before adding LRC to the metadata editor's draft. Its existing original-file save confirmation remains required. Transcribed LRC includes `[by:Sonora AI transcription - ElevenLabs]`; Sonora displays **Transcrita por IA · ElevenLabs** in the preview, artwork and full reader, including after tag save, relaunch and offline. Successful analysis is retained in the iPhone cache for offline reuse until cleared or evicted. Singing accuracy still needs evaluation against real music; this integration validates structure and correspondence, not musical alignment quality.
+The app shows the provider and a preview before adding LRC to the metadata editor's draft. Its existing original-file save confirmation remains required. Transcribed LRC includes `[by:Sonora AI transcription - ElevenLabs]`; Sonora displays **Transcrita por IA** in the preview, artwork and full reader, including after tag save, relaunch and offline. Successful analysis is retained in the iPhone cache for offline reuse until cleared or evicted. Singing accuracy still needs evaluation against real music; this integration validates structure and correspondence, not musical alignment quality.
 
 ## API
 
@@ -91,6 +91,9 @@ All JSON provider responses use an envelope with `provider`, `sources` (upstream
 | POST | `/v1/identify` | JSON `fingerprint` and `duration`; AcoustID recording IDs and scores |
 | GET | `/v1/artwork/{release_mbid}` | Front artwork at the provider's 500-pixel variant; downloaded only when requested |
 | POST | `/v1/artwork/generate` | Song/album visual context; native Codex-generated PNG, reused from cache |
+| POST | `/v1/artwork/jobs` | Idempotent submission of visual context; returns a job ID immediately |
+| GET | `/v1/artwork/jobs/{id}` | Recover the queued, running, completed or failed job |
+| GET | `/v1/artwork/jobs/{id}/image` | Download the completed PNG without generating it again |
 | POST | `/v1/jobs` | Create a bounded batch; returns 202 and a `Location` to poll |
 | GET | `/v1/jobs/{id}` | State, total, completed count, individual results and provider warnings |
 | DELETE | `/v1/jobs/{id}` | Cancel unfinished work; the final snapshot remains available until expiry/eviction |
@@ -228,6 +231,26 @@ validates the response model and effort as well as the line IDs.
 
 ### Generated artwork
 
+The iPhone uses `POST /v1/artwork/jobs` with the visual context described below.
+The authenticated endpoint returns HTTP 202 with `{id,state,error?}` after storing
+the input. IDs are derived from the complete generation identity, so repeating a
+submission after a lost acknowledgement attaches to the same job. Generation runs
+independently of the HTTP connection. The app persists the original input and then
+the accepted ID, pauses network monitoring when inactive, and queries the same job
+on return or relaunch. A completed job downloads its PNG through the image route.
+Neither status queries nor repeated submissions retry failed generations. Only
+`POST /v1/artwork/jobs?retry_failed=true` explicitly retries a failed job. This
+also prevents a lost submission acknowledgement from triggering a second attempt.
+The app preserves terminal errors when brought forward.
+
+Job records and completed images use the existing bounded SQLite cache. After a
+server restart, querying an unfinished job recovers its stored input; a completed
+image is reused. Records and images remain subject to cache eviction. Admission
+uses `server.max_jobs`; image workers share the four-process Codex limit with text
+requests. Logs retain job IDs, states, timings and error codes, without prompts,
+song metadata or credentials. Older servers produce an explicit update-required
+message in the app. The synchronous endpoint remains available for older clients.
+
 `POST /v1/artwork/generate` uses the existing configured Codex CLI and ChatGPT
 session. It accepts `title`, `artist`, `album`, `album_description`, `genre`,
 `styles` and `moods`, and returns a square PNG of at most 10 MB and 2048 pixels
@@ -238,9 +261,13 @@ Audio, lyrics and local file paths are not part of this request.
 
 The prompt asks for a finished album front cover with the exact album title and
 artist name integrated as legible typography. A missing album name falls back to
-the song title; a missing artist is omitted. Genre, styles and moods guide the
-imagery, palette, composition and typography, while the album reading supplies
-the emotional context. No additional slogans, credits or branding are invented.
+the song title; a missing artist is omitted. Genre and the most specific subgenre
+set the visual language, composition and typography first. The album reading
+supplies themes and symbolism; the song title shapes a distinct visual concept.
+Moods refine this direction without reducing every quiet or sad song to the same
+cinematic scenery. Alternative and indie rock can use raw photography, graphic
+composition, print textures or collage, without defaulting to heavy-metal imagery.
+No additional slogans, credits or branding are invented.
 
 The app checks embedded and local artwork first, waits for the available album
 reading, and supplies song metadata as context. If an album reading is unavailable,
@@ -266,6 +293,8 @@ restores saved visuals offline even when generation is disabled, and holds only
 the selected image in memory. Changing songs does not cancel work already started.
 Cache entries remain subject to normal eviction. Requests share the existing
 four-process Codex limit and are not automatically retried after failure.
+Accepted job IDs also survive prompt changes: an unfinished job can recover using
+the current prompt while retaining its original status and image download URLs.
 
 `native_image_round_trip_is_cached` is an ignored test that generates one synthetic
 image through the real local CLI and verifies an identical second request uses

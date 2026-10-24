@@ -30,11 +30,12 @@ struct SonoraApp: App {
                 .onChange(of: automaticMeaning) { player.preparationPreferencesDidChange() }
                 .onChange(of: automaticArtwork) { player.preparationPreferencesDidChange() }
                 .onChange(of: metadata.configurationRevision) { player.retryQueuePreparation() }
-                .onChange(of: metadata.effectiveOffline) { if !metadata.effectiveOffline { player.retryQueuePreparation() } }
+                .onChange(of: metadata.effectiveOffline) { if !metadata.effectiveOffline { player.retryQueuePreparation(retryArtworkFailures: false) } }
                 .onChange(of: phase) {
+                    player.generatedArtwork?.setActive(phase == .active)
                     if phase == .active {
                         player.metadataArchive?.start()
-                        player.retryQueuePreparation()
+                        player.retryQueuePreparation(retryArtworkFailures: false)
                         Task { await player.linkImports.restore() }
                     }
                     else { player.save(); player.metadataArchive?.pause() }

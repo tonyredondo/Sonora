@@ -4,6 +4,21 @@ use sonora_proxy::config::Config;
 use tower::ServiceExt;
 
 #[tokio::test]
+async fn asynchronous_artwork_validates_before_accepting_a_job() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut config = Config::default();
+    config.cache.path = tmp.path().join("cache.sqlite");
+    config.metadata.path = tmp.path().join("metadata.sqlite");
+    let app = sonora_proxy::api::router(config).unwrap();
+    for (title, expected) in [("Quiet Horizon", 503), ("", 400)] {
+        let response = app.clone().oneshot(Request::builder().method("POST")
+            .uri("/v1/artwork/jobs").header("content-type", "application/json")
+            .body(Body::from(json!({"title":title,"artist":"","album":"","album_description":"","genre":"","styles":[],"moods":[]}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(response.status().as_u16(), expected);
+    }
+}
+
+#[tokio::test]
 async fn missing_artwork_endpoint_validates_input_before_codex() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mut config = Config::default();

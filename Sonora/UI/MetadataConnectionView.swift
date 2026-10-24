@@ -30,7 +30,7 @@ struct MetadataConnectionView: View {
                 SecureField("Token de acceso", text: $token)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .accessibilityIdentifier("metadataToken")
-                Text("Usa el token de tu servidor Sonora. Las claves de AcoustID y ElevenLabs se configuran en el servidor.")
+                Text("Usa el token de tu servidor Sonora.")
                     .font(.footnote).foregroundStyle(.secondary)
                 CompactActionRow(layout: .inline) {
                     Button { save() } label: {

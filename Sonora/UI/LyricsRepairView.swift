@@ -32,7 +32,7 @@ private func lyricRepairTimestamp(_ time:Double) -> String {
                     Text("Comparamos la letra con una transcripción de toda la canción. Tú eliges qué corregir y qué completar.")
                     Button(settings.effectiveOffline ? "Buscar análisis guardado" : "Analizar letra con IA") { Task { await session.analyze() } }
                         .disabled(!session.canAnalyze).accessibilityIdentifier("analyzeLyricsRepair")
-                    Text("Primero reutilizamos el análisis guardado. Si no existe, ElevenLabs analiza el audio y consume créditos de tu cuenta. Máximo: 10 minutos.")
+                    Text("Primero reutilizamos el análisis guardado. Si no existe, la IA analiza el audio y consume créditos de tu cuenta. Máximo: 10 minutos.")
                         .font(.footnote).foregroundStyle(.secondary)
                     if settings.endpoint.isEmpty { NavigationLink("Configurar asistente") { MetadataConnectionView() } }
                 }
@@ -46,7 +46,7 @@ private func lyricRepairTimestamp(_ time:Double) -> String {
             }
             if let review = session.review {
                 Section {
-                    Label(session.isCached ? "Análisis guardado · ElevenLabs" : "Análisis de ElevenLabs",systemImage:session.isCached ? "internaldrive" : "waveform")
+                    Label(session.isCached ? "Análisis guardado" : "Análisis por IA",systemImage:session.isCached ? "internaldrive" : "waveform")
                         .accessibilityIdentifier("repairAnalysisSource")
                     Toggle("Solo completar lo que falta",isOn:$session.onlyCompletions).accessibilityIdentifier("repairOnlyCompletions")
                     let visibleIDs = Set(session.visibleProposals.map(\.id))

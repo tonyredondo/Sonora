@@ -33,6 +33,10 @@ actor MusicToolsCache {
         try data.write(to: url, options: .atomic)
         if !personal { try prune() }
     }
+    func remove(key: String) throws {
+        let url = file(key, personal: false)
+        if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+    }
     private func prune() throws {
         let entries = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("cache"), includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey])
             .filter { $0.pathExtension == "json" }.map { ($0, try $0.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])) }
