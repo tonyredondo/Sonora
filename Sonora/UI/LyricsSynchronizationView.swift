@@ -31,11 +31,11 @@ struct LyricsSynchronizationView: View {
                         Text("Usaremos el texto de tu borrador, aunque ya tenga tiempos. La sincronización aparecerá en el editor para escucharla antes de guardar.").font(.footnote).foregroundStyle(.secondary)
                     }
                     Text(LyricsDocument(text: lyrics).isTimed
-                        ? "ElevenLabs sincroniza tu texto con el audio. Reutilizamos el análisis guardado si el audio y el texto coinciden; un análisis nuevo envía el audio y consume créditos. Máximo: 10 minutos."
-                        : "Buscamos gratis en LRCLIB. Si hay letra, ElevenLabs sincroniza los tiempos; si no, Scribe v2 la transcribe. La IA envía el audio y consume créditos de tu cuenta. Reutilizamos la caché. Máximo: 10 minutos.")
+                        ? "La IA sincroniza tu texto con el audio. Reutilizamos el análisis guardado si el audio y el texto coinciden; un análisis nuevo envía el audio y consume créditos. Máximo: 10 minutos."
+                        : "Buscamos gratis en LRCLIB. Si hay letra, la IA sincroniza los tiempos; si no, la transcribe. La IA envía el audio y consume créditos de tu cuenta. Reutilizamos la caché. Máximo: 10 minutos.")
                         .font(.footnote).foregroundStyle(.secondary)
                     if [current[.artist], current[.album]].contains(where: { ($0 ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
-                        Text("Faltan artista o álbum para buscar una edición en LRCLIB. Puedes completarlos en Información o usar ElevenLabs directamente.")
+                        Text("Faltan artista o álbum para buscar una edición en LRCLIB. Puedes completarlos en Información o usar la sincronización con IA directamente.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     if loading { ProgressView(phase).accessibilityIdentifier("lyricsSynchronizationProgress") }
@@ -78,8 +78,8 @@ struct LyricsSynchronizationView: View {
     private func sourceName(_ source: LyricsSynchronizationResult.Source) -> String {
         switch source {
         case .lrclib: "LRCLIB"
-        case .elevenlabs: "ElevenLabs"
-        case .elevenlabsTranscription: "ElevenLabs · Scribe v2"
+        case .elevenlabs: "Sincronización por IA"
+        case .elevenlabsTranscription: "Transcripción por IA"
         }
     }
     private func cancel() {

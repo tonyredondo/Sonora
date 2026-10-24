@@ -11,6 +11,7 @@ struct NowPlayingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     // Shared by the carousel and its toolbar action, independent of the song.
     @AppStorage("nowPlayingPage") private var selectedPage = NowPlayingPage.lyrics
+    @AppStorage("prepareQueueArtwork") private var automaticArtwork = true
     @State private var showQueue = false
     @State private var expandedPage: NowPlayingPage?
     @State private var lyricsScrollRequest = 0
@@ -18,6 +19,7 @@ struct NowPlayingView: View {
     @State private var showCharacter = false
     @State private var showTimer = false
     @State private var showAnalysisIssue = false
+    @State private var showArtworkIssue = false
     @State private var songAction: SongActionRequest?
     @GestureState private var downwardDrag: CGFloat = 0
     @State private var completedDrag: CGFloat?
@@ -60,6 +62,9 @@ struct NowPlayingView: View {
                 Button("Reintentar") { player.retrySongAnalysis() }
                 Button("Cancelar", role: .cancel) { }
             } message: { Text(player.songAnalysisIssue ?? "") }
+            .alert("No se pudo crear la portada", isPresented: $showArtworkIssue) {
+                Button("Listo", role: .cancel) { }
+            } message: { Text(player.generatedArtwork?.currentIssue ?? "") }
             .sheet(isPresented: $showQueue) { QueueView(player: player) }
             .sheet(item: $expandedPage, onDismiss: { lyricsScrollRequest += 1 }) { page in
                 if page == .album {
@@ -165,7 +170,38 @@ struct NowPlayingView: View {
                     }
                 }.font(.caption).foregroundStyle(.secondary)
             }
+            if player.currentDetails != nil, player.currentDetails?.artwork == nil,
+               let status = player.generatedArtwork?.currentStatus {
+                HStack(spacing: 6) {
+                    switch status {
+                    case .preparing, .connecting, .queued, .generating, .downloading:
+                        ProgressView().controlSize(.mini)
+                        Text(artworkProgressText(status))
+                    case .paused:
+                        Label("La portada se actualizará al volver", systemImage: "clock")
+                    case .waitingForConnection:
+                        Button("Portada pendiente de conexión", systemImage: "wifi.exclamationmark") { showArtworkIssue = true }
+                    case .waiting:
+                        if automaticArtwork { Label("Portada pendiente", systemImage: "photo") }
+                    case .failed:
+                        Button("No se pudo crear la portada", systemImage: "exclamationmark.circle") { showArtworkIssue = true }
+                    case .ready:
+                        EmptyView()
+                    }
+                }
+                .font(.caption).foregroundStyle(.secondary)
+                .accessibilityElement(children: .contain).accessibilityIdentifier("generatedArtworkStatus")
+            }
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func artworkProgressText(_ status: GeneratedArtworkStore.Status) -> String {
+        switch status {
+        case .connecting: "Consultando portada en el servidor…"
+        case .queued: "Portada en cola…"
+        case .generating: "Creando portada…"
+        case .downloading: "Descargando portada…"
+        default: "Preparando portada…"
+        }
     }
     private var transport: some View {
         PlayerGlassGroup {

@@ -43,9 +43,9 @@ public enum LyricsSynchronizationError: LocalizedError {
     case requiresLyrics, providerUnavailable, invalidAlignment, unsupportedDuration, noSpeech, noSpeechNotCached
     public var errorDescription: String? {
         switch self {
-        case .unsupportedDuration: "El análisis con ElevenLabs admite audio de entre un segundo y diez minutos."
-        case .requiresLyrics: "No hay una letra sincronizada compatible. Añade primero la letra para poder sincronizarla con ElevenLabs."
-        case .providerUnavailable: "ElevenLabs no está disponible. Comprueba que esté habilitado y que su API key esté configurada en el proxy."
+        case .unsupportedDuration: "El análisis con IA admite audio de entre un segundo y diez minutos."
+        case .requiresLyrics: "No hay una letra sincronizada compatible. Añade primero la letra para poder sincronizarla con IA."
+        case .providerUnavailable: "El servicio de análisis no está disponible. Comprueba su configuración en el servidor."
         case .invalidAlignment: "Los tiempos recibidos no corresponden a esta letra o a este audio. No se ha cambiado la canción."
         case .noSpeech: "No se han encontrado palabras en el audio. Este resultado queda guardado para evitar repetir la transcripción."
         case .noSpeechNotCached: "No se han encontrado palabras en el audio y no se pudo guardar el resultado. Volver a intentarlo puede consumir créditos."

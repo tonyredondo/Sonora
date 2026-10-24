@@ -236,7 +236,7 @@ final class LyricsRepairUITests: XCTestCase {
         XCTAssertTrue(analyze.waitForExistence(timeout:10)); analyze.tap()
         let issue = app.descendants(matching:.any).matching(identifier:"repairIssue").firstMatch
         XCTAssertTrue(issue.waitForExistence(timeout:25))
-        XCTAssertTrue(issue.label.contains("ElevenLabs") && issue.label.contains("quota_exceeded"), issue.label)
+        XCTAssertTrue(issue.label.contains("El servicio de análisis") && issue.label.contains("quota_exceeded"), issue.label)
         XCTAssertTrue(issue.label.contains("502") && issue.label.contains("429"), issue.label)
         XCTAssertTrue(issue.label.contains("Referencia:"), issue.label)
         XCTAssertFalse(issue.label.contains("private-lyrics") || issue.label.contains("synthetic-eleven-key"))

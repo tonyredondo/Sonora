@@ -3,6 +3,7 @@
 pub mod album_interpretation;
 pub mod alignment;
 pub mod api;
+pub mod artwork_jobs;
 pub mod audio_character;
 mod audio_job;
 pub mod cache;

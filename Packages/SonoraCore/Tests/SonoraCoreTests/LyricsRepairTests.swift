@@ -80,7 +80,7 @@ final class LyricsRepairTests: XCTestCase {
         let written = try review.applying([proposal.id:.init(text:proposal.suggested)])
         let document = LyricsDocument(text:written)
         XCTAssertTrue(document.isAITranscribed && document.isAIRepaired)
-        XCTAssertEqual(document.attribution,"Transcrita por IA · ElevenLabs")
+        XCTAssertEqual(document.attribution,"Transcrita por IA")
         XCTAssertEqual(document.sliced(from:0,duration:8).attribution,document.attribution)
     }
     func testUnrecognizedBlockCanBeAuditionedThroughItsLastOriginalLine() throws {

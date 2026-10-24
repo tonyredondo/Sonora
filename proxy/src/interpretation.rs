@@ -152,17 +152,29 @@ pub enum InterpretationError {
     #[error("lyric result cache is unavailable")]
     Cache,
 }
+impl InterpretationError {
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            Self::Invalid => "invalid_interpretation_input",
+            Self::Disabled => "codex_disabled",
+            Self::Busy => "codex_busy",
+            Self::Timeout => "codex_timeout",
+            Self::Limit => "codex_limit",
+            Self::Unavailable => "codex_unavailable",
+            Self::InvalidResponse => "codex_invalid_response",
+            Self::Cache => "codex_cache_unavailable",
+        }
+    }
+}
 impl IntoResponse for InterpretationError {
     fn into_response(self) -> Response {
-        let (status, code) = match self {
-            Self::Invalid => (StatusCode::BAD_REQUEST, "invalid_interpretation_input"),
-            Self::Disabled => (StatusCode::SERVICE_UNAVAILABLE, "codex_disabled"),
-            Self::Busy => (StatusCode::TOO_MANY_REQUESTS, "codex_busy"),
-            Self::Timeout => (StatusCode::GATEWAY_TIMEOUT, "codex_timeout"),
-            Self::Limit => (StatusCode::TOO_MANY_REQUESTS, "codex_limit"),
-            Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "codex_unavailable"),
-            Self::InvalidResponse => (StatusCode::BAD_GATEWAY, "codex_invalid_response"),
-            Self::Cache => (StatusCode::SERVICE_UNAVAILABLE, "codex_cache_unavailable"),
+        let code = self.code();
+        let status = match self {
+            Self::Invalid => StatusCode::BAD_REQUEST,
+            Self::Disabled | Self::Unavailable | Self::Cache => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Busy | Self::Limit => StatusCode::TOO_MANY_REQUESTS,
+            Self::Timeout => StatusCode::GATEWAY_TIMEOUT,
+            Self::InvalidResponse => StatusCode::BAD_GATEWAY,
         };
         tracing::warn!(error_code = code, "Codex lyric request failed");
         (
@@ -180,7 +192,16 @@ pub struct InterpretationService {
     queue: Arc<Semaphore>,
     worker: Arc<Semaphore>,
     flights: Arc<Mutex<HashMap<String, Weak<AsyncMutex<()>>>>>,
+    #[cfg(test)]
+    pub(crate) image_generator: Option<TestImageGenerator>,
 }
+#[cfg(test)]
+pub(crate) type TestImageGenerator = Arc<
+    dyn Fn() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<bytes::Bytes, InterpretationError>> + Send>,
+        > + Send
+        + Sync,
+>;
 pub(crate) struct CodexPrompt {
     pub model: &'static str,
     pub effort: &'static str,
@@ -193,6 +214,13 @@ impl InterpretationService {
     pub async fn generate_artwork(
         &self,
         input: crate::generated_artwork::ArtworkInput,
+    ) -> Result<bytes::Bytes, InterpretationError> {
+        self.generate_artwork_notifying(input, || {}).await
+    }
+    pub(crate) async fn generate_artwork_notifying(
+        &self,
+        input: crate::generated_artwork::ArtworkInput,
+        started: impl FnOnce() + Send,
     ) -> Result<bytes::Bytes, InterpretationError> {
         use InterpretationError as E;
         input.validate()?;
@@ -221,7 +249,8 @@ impl InterpretationService {
                 return Ok(image);
             }
             let _worker = self.worker.acquire().await.map_err(|_| E::Unavailable)?;
-            let image = crate::generated_artwork::run(&self.config, &input).await?;
+            started();
+            let image = self.run_image(&input).await?;
             let now = unix_time();
             self.cache
                 .put(
@@ -239,12 +268,28 @@ impl InterpretationService {
                 )
                 .await
                 .map_err(|_| E::Cache)?;
+            if self.cached_artwork(&key).await?.is_none() {
+                return Err(E::Cache);
+            }
             Ok(image)
         })
         .await
         .map_err(|_| E::Timeout)?
     }
-    async fn cached_artwork(&self, key: &str) -> Result<Option<bytes::Bytes>, InterpretationError> {
+    async fn run_image(
+        &self,
+        input: &crate::generated_artwork::ArtworkInput,
+    ) -> Result<bytes::Bytes, InterpretationError> {
+        #[cfg(test)]
+        if let Some(generate) = &self.image_generator {
+            return generate().await;
+        }
+        crate::generated_artwork::run(&self.config, input).await
+    }
+    pub(crate) async fn cached_artwork(
+        &self,
+        key: &str,
+    ) -> Result<Option<bytes::Bytes>, InterpretationError> {
         Ok(self
             .cache
             .get(key)
@@ -260,6 +305,8 @@ impl InterpretationService {
             queue: Arc::new(Semaphore::new(8)),
             worker: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
             flights: Arc::default(),
+            #[cfg(test)]
+            image_generator: None,
         }
     }
     /// Both lyric tools share capacity, process isolation and cache commit rules.

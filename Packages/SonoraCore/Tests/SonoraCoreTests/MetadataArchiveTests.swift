@@ -52,7 +52,7 @@ final class MetadataArchiveTests: XCTestCase {
         let copies = try await allCopies(reopened,server:endpoint)
         XCTAssertEqual(Set(copies.map { $0.values["album"] ?? "" }), ["Original","Reissue"])
         XCTAssertEqual(copies.first?.artwork, Data([0xff,0xd8,0xff,0xd9]))
-        XCTAssertTrue(copies.allSatisfy { LyricsDocument(text:$0.values["lyrics"] ?? "").attribution == "Transcrita por IA · ElevenLabs" })
+        XCTAssertTrue(copies.allSatisfy { LyricsDocument(text:$0.values["lyrics"] ?? "").attribution == "Transcrita por IA" })
         let pending = try await reopened.pendingCount(server:endpoint)
         XCTAssertEqual(pending,3)
         let otherServer = try await allCopies(reopened,server:URL(string:"http://127.0.0.1:8090")!)

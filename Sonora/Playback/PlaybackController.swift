@@ -222,12 +222,12 @@ final class PlaybackController: NSObject {
         refreshQueuePreparation()
         prepareCurrentSongTools()
     }
-    func retryQueuePreparation() {
+    func retryQueuePreparation(retryArtworkFailures: Bool = true) {
         audioCharacter.retry()
         lyricTranslations.retryAutomatic()
         lyricInterpretations.retryAutomatic()
         albumInterpretations.retry()
-        generatedArtwork?.retry()
+        generatedArtwork?.retry(failed: retryArtworkFailures)
         refreshQueuePreparation(retry: true)
         retrySongAnalysis()
     }
