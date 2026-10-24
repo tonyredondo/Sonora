@@ -2,7 +2,7 @@ import Foundation
 
 /// The phone and CarPlay scenes share one transport, including on a car-only launch.
 @MainActor final class AppServices {
-    static let shared = AppServices(player: PlaybackController(metadataArchive:.shared))
+    static let shared = AppServices(player: PlaybackController(metadataArchive:.shared, generatedArtwork: GeneratedArtworkStore()))
     let player: PlaybackController
     private var restoration: Task<Void, Never>?
     private var receivedAudioFile = false

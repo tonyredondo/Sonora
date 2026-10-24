@@ -1,6 +1,6 @@
 import Foundation
 
-/// Shared by translation and meaning. A waiting worker chooses its next job
+/// Shared by translation, meaning and generated artwork. A waiting worker chooses its next job
 /// only after receiving a slot, so queue edits can still remove pending work.
 @MainActor
 final class CodexRequestPool {

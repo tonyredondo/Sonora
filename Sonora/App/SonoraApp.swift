@@ -12,6 +12,7 @@ struct SonoraApp: App {
     @AppStorage("prepareQueueCharacter") private var automaticCharacter = true
     @AppStorage("prepareQueueTranslation") private var automaticTranslation = true
     @AppStorage("prepareQueueMeaning") private var automaticMeaning = true
+    @AppStorage("prepareQueueArtwork") private var automaticArtwork = true
     private var metadata: MetadataAssistantSettings { .shared }
     @Environment(\.scenePhase) private var phase
     var body: some Scene {
@@ -27,6 +28,7 @@ struct SonoraApp: App {
                 .onChange(of: automaticCharacter) { player.preparationPreferencesDidChange() }
                 .onChange(of: automaticTranslation) { player.preparationPreferencesDidChange() }
                 .onChange(of: automaticMeaning) { player.preparationPreferencesDidChange() }
+                .onChange(of: automaticArtwork) { player.preparationPreferencesDidChange() }
                 .onChange(of: metadata.configurationRevision) { player.retryQueuePreparation() }
                 .onChange(of: metadata.effectiveOffline) { if !metadata.effectiveOffline { player.retryQueuePreparation() } }
                 .onChange(of: phase) {

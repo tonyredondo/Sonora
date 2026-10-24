@@ -90,6 +90,7 @@ All JSON provider responses use an envelope with `provider`, `sources` (upstream
 | POST | `/v1/lyrics/interpret` | JSON `lyrics`, `language` and optional song `context`; cached literary interpretation via the host user's Codex session, GPT-6-Astra at `medium` |
 | POST | `/v1/identify` | JSON `fingerprint` and `duration`; AcoustID recording IDs and scores |
 | GET | `/v1/artwork/{release_mbid}` | Front artwork at the provider's 500-pixel variant; downloaded only when requested |
+| POST | `/v1/artwork/generate` | Song/album visual context; native Codex-generated PNG, reused from cache |
 | POST | `/v1/jobs` | Create a bounded batch; returns 202 and a `Location` to poll |
 | GET | `/v1/jobs/{id}` | State, total, completed count, individual results and provider warnings |
 | DELETE | `/v1/jobs/{id}` | Cancel unfinished work; the final snapshot remains available until expiry/eviction |
@@ -200,9 +201,9 @@ contains `lines` with the same IDs in the same order, plus `model` and `effort`.
 Every ID must occur exactly once with nonempty translated text. Source timestamps
 are never sent or generated. The client rejects incomplete or mismatched output.
 
-Up to four Codex processes run concurrently across all three routes, with at most eight
+Up to four Codex processes run concurrently across all four routes, with at most eight
 active/waiting requests. The app also shares a four-request limit between its
-translation, song interpretation and album interpretation queues.
+translation, song interpretation, album interpretation and generated artwork queues.
 The process deadline is 180 seconds and the total queue deadline 210 seconds.
 The proxy does not automatically start another Codex invocation after failure.
 Cancelling the owning task stops its child process. Requests for the same cache key
@@ -224,6 +225,52 @@ Both lyric tools require an updated proxy. Older proxies return an explicit erro
 for the translation route instead of silently reusing an Apple translation.
 Update the app and proxy together when changing the translation model: the client
 validates the response model and effort as well as the line IDs.
+
+### Generated artwork
+
+`POST /v1/artwork/generate` uses the existing configured Codex CLI and ChatGPT
+session. It accepts `title`, `artist`, `album`, `album_description`, `genre`,
+`styles` and `moods`, and returns a square PNG of at most 10 MB and 2048 pixels
+per edge. The title is required; ordinary text fields are limited to 4096 UTF-8
+bytes, the album description to 32 KiB, and styles/moods to two entries using the
+same vocabulary as song interpretations. JSON bodies are capped at 64 KiB.
+Audio, lyrics and local file paths are not part of this request.
+
+The prompt asks for a finished album front cover with the exact album title and
+artist name integrated as legible typography. A missing album name falls back to
+the song title; a missing artist is omitted. Genre, styles and moods guide the
+imagery, palette, composition and typography, while the album reading supplies
+the emotional context. No additional slogans, credits or branding are invented.
+
+The app checks embedded and local artwork first, waits for the available album
+reading, and supplies song metadata as context. If an album reading is unavailable,
+the remaining metadata can still produce a visual. Original audio and artwork
+are not edited. Image jobs are installed by the app's shared composition root;
+standalone playback controllers need an explicit artwork store.
+
+The image worker uses GPT-6.1 Sol with medium reasoning and the default service
+tier to call Codex's native image-generation capability. This requires an installed
+CLI with native image generation and its bundled code-mode host (verified with
+0.162.0). Only this worker enables those capabilities; text workers keep their
+existing tool restrictions. Shell execution, plugins, apps, browsing and multi-agent tools are disabled. A completed request can return only
+a regular native PNG artifact in its own CLI thread namespace. Other paths,
+symlinks, oversized images and incomplete turns are rejected.
+
+The proxy retains generated PNG bytes in its existing bounded SQLite cache,
+keyed by the complete visual context, prompt and generation version. New server
+requests use the album-sleeve cache generation (`codex-artwork-v2`) rather than
+earlier typography-free images. Previously saved images on the device are kept;
+this prompt change does not automatically regenerate them. The app keeps a
+separate image cache (256 MB, up to 512 entries) and file-fingerprint bindings,
+restores saved visuals offline even when generation is disabled, and holds only
+the selected image in memory. Changing songs does not cancel work already started.
+Cache entries remain subject to normal eviction. Requests share the existing
+four-process Codex limit and are not automatically retried after failure.
+
+`native_image_round_trip_is_cached` is an ignored test that generates one synthetic
+image through the real local CLI and verifies an identical second request uses
+the cached bytes. Set `SONORA_IMAGE_CAPTURE_PATH` to save that generated PNG for
+visual inspection. Run it only with authorization to consume the user's Codex plan.
 
 Ordinary tests use a local stub CLI. The ignored
 `live_codex_astra_medium_interpretation_and_cache` test uses only synthetic text and

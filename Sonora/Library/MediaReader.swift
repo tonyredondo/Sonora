@@ -11,7 +11,7 @@ struct TrackDetails {
     let duration: Double
     let format: String
     let sampleRate: Double
-    let artwork: UIImage?
+    var artwork: UIImage?
     var tags: [MetadataField: String] = [:]
     var lyrics = LyricsDocument(text: "")
     var lyricsSource: String? = nil

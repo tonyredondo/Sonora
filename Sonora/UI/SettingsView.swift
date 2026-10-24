@@ -59,6 +59,7 @@ struct QueuePreparationSettingsView: View {
     @AppStorage("prepareQueueCharacter") private var character = true
     @AppStorage("prepareQueueTranslation") private var translation = true
     @AppStorage("prepareQueueMeaning") private var meaning = true
+    @AppStorage("prepareQueueArtwork") private var artwork = true
 
     var body: some View {
         Form {
@@ -67,8 +68,9 @@ struct QueuePreparationSettingsView: View {
                 Toggle("Estilo y ambiente", isOn: $character).accessibilityIdentifier("prepareQueueCharacter")
                 Toggle("Traducción", isOn: $translation).accessibilityIdentifier("prepareQueueTranslation")
                 Toggle("Significado de canciones y álbumes", isOn: $meaning).accessibilityIdentifier("prepareQueueMeaning")
+                Toggle("Generar portadas cuando falten", isOn: $artwork).accessibilityIdentifier("prepareQueueArtwork")
             } header: { Text("Toda la cola de reproducción") } footer: {
-                Text("Damos prioridad a la canción actual. Traducción y significado comparten hasta cuatro solicitudes simultáneas; el análisis de audio se prepara canción a canción. Los resultados se guardan para reutilizarlos. Al desactivar una función, terminan los análisis que ya hayan empezado.")
+                Text("Damos prioridad a la canción actual. Traducción, significado y portadas comparten hasta cuatro solicitudes simultáneas; el análisis de audio se prepara canción a canción. Los resultados se guardan para reutilizarlos. Al desactivar una función, terminan los análisis que ya hayan empezado.")
             }
             Section {
                 Text("Estilo y ambiente envían hasta 90 segundos de audio a tu servidor de Sonora, donde se analizan con Essentia sin servicios externos. Las etiquetas se guardan para consultarlas sin conexión.")
@@ -77,6 +79,16 @@ struct QueuePreparationSettingsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
                 Text("La preparación avanza mientras iOS permite ejecutar Sonora. Si el sistema suspende la app, continúa al volver a abrirla.")
                     .font(.footnote).foregroundStyle(.secondary)
+                Text("Si falta una portada, Codex crea una imagen a partir de la descripción disponible del álbum, el título y las etiquetas. Consume uso de tu plan y se guarda para verla sin conexión. No modifica el archivo ni sustituye una portada existente.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if artwork, let pending = player.generatedArtwork?.pendingCount, pending > 0 {
+                    Text("Portadas pendientes: \(pending)").font(.footnote).foregroundStyle(.secondary)
+                }
+                if let issue = player.generatedArtwork?.automaticIssue {
+                    Text("Portadas en pausa: \(issue)").foregroundStyle(.secondary)
+                } else if let issue = player.generatedArtwork?.currentIssue {
+                    Text(issue).foregroundStyle(.secondary)
+                }
                 if player.queuePreparation.isRunning {
                     ProgressView("Preparando canciones · \(player.queuePreparation.pendingCount) pendientes")
                 }

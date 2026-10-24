@@ -39,6 +39,7 @@ struct NowPlayingView: View {
                         .layoutPriority(-1)
                         .contentShape(.rect)
                         .accessibilityElement(children:.contain).accessibilityLabel("Carátula").accessibilityIdentifier("playerArtwork")
+                        .accessibilityValue(player.currentDetails?.artwork == nil ? "Sin portada" : "Portada disponible")
                     trackInformation(compact: compact).fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 20)
                     PlaybackTimeline(player: player, tint: theme.accent).fixedSize(horizontal: false, vertical: true)

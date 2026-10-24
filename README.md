@@ -12,6 +12,7 @@ The [metadata assistant](docs/metadata-assistant.md) connects to the [Rust metad
 
 - Recursive folder scanning in natural relative-path order, an editable queue, and automatic advancement.
 - Open a single audio file from **Files → Open With → Sonora** and play the original with its metadata, artwork and lyrics. No managed copy or library import is created. File bookmarks restore the last queue paused; they do not grant access to neighboring files.
+- Generate a song visual with the existing Codex session when no embedded or local cover is available, using the album reading, title and available tags. Results are cached for offline use without modifying the original file. Automatic generation can be disabled in queue preparation settings.
 - Play/pause, seek, previous/next, shuffle, repeat, mini-player, Now Playing, and system output selection.
 - Optional ten-band EQ, six presets, manual curves, preamplification, and remembered settings.
 - Continuous playback by default, adjustable Crossfade, and an optional local beat-aligned automatic-mix beta.

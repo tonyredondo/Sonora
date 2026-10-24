@@ -30,6 +30,7 @@ struct QueuePreparationPreferences: Equatable {
     let character: Bool
     let translation: Bool
     let meaning: Bool
+    let artwork: Bool
     let source: String
     let target: String
     let meaningLanguage: String
@@ -39,6 +40,7 @@ struct QueuePreparationPreferences: Equatable {
         character = defaults.object(forKey: "prepareQueueCharacter") == nil || defaults.bool(forKey: "prepareQueueCharacter")
         translation = defaults.object(forKey: "prepareQueueTranslation") == nil || defaults.bool(forKey: "prepareQueueTranslation")
         meaning = defaults.object(forKey: "prepareQueueMeaning") == nil || defaults.bool(forKey: "prepareQueueMeaning")
+        artwork = defaults.object(forKey: "prepareQueueArtwork") == nil || defaults.bool(forKey: "prepareQueueArtwork")
         source = defaults.string(forKey: "lyricTranslationSource") ?? "auto"
         target = defaults.string(forKey: "lyricTranslationTarget") ?? "es"
         meaningLanguage = defaults.string(forKey: "lyricMeaningLanguage") ?? "es"

@@ -120,6 +120,10 @@ final class MusicLibrary {
         indexRequests.append(IndexRequest(source: source, folder: folder, tracks: tracks))
         startNextIndex()
     }
+    /// Consumers needing a complete album wait without delaying playback.
+    func waitForIndexing() async {
+        while isIndexing, let task = indexTask { await task.value }
+    }
     private func startNextIndex() {
         guard !isIndexing, !indexRequests.isEmpty else { return }
         let request = indexRequests.removeFirst()
