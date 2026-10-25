@@ -47,6 +47,11 @@ public actor MetadataLookupCache {
         } catch let error as MetadataLookupError { throw error }
         catch { throw MetadataLookupError.cacheUnavailable }
     }
+    /// Prevent an obsolete producer from writing after the user clears its cache.
+    public func storeUnlessCancelled(_ data: Data, key: String, status: Int) throws {
+        try Task.checkCancellation()
+        try store(data, key: key, status: status)
+    }
     public func clear() throws { for file in try ownedFiles() { try FileManager.default.removeItem(at: file.url) } }
     public func size() throws -> Int { try ownedFiles().reduce(0) { $0 + $1.size } }
     private func ownedFiles() throws -> [(url: URL, size: Int, date: Date)] {

@@ -180,16 +180,41 @@ struct ListeningHistoryView: View {
 struct CachedCollectionArtwork: View {
     let library: MusicLibrary
     let song: CollectionSong?
+    var generatedArtwork: GeneratedArtworkStore? = nil
     var cornerRadius: CGFloat = 12
     @State private var image: UIImage?
+    @State private var loadedSongID: String?
+    private struct LoadKey: Equatable {
+        let songID: String?
+        let artworkKey: String?
+        let modified: Date?
+        let revision: Int
+    }
     var body: some View {
         ArtworkView(image: image, cornerRadius: cornerRadius)
-            .task(id: song?.artworkKey) {
-                guard let key = song?.artworkKey, key == (key as NSString).lastPathComponent else { image = nil; return }
-                let url = library.artworkDirectory.appendingPathComponent(key)
-                let data = await Task.detached(priority: .utility) { try? Data(contentsOf: url) }.value
+            .task(id: LoadKey(songID: song?.id, artworkKey: song?.artworkKey, modified: song?.modified, revision: generatedArtwork?.thumbnailRevision ?? 0)) {
+                if loadedSongID != song?.id { image = nil }
+                loadedSongID = song?.id
+                let loaded = await loadImage()
                 guard !Task.isCancelled else { return }
-                image = data.flatMap(UIImage.init(data:))
+                image = loaded
             }
+    }
+    private func loadImage() async -> UIImage? {
+        guard let song else { return nil }
+        if let key = song.artworkKey, key == (key as NSString).lastPathComponent {
+            let url = library.artworkDirectory.appendingPathComponent(key)
+            let data = await Task.detached(priority: .utility) { try? Data(contentsOf: url) }.value
+            if let image = data.flatMap(UIImage.init(data:)) { return image }
+        }
+        guard !Task.isCancelled, let generatedArtwork, let track = song.audioTrack else { return nil }
+        do {
+            let folder = try library.access(song.sourceID)
+            let url = track.url(in: folder.url)
+            guard folder.permits(url) else { return nil }
+            let owner = GeneratedArtworkStore.owner(track, folder: folder)
+            let fingerprint = try await Task.detached(priority: .utility) { try FileFingerprint(track.url(in: folder.url)) }.value
+            return try await generatedArtwork.cachedThumbnail(owner: owner, fingerprint: fingerprint)
+        } catch { return nil }
     }
 }

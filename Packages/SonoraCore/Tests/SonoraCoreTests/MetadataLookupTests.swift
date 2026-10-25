@@ -151,6 +151,19 @@ final class MetadataLookupTests: XCTestCase {
         catch MetadataLookupError.unauthorized { }
     }
 
+    func testCancelledProducerCannotRepopulateAClearedCache() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let cache = MetadataLookupCache(directory: root)
+        let producer = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await cache.storeUnlessCancelled(Data("obsolete".utf8), key: "image", status: 200)
+        }
+        do { try await producer.value; XCTFail("A cancelled producer must not write") }
+        catch is CancellationError { }
+        let size = try await cache.size(); XCTAssertEqual(size, 0)
+        try await cache.storeUnlessCancelled(Data("fresh".utf8), key: "image", status: 200)
+        let entry = try await cache.read(key: "image"); XCTAssertEqual(entry?.data, Data("fresh".utf8))
+    }
     func testCacheEvictsOldestAndPreservesUnrelatedFiles() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let unrelated = root.appendingPathComponent("keep.txt"); try Data("Keep".utf8).write(to: unrelated)

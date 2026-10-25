@@ -259,7 +259,7 @@ struct CollectionSongRow: View {
     }
     private var information: some View {
         HStack(spacing: 12) {
-            CachedCollectionArtwork(library: player.library, song: song).frame(width: 52, height: 52)
+            CachedCollectionArtwork(library: player.library, song: song, generatedArtwork: player.generatedArtwork).frame(width: 52, height: 52)
             VStack(alignment: .leading, spacing: 4) {
                 Text(song.title).font(.body.weight(.medium)).lineLimit(2)
                 Text(song.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)

@@ -62,9 +62,9 @@ struct NowPlayingView: View {
                 Button("Reintentar") { player.retrySongAnalysis() }
                 Button("Cancelar", role: .cancel) { }
             } message: { Text(player.songAnalysisIssue ?? "") }
-            .alert("No se pudo crear la portada", isPresented: $showArtworkIssue) {
+            .alert("Estado de la portada", isPresented: $showArtworkIssue) {
                 Button("Listo", role: .cancel) { }
-            } message: { Text(player.generatedArtwork?.currentIssue ?? "") }
+            } message: { Text(player.generatedArtwork?.currentIssue ?? player.generatedArtwork?.automaticIssue ?? "") }
             .sheet(isPresented: $showQueue) { QueueView(player: player) }
             .sheet(item: $expandedPage, onDismiss: { lyricsScrollRequest += 1 }) { page in
                 if page == .album {
@@ -180,9 +180,13 @@ struct NowPlayingView: View {
                     case .paused:
                         Label("La portada se actualizará al volver", systemImage: "clock")
                     case .waitingForConnection:
-                        Button("Portada pendiente de conexión", systemImage: "wifi.exclamationmark") { showArtworkIssue = true }
+                        Button("Reintentando conexión de portada…", systemImage: "wifi.exclamationmark") { showArtworkIssue = true }
                     case .waiting:
-                        if automaticArtwork { Label("Portada pendiente", systemImage: "photo") }
+                        if automaticArtwork {
+                            if player.generatedArtwork?.automaticIssue != nil {
+                                Button("Portadas en pausa", systemImage: "exclamationmark.circle") { showArtworkIssue = true }
+                            } else { Label("Portada pendiente", systemImage: "photo") }
+                        }
                     case .failed:
                         Button("No se pudo crear la portada", systemImage: "exclamationmark.circle") { showArtworkIssue = true }
                     case .ready:

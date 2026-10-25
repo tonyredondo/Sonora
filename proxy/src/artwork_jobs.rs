@@ -13,8 +13,11 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
+
+const MAX_AUTOMATIC_ATTEMPTS: u8 = 3;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -35,6 +38,14 @@ pub struct Snapshot {
 struct Record {
     input: ArtworkInput,
     snapshot: Snapshot,
+    #[serde(default = "legacy_attempts")]
+    attempts: u8,
+    #[serde(default)]
+    retry_at: Option<u64>,
+}
+// Older records did not count attempts. Reserve their original generation.
+fn legacy_attempts() -> u8 {
+    1
 }
 
 #[derive(Debug)]
@@ -66,6 +77,7 @@ struct Inner {
     admission: AsyncMutex<()>,
     states: Mutex<HashMap<String, Snapshot>>,
     workers: Arc<Semaphore>,
+    retry_delays: [Duration; 2],
 }
 #[derive(Clone)]
 pub struct ArtworkJobs(Arc<Inner>);
@@ -79,6 +91,7 @@ impl ArtworkJobs {
             admission: AsyncMutex::new(()),
             states: Mutex::default(),
             workers: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
+            retry_delays: [Duration::from_secs(30), Duration::from_secs(90)],
         }))
     }
     pub async fn create(
@@ -160,10 +173,24 @@ impl ArtworkJobs {
             if record.snapshot.id != id {
                 return Err(InterpretationError::Cache.into());
             }
-            if !retry_failed && record.snapshot.state == State::Failed {
+            if !retry_failed
+                && record.snapshot.state == State::Failed
+                && (!retryable(record.snapshot.error.as_deref().unwrap_or(""))
+                    || record.attempts >= MAX_AUTOMATIC_ATTEMPTS)
+            {
                 return Ok(record.snapshot.clone());
             }
         }
+        let attempts = if retry_failed {
+            0
+        } else {
+            record.as_ref().map_or(0, |record| record.attempts)
+        };
+        let retry_at = if retry_failed {
+            None
+        } else {
+            record.as_ref().and_then(|record| record.retry_at)
+        };
         let input = input
             .or_else(|| record.map(|record| record.input))
             .ok_or(JobError::NotFound)?;
@@ -191,6 +218,8 @@ impl ArtworkJobs {
         let record = Record {
             input,
             snapshot: snapshot.clone(),
+            attempts,
+            retry_at,
         };
         self.save(&record).await?;
         self.0
@@ -239,32 +268,71 @@ impl ArtworkJobs {
     }
     async fn run(&self, mut record: Record) {
         let started = std::time::Instant::now();
-        let Ok(_worker) = self.0.workers.clone().acquire_owned().await else {
-            return;
-        };
-        let jobs = self.clone();
-        let id = record.snapshot.id.clone();
-        let mut result = self
-            .0
-            .service
-            .generate_artwork_notifying(record.input.clone(), move || {
-                if let Ok(mut states) = jobs.0.states.lock() {
-                    if let Some(state) = states.get_mut(&id) {
-                        state.state = State::Running;
-                        tracing::info!(job_id = %id, "Artwork generation started");
+        if let Some(at) = record.retry_at.take() {
+            tokio::time::sleep(Duration::from_secs(at.saturating_sub(unix_time()))).await;
+        }
+        loop {
+            if record.attempts >= MAX_AUTOMATIC_ATTEMPTS {
+                record.snapshot.state = State::Failed;
+                record.snapshot.error = Some("codex_unavailable".into());
+                break;
+            }
+            // A retry delay never reserves a generation slot needed by another song.
+            let result = {
+                let Ok(_worker) = self.0.workers.clone().acquire_owned().await else {
+                    return;
+                };
+                record.attempts += 1;
+                record.retry_at = None;
+                if self.save(&record).await.is_err() {
+                    Err(InterpretationError::Cache)
+                } else {
+                    let jobs = self.clone();
+                    let id = record.snapshot.id.clone();
+                    let result = self
+                        .0
+                        .service
+                        .generate_artwork_notifying(record.input.clone(), move || {
+                            if let Ok(mut states) = jobs.0.states.lock() {
+                                if let Some(state) = states.get_mut(&id) {
+                                    state.state = State::Running;
+                                    tracing::info!(job_id = %id, "Artwork generation started");
+                                }
+                            }
+                        })
+                        .await;
+                    match result {
+                        Ok(_) => self.preserve_job_image(&record).await,
+                        Err(error) => Err(error),
                     }
                 }
-            })
-            .await
-            .map(|_| ());
-        if result.is_ok() {
-            result = self.preserve_job_image(&record).await;
-        }
-        match result {
-            Ok(_) => record.snapshot.state = State::Completed,
-            Err(error) => {
-                record.snapshot.state = State::Failed;
-                record.snapshot.error = Some(error.code().into());
+            };
+            match result {
+                Ok(()) => {
+                    record.snapshot.state = State::Completed;
+                    break;
+                }
+                Err(error) => {
+                    if retryable(error.code()) && record.attempts < MAX_AUTOMATIC_ATTEMPTS {
+                        let delay = self.0.retry_delays[usize::from(record.attempts - 1)];
+                        record.snapshot.state = State::Queued;
+                        record.snapshot.error = None;
+                        record.retry_at = Some(unix_time() + delay.as_secs());
+                        if self.save(&record).await.is_ok() {
+                            if let Ok(mut states) = self.0.states.lock() {
+                                states.insert(record.snapshot.id.clone(), record.snapshot.clone());
+                            }
+                            tracing::warn!(job_id = %record.snapshot.id, error_code = error.code(), attempt = record.attempts, retry_seconds = delay.as_secs(), "Artwork retry scheduled");
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+                        record.snapshot.error = Some("codex_cache_unavailable".into());
+                    } else {
+                        record.snapshot.error = Some(error.code().into());
+                    }
+                    record.snapshot.state = State::Failed;
+                    break;
+                }
             }
         }
         if self.save(&record).await.is_err() {
@@ -310,6 +378,12 @@ impl ArtworkJobs {
         }
         Ok(())
     }
+}
+fn retryable(code: &str) -> bool {
+    matches!(
+        code,
+        "codex_unavailable" | "codex_timeout" | "codex_busy" | "codex_invalid_response"
+    )
 }
 fn validate_id(id: &str) -> Result<(), InterpretationError> {
     if id.len() != 64
@@ -365,7 +439,10 @@ mod tests {
             cache.clone(),
         );
         service.image_generator = Some(generator);
-        ArtworkJobs::new(service, cache, true, limit)
+        let mut jobs = ArtworkJobs::new(service, cache, true, limit);
+        Arc::get_mut(&mut jobs.0).unwrap().retry_delays =
+            [Duration::from_millis(30), Duration::from_millis(90)];
+        jobs
     }
     async fn until(jobs: &ArtworkJobs, id: &str, state: State) -> Snapshot {
         tokio::time::timeout(Duration::from_secs(3), async {
@@ -424,6 +501,192 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
     #[tokio::test]
+    async fn transient_failure_recovers_without_a_second_submission() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = Cache::open(&tmp.path().join("cache.sqlite"), 1_000_000, 100).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let generator: TestImageGenerator = Arc::new({
+            let calls = calls.clone();
+            move || {
+                let attempt = calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    if attempt == 0 {
+                        Err(InterpretationError::Unavailable)
+                    } else {
+                        Ok(png())
+                    }
+                })
+            }
+        });
+        let jobs = jobs(cache, generator, 4);
+        let accepted = jobs.create(input("Transient"), false).await.unwrap();
+        until(&jobs, &accepted.id, State::Completed).await;
+        assert_eq!(jobs.image(&accepted.id).await.unwrap(), png());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+    #[tokio::test]
+    async fn exhausted_retry_budget_survives_reopening_and_status_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = Cache::open(&tmp.path().join("cache.sqlite"), 1_000_000, 100).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let generator: TestImageGenerator = Arc::new({
+            let calls = calls.clone();
+            move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Err(InterpretationError::Timeout) })
+            }
+        });
+        let jobs = jobs(cache.clone(), generator.clone(), 4);
+        let accepted = jobs
+            .create(input("Persistent failure"), false)
+            .await
+            .unwrap();
+        let failed = until(&jobs, &accepted.id, State::Failed).await;
+        assert_eq!(failed.error.as_deref(), Some("codex_timeout"));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        let reopened = self::jobs(cache, generator, 4);
+        for _ in 0..3 {
+            assert_eq!(
+                reopened.snapshot(&accepted.id).await.unwrap().state,
+                State::Failed
+            );
+            assert_eq!(
+                reopened
+                    .create(input("Persistent failure"), false)
+                    .await
+                    .unwrap()
+                    .state,
+                State::Failed
+            );
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "Polling and restart must not reset a paid retry budget"
+        );
+    }
+    #[tokio::test]
+    async fn recovery_retains_attempts_and_does_not_reinterpret_legacy_failures_as_new_jobs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = Cache::open(&tmp.path().join("cache.sqlite"), 1_000_000, 100).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let generator: TestImageGenerator = Arc::new({
+            let calls = calls.clone();
+            move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Err(InterpretationError::Unavailable) })
+            }
+        });
+        let jobs = jobs(cache, generator, 4);
+        for (title, attempts, expected_calls) in
+            [("New record", Some(2), 1), ("Legacy record", None, 3)]
+        {
+            let data = input(title);
+            let id = data
+                .key()
+                .unwrap()
+                .strip_prefix(CACHE_PREFIX)
+                .unwrap()
+                .to_owned();
+            let mut json = serde_json::json!({"input": data, "snapshot": {"id":id,"state":"failed","error":"codex_unavailable"}});
+            if let Some(attempts) = attempts {
+                json["attempts"] = attempts.into();
+            }
+            let now = unix_time();
+            jobs.0
+                .cache
+                .put(
+                    &record_key(&id),
+                    CacheEntry {
+                        status: 200,
+                        headers: ResponseHeaders::default(),
+                        body: serde_json::to_vec(&json).unwrap().into(),
+                        stored_at: now,
+                        expires_at: now + 86400,
+                    },
+                )
+                .await
+                .unwrap();
+            // Recovery must progress on its own; no retry_failed submission is sent.
+            assert_eq!(jobs.snapshot(&id).await.unwrap().state, State::Queued);
+            until(&jobs, &id, State::Failed).await;
+            assert_eq!(calls.load(Ordering::SeqCst), expected_calls);
+        }
+    }
+    #[tokio::test]
+    async fn retry_delay_releases_worker_for_other_songs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = Cache::open(&tmp.path().join("cache.sqlite"), 1_000_000, 100).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Notify::new());
+        let generator: TestImageGenerator = Arc::new({
+            let calls = calls.clone();
+            let gate = gate.clone();
+            move || {
+                let first = calls.fetch_add(1, Ordering::SeqCst) == 0;
+                let gate = gate.clone();
+                Box::pin(async move {
+                    if first {
+                        gate.notified().await;
+                        Err(InterpretationError::Timeout)
+                    } else {
+                        Ok(png())
+                    }
+                })
+            }
+        });
+        let mut jobs = jobs(cache, generator, 4);
+        let inner = Arc::get_mut(&mut jobs.0).unwrap();
+        inner.workers = Arc::new(Semaphore::new(1));
+        inner.retry_delays = [Duration::from_secs(10); 2];
+        let first = jobs.create(input("Slow retry"), false).await.unwrap();
+        until(&jobs, &first.id, State::Running).await;
+        gate.notify_one();
+        until(&jobs, &first.id, State::Queued).await;
+        let next = jobs.create(input("Next song"), false).await.unwrap();
+        until(&jobs, &next.id, State::Completed).await;
+        assert_eq!(jobs.snapshot(&first.id).await.unwrap().state, State::Queued);
+        assert_eq!(jobs.image(&next.id).await.unwrap(), png());
+    }
+    #[tokio::test]
+    async fn reopening_preserves_a_scheduled_retry_instead_of_starting_immediately() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = Cache::open(&tmp.path().join("cache.sqlite"), 1_000_000, 100).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let generator: TestImageGenerator = Arc::new({
+            let calls = calls.clone();
+            move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(png()) })
+            }
+        });
+        let jobs = jobs(cache, generator, 4);
+        let data = input("Scheduled retry");
+        let id = data
+            .key()
+            .unwrap()
+            .strip_prefix(CACHE_PREFIX)
+            .unwrap()
+            .to_owned();
+        jobs.save(&Record {
+            input: data,
+            snapshot: Snapshot {
+                id: id.clone(),
+                state: State::Queued,
+                error: None,
+            },
+            attempts: 1,
+            retry_at: Some(unix_time() + 2),
+        })
+        .await
+        .unwrap();
+        assert_eq!(jobs.snapshot(&id).await.unwrap().state, State::Queued);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        until(&jobs, &id, State::Completed).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
     async fn reopening_disk_recovers_unfinished_input_and_completed_image() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("cache.sqlite");
@@ -448,6 +711,8 @@ mod tests {
             // This is the durable boundary before an interrupted server starts its worker.
             jobs.save(&Record {
                 input: data,
+                attempts: 0,
+                retry_at: None,
                 snapshot: Snapshot {
                     id: id.clone(),
                     state: State::Queued,
@@ -488,6 +753,8 @@ mod tests {
         assert_ne!(data.key().unwrap(), format!("{CACHE_PREFIX}{id}"));
         jobs.save(&Record {
             input: data,
+            attempts: 0,
+            retry_at: None,
             snapshot: Snapshot {
                 id: id.clone(),
                 state: State::Queued,

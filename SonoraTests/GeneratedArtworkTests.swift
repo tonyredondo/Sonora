@@ -87,7 +87,122 @@ private actor ArtworkJobsFixture: MetadataLookupTransport {
     private func jobStore(_ http: ArtworkJobsFixture) -> GeneratedArtworkStore {
         let settings = self.settings!
         return GeneratedArtworkStore(settings: settings, bindings: bindings, images: images, requests: CodexRequestPool(),
-            clientFactory: { try GeneratedArtworkClient(connection: .init(endpoint: settings.endpoint, token: "fixture"), transport: http) }, pollInterval: .milliseconds(10))
+            clientFactory: { try GeneratedArtworkClient(connection: .init(endpoint: settings.endpoint, token: "fixture"), transport: http) }, pollInterval: .milliseconds(10), connectionRetryDelay: .milliseconds(20))
+    }
+    func testClearingSavedInformationIncludesGeneratedArtwork() async throws {
+        let fp = try fingerprint("one"), context = self.context, data = try png()
+        let artwork = store { _ in data }
+        artwork.select(owner: "one", fingerprint: fp)
+        artwork.enqueue(owner: "one", fingerprint: fp, enabled: true) { context }
+        try await wait { artwork.currentStatus == .ready && artwork.pendingCount == 0 }
+        try await settings.cache.store(Data("cached query".utf8), key: "lookup", status: 200)
+        try await bindings.write(["marker": "keep"], key: "personal", personal: true)
+        try await bindings.write(["meaning": "keep"], key: "meaning")
+        let sentinel = root.appendingPathComponent("images/unrelated.txt")
+        try Data("keep".utf8).write(to: sentinel)
+        let player = PlaybackController(defaults: defaults, generatedArtwork: artwork, activateSession: {})
+        defer { player.stop() }
+        let services = AppServices(player: player)
+        let before = try await services.lookupCacheSize(settings: settings)
+        XCTAssertGreaterThan(before, 0)
+        try await captureCacheSettings(services, name: "artwork-cache-settings-before")
+        // The same composed action used by the phone's clear-cache control.
+        try await services.clearLookupCaches(settings: settings)
+        let remaining = try await images.size()
+        XCTAssertEqual(remaining, 0, "Clearing information and covers must include generated covers")
+        XCTAssertNil(artwork.image(owner: "one", fingerprint: fp), "The visible image must also be invalidated")
+        let combined = try await services.lookupCacheSize(settings: settings)
+        XCTAssertEqual(combined, 0)
+        try await captureCacheSettings(services, name: "artwork-cache-settings-after")
+        let annotation = try await bindings.read([String: String].self, key: "personal", personal: true)
+        let meaning = try await bindings.read([String: String].self, key: "meaning")
+        XCTAssertEqual(annotation, ["marker": "keep"]); XCTAssertEqual(meaning, ["meaning": "keep"])
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("one")), Data("one".utf8))
+        XCTAssertEqual(try Data(contentsOf: sentinel), Data("keep".utf8))
+        XCTAssertEqual(settings.endpoint, "http://127.0.0.1:9")
+        let reopened = store { _ in data }
+        let restored = try await reopened.restore(owner: "one", fingerprint: fp)
+        XCTAssertFalse(restored, "Relaunch cannot restore a deleted image from its old binding")
+    }
+    private func captureCacheSettings(_ services: AppServices, name: String) async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previous = scene.windows.first(where: \.isKeyWindow), window = UIWindow(windowScene: scene)
+        window.overrideUserInterfaceStyle = .dark
+        window.rootViewController = UIHostingController(rootView: NavigationStack { MetadataConnectionView(settings: settings, services: services) })
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; previous?.makeKeyAndVisible() }
+        try await Task.sleep(for: .milliseconds(350))
+        func scrollToCache(_ view: UIView) {
+            if let scroll = view as? UIScrollView {
+                scroll.setContentOffset(CGPoint(x: 0, y: max(0, scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)), animated: false)
+            }
+            view.subviews.forEach(scrollToCache)
+        }
+        for _ in 0..<3 {
+            scrollToCache(window)
+            try await Task.sleep(for: .milliseconds(150))
+        }
+        let screenshot = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+        let attachment = XCTAttachment(image: screenshot); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+    }
+    func testClearingIgnoresLateArtworkAndDoesNotRemoveTheReplacementJob() async throws {
+        let fp = try fingerprint("one"), context = self.context, data = try png()
+        var releases: [CheckedContinuation<Data, Never>] = []
+        var returned = 0
+        let artwork = store { _ in
+            let value = await withCheckedContinuation { releases.append($0) }
+            returned += 1
+            return value
+        }
+        artwork.select(owner: "one", fingerprint: fp)
+        artwork.enqueue(owner: "one", fingerprint: fp, enabled: true) { context }
+        try await wait { releases.count == 1 }
+        try await artwork.clearCache()
+        XCTAssertNil(artwork.image(owner: "one", fingerprint: fp))
+        artwork.enqueue(owner: "one", fingerprint: fp, enabled: true) { context }
+        try await wait { releases.count == 2 }
+        releases[0].resume(returning: data)
+        try await wait { returned == 1 }
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(artwork.pendingCount, 1)
+        XCTAssertEqual(artwork.currentStatus, .generating)
+        let stale = try await images.size(); XCTAssertEqual(stale, 0)
+        releases[1].resume(returning: data)
+        try await wait { artwork.currentStatus == .ready && artwork.pendingCount == 0 }
+        let fresh = try await images.size(); XCTAssertGreaterThan(fresh, 0)
+    }
+    func testClearingWhileBackgroundedDiscardsWaitersWithoutHanging() async throws {
+        let fp = try fingerprint("one"), context = self.context, http = ArtworkJobsFixture(image: try png())
+        let artwork = jobStore(http); artwork.select(owner: "one", fingerprint: fp)
+        artwork.enqueue(owner: "one", fingerprint: fp, enabled: true) { context }
+        try await wait { artwork.currentStatus == .generating }
+        artwork.setActive(false); try await wait { artwork.currentStatus == .paused }
+        try await artwork.clearCache()
+        artwork.setActive(true)
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertNil(artwork.currentStatus); XCTAssertEqual(artwork.pendingCount, 0)
+        let size = try await images.size(); XCTAssertEqual(size, 0)
+        await http.complete()
+        artwork.enqueue(owner: "one", fingerprint: fp, enabled: true) { context }
+        try await wait { artwork.currentStatus == .ready }
+        let submissions = await http.submissions; XCTAssertEqual(submissions, 1, "An existing server job can be downloaded again without paying for another generation")
+    }
+    func testCacheClearFailureIsReportedAndARetryCanSucceed() async throws {
+        let blocked = root.appendingPathComponent("blocked-cache")
+        try Data("not a directory".utf8).write(to: blocked)
+        let imageCache = MetadataLookupCache(directory: blocked)
+        let artwork = GeneratedArtworkStore(settings: settings, bindings: bindings, images: imageCache)
+        let player = PlaybackController(defaults: defaults, generatedArtwork: artwork, activateSession: {})
+        defer { player.stop() }
+        let services = AppServices(player: player)
+        try await settings.cache.store(Data("preserve until successful".utf8), key: "lookup", status: 200)
+        do { try await services.clearLookupCaches(settings: settings); XCTFail("A failed image-cache clear must not report success") }
+        catch { }
+        let retained = try await settings.cache.read(key: "lookup"); XCTAssertNotNil(retained)
+        try FileManager.default.removeItem(at: blocked)
+        try await imageCache.store(try png(), key: "image", status: 200)
+        try await services.clearLookupCaches(settings: settings)
+        let size = try await services.lookupCacheSize(settings: settings); XCTAssertEqual(size, 0)
     }
     func testBackgroundAndRelaunchRecoverTheSavedJobWithoutPreparingOrGeneratingAgain() async throws {
         let fp = try fingerprint("one"), context = self.context, http = ArtworkJobsFixture(image: try png())
@@ -107,27 +222,69 @@ private actor ArtworkJobsFixture: MetadataLookupTransport {
         original.setActive(true)
         try await wait { original.pendingCount == 0 }
     }
-    func testConnectionFailureRetainsJobForAnExplicitRetry() async throws {
+    func testConnectionFailureRecoversAutomaticallyWithoutResubmittingTheJob() async throws {
         let fp = try fingerprint("one"), context = self.context, http = ArtworkJobsFixture(image: try png())
         let store = jobStore(http)
         store.select(owner: "one", fingerprint: fp)
         store.enqueue(owner: "one", fingerprint: fp, enabled: true) { context }
         try await wait { store.currentStatus == .generating }
         await http.disconnect(true)
-        try await wait { store.pendingCount == 0 }
+        try await wait { if case .waitingForConnection = store.currentStatus { true } else { false } }
         guard case .waitingForConnection = store.currentStatus else { return XCTFail("Connection failures must not look like generation") }
+        XCTAssertEqual(store.pendingCount, 1, "A connection loss must retain an automatic recovery task")
         await http.disconnect(false); await http.complete()
-        store.retry()
-        store.enqueue(owner: "one", fingerprint: fp, enabled: true) { XCTFail("Retry must retain the saved job"); return nil }
         try await wait { store.currentStatus == .ready }
         let submissions = await http.submissions; XCTAssertEqual(submissions, 1)
+    }
+    func testOneFailedCoverDoesNotPauseOtherSongs() async throws {
+        let fp = try fingerprint("one"), context = self.context, data = try png()
+        let artwork = store { input in
+            if input.title == context.title { throw GeneratedArtworkIssue.service("codex_unavailable") }
+            return data
+        }
+        artwork.enqueue(owner: "failed", fingerprint: fp, enabled: true) { context }
+        try await wait { artwork.pendingCount == 0 }
+        artwork.select(owner: "next", fingerprint: fp)
+        artwork.enqueue(owner: "next", fingerprint: fp, enabled: true) { .init(title: "Next", artist: "Artist", album: "Album", albumDescription: "") }
+        try await wait { artwork.currentStatus == .ready }
+        XCTAssertNil(artwork.automaticIssue, "A failed song must not become a global queue pause")
+        guard case .failed = artwork.statuses["failed"] else { return XCTFail("Keep the original song's failure visible") }
+    }
+    func testClearingWhileReconnectingCancelsAutomaticRecovery() async throws {
+        let fp = try fingerprint("one"), context = self.context, http = ArtworkJobsFixture(image: try png())
+        await http.disconnect(true)
+        let artwork = jobStore(http); artwork.select(owner: "one", fingerprint: fp)
+        artwork.enqueue(owner: "one", fingerprint: fp, enabled: true) { context }
+        try await wait { if case .waitingForConnection = artwork.currentStatus { true } else { false } }
+        try await artwork.clearCache()
+        await http.disconnect(false); await http.complete()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(artwork.pendingCount, 0); XCTAssertNil(artwork.currentStatus)
+        let remaining = try await images.size(); XCTAssertEqual(remaining, 0)
+        let accepted = await http.submissions; XCTAssertEqual(accepted, 0)
+    }
+    func testReconnectionWaitsForForegroundThenRecoversAutomatically() async throws {
+        let fp = try fingerprint("one"), context = self.context, http = ArtworkJobsFixture(image: try png())
+        let artwork = jobStore(http); artwork.select(owner: "one", fingerprint: fp)
+        artwork.enqueue(owner: "one", fingerprint: fp, enabled: true) { context }
+        try await wait { artwork.currentStatus == .generating }
+        await http.disconnect(true)
+        try await wait { if case .waitingForConnection = artwork.currentStatus { true } else { false } }
+        artwork.setActive(false)
+        try await wait { artwork.currentStatus == .paused }
+        await http.disconnect(false); await http.complete()
+        artwork.setActive(true)
+        try await wait { artwork.currentStatus == .ready }
+        let accepted = await http.submissions; XCTAssertEqual(accepted, 1)
     }
     func testLostAcknowledgementKeepsOriginalInputAndResubmitsIdempotently() async throws {
         let fp = try fingerprint("one"), context = self.context, http = ArtworkJobsFixture(image: try png())
         await http.loseNextAcknowledgement()
         let first = jobStore(http)
         first.enqueue(owner: "one", fingerprint: fp, enabled: true) { context }
-        try await wait { first.pendingCount == 0 }
+        try await wait { if case .waitingForConnection = first.statuses["one"] { true } else { false } }
+        // End this instance's consumers, retaining the durable unacknowledged job.
+        try await first.clearCache()
         await http.complete()
         let reopened = jobStore(http); reopened.select(owner: "one", fingerprint: fp)
         reopened.enqueue(owner: "one", fingerprint: fp, enabled: true) { XCTFail("The original input must survive an unacknowledged submission"); return nil }
@@ -140,7 +297,8 @@ private actor ArtworkJobsFixture: MetadataLookupTransport {
         await http.loseNextAcknowledgement()
         let original = jobStore(http)
         original.enqueue(owner: "one", fingerprint: fp, enabled: true) { context }
-        try await wait { original.pendingCount == 0 }
+        try await wait { if case .waitingForConnection = original.statuses["one"] { true } else { false } }
+        try await original.clearCache()
         await http.fail("codex_limit")
         let reopened = jobStore(http); reopened.select(owner: "one", fingerprint: fp)
         reopened.enqueue(owner: "one", fingerprint: fp, enabled: true) { XCTFail("Recover the original submission"); return nil }
@@ -260,13 +418,13 @@ private actor ArtworkJobsFixture: MetadataLookupTransport {
     func testRealArtworkSkipsGenerationAndFailureIsRetryable() async throws {
         let fp = try fingerprint("one"), context = self.context
         var calls = 0
-        let store = store { _ in calls += 1; throw GeneratedArtworkIssue.unavailable }
+        let store = store { _ in calls += 1; throw GeneratedArtworkIssue.serverUpdateRequired }
         store.enqueue(owner: "real", fingerprint: fp, enabled: true) { nil }
         try await wait { store.statuses["real"] == .ready }; XCTAssertEqual(calls, 0)
         store.select(owner: "one", fingerprint: fp)
         store.enqueue(owner: "one", fingerprint: fp, enabled: true) { context }
         try await wait { store.automaticIssue != nil }; XCTAssertEqual(calls, 1)
-        XCTAssertEqual(store.currentStatus, .failed(GeneratedArtworkIssue.unavailable.localizedDescription))
+        XCTAssertEqual(store.currentStatus, .failed(GeneratedArtworkIssue.serverUpdateRequired.localizedDescription))
         store.retry(failed: false)
         store.enqueue(owner: "one", fingerprint: fp, enabled: true) { context }
         XCTAssertEqual(calls, 1, "Returning to the app must not automatically repeat a terminal generation failure")
@@ -289,7 +447,9 @@ private actor ArtworkJobsFixture: MetadataLookupTransport {
         let fp = try fingerprint("one"), context = self.context
         let store = store { _ in Data("broken PNG".utf8) }
         store.select(owner: "one", fingerprint: fp); store.enqueue(owner: "one", fingerprint: fp, enabled: true) { context }
-        try await wait { store.automaticIssue != nil }
+        try await wait { store.pendingCount == 0 }
+        guard case .failed = store.currentStatus else { return XCTFail("Invalid artwork must report a failure") }
+        XCTAssertNil(store.automaticIssue, "An invalid image must not pause unrelated songs")
         XCTAssertNil(store.image(owner: "one", fingerprint: fp))
         let restored = try await store.restore(owner: "one", fingerprint: fp); XCTAssertFalse(restored)
     }
@@ -381,11 +541,11 @@ private actor ArtworkJobsFixture: MetadataLookupTransport {
         try await Task.sleep(for: .milliseconds(300))
         capture("generated-artwork-player-creating")
         await http.disconnect(true)
-        try await wait { artwork.pendingCount == 0 }
+        try await wait { if case .waitingForConnection = artwork.currentStatus { true } else { false } }
+        XCTAssertEqual(artwork.pendingCount, 1)
         try await Task.sleep(for: .milliseconds(300))
         capture("generated-artwork-player-connection")
         await http.disconnect(false); await http.holdDownloads(true); await http.complete()
-        player.retryQueuePreparation()
         try await wait { artwork.currentStatus == .downloading }
         try await Task.sleep(for: .milliseconds(300))
         capture("generated-artwork-player-downloading")
@@ -415,6 +575,129 @@ private actor ArtworkJobsFixture: MetadataLookupTransport {
         let a = try ScopedFolder(old.appendingPathComponent("Documents")), b = try ScopedFolder(new.appendingPathComponent("Documents"))
         XCTAssertEqual(GeneratedArtworkStore.owner(track, folder: a, appHome: old), GeneratedArtworkStore.owner(track, folder: b, appHome: new))
         XCTAssertNotEqual(GeneratedArtworkStore.owner(track, folder: a, appHome: old), GeneratedArtworkStore.owner(track, folder: b, appHome: old))
+    }
+    func testPlaylistRowsRestoreGeneratedCoversAndUpdateWithoutChangingPlaybackArtwork() async throws {
+        let names = ["One", "Two", "Original", "Later"]
+        let colors: [String: UIColor] = ["One": .cyan, "Two": .magenta, "Original": .blue, "Later": .green]
+        let data = try colors.mapValues { try png($0) }
+        let fixture = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "fixture", withExtension: "flac"))
+        for name in names {
+            let url = root.appendingPathComponent(name + ".flac")
+            try FileManager.default.copyItem(at: fixture, to: url)
+            let file = try AudioFile(readingPropertiesAndMetadataFrom: url)
+            file.metadata.removeAllAttachedPictures(); file.metadata.title = name
+            file.metadata.artist = "Sonora Tests"; file.metadata.albumTitle = "Generated covers QA"
+            if name == "Original" { file.metadata.attachPicture(AttachedPicture(imageData: try png(.red), type: .frontCover)) }
+            try file.writeMetadata()
+        }
+        let originalFiles = try names.map { try Data(contentsOf: root.appendingPathComponent($0 + ".flac")) }
+        var release: CheckedContinuation<Data, Never>?, calls = 0
+        let artwork = store { input in
+            calls += 1
+            if input.title == "Later" { return await withCheckedContinuation { release = $0 } }
+            return data[input.title]!
+        }
+        defer { release?.resume(returning: data["Later"]!) }
+        let player = PlaybackController(defaults: defaults, localStorage: root.appendingPathComponent("managed"), generatedArtwork: artwork, activateSession: {})
+        defer { player.stop(); player.library.cancelIndexing() }
+        let folder = try ScopedFolder(root)
+        let source = try player.library.register(folder, tracks: names.map { AudioTrack(relativePath: $0 + ".flac")! })
+        await player.library.waitForIndexing()
+        let ids = names.map { source + "\0" + $0 + ".flac" }
+        let playlist = try XCTUnwrap(player.library.createPlaylist("Portadas generadas QA"))
+        player.library.add(ids, to: playlist)
+        for (index, id) in ids.enumerated() {
+            let track = try XCTUnwrap(player.library.state.songs[id]?.audioTrack)
+            let fp = try FileFingerprint(track.url(in: folder.url)), name = names[index]
+            let owner = GeneratedArtworkStore.owner(track, folder: folder)
+            if index == 0 { artwork.select(owner: owner, fingerprint: fp) }
+            artwork.enqueue(owner: owner, fingerprint: fp, enabled: true) {
+                .init(title: name, artist: "Sonora Tests", album: "Generated covers QA", albumDescription: "")
+            }
+        }
+        try await wait { release != nil && artwork.pendingCount == 1 }
+        let selectedTrack = try XCTUnwrap(player.library.state.songs[ids[0]]?.audioTrack)
+        let selectedOwner = GeneratedArtworkStore.owner(selectedTrack, folder: folder)
+        let selectedFingerprint = try FileFingerprint(selectedTrack.url(in: folder.url))
+        let selectedImage = try XCTUnwrap(artwork.image(owner: selectedOwner, fingerprint: selectedFingerprint))
+
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previous = scene.windows.first(where: \.isKeyWindow), window = UIWindow(windowScene: scene)
+        window.overrideUserInterfaceStyle = .dark
+        window.rootViewController = UIHostingController(rootView: NavigationStack {
+            CollectionSongList(player: player, title: "Portadas generadas QA", ids: ids, playlistID: playlist)
+        }.tint(.orange))
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; previous?.makeKeyAndVisible() }
+        func capture() -> UIImage {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            return UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+        }
+        var screen = capture()
+        for _ in 0..<20 {
+            if coloredPixels(screen, color: .cyan) > 200 && coloredPixels(screen, color: .magenta) > 200 { break }
+            try await Task.sleep(for: .milliseconds(100)); screen = capture()
+        }
+        XCTAssertGreaterThan(coloredPixels(screen, color: .cyan), 200, "The first generated cover must appear in its playlist row")
+        XCTAssertGreaterThan(coloredPixels(screen, color: .magenta), 200, "Rows must restore covers other than the selected player's cover")
+        XCTAssertGreaterThan(coloredPixels(screen, color: .red), 200, "Original artwork has priority over a generated cover")
+        XCTAssertEqual(coloredPixels(screen, color: .blue), 0)
+        XCTAssertEqual(coloredPixels(screen, color: .green), 0)
+        let before = XCTAttachment(image: screen); before.name = "playlist-generated-covers-cached"; before.lifetime = .keepAlways; add(before)
+        release?.resume(returning: data["Later"]!); release = nil
+        try await wait { artwork.pendingCount == 0 }
+        for _ in 0..<20 {
+            try await Task.sleep(for: .milliseconds(100)); screen = capture()
+            if coloredPixels(screen, color: .green) > 200 { break }
+        }
+        XCTAssertGreaterThan(coloredPixels(screen, color: .green), 200, "A completed cover must refresh the visible list without reopening it")
+        XCTAssertEqual(calls, 4, "Displaying a playlist must never generate another image")
+        XCTAssertTrue(artwork.image(owner: selectedOwner, fingerprint: selectedFingerprint) === selectedImage, "Reading list covers must not change the player's selected image")
+        let completed = XCTAttachment(image: screen); completed.name = "playlist-generated-covers-completed"; completed.lifetime = .keepAlways; add(completed)
+        try await artwork.clearCache()
+        for _ in 0..<20 {
+            try await Task.sleep(for: .milliseconds(100)); screen = capture()
+            if coloredPixels(screen, color: .cyan) == 0 && coloredPixels(screen, color: .green) == 0 { break }
+        }
+        XCTAssertEqual(coloredPixels(screen, color: .cyan), 0); XCTAssertEqual(coloredPixels(screen, color: .magenta), 0)
+        XCTAssertEqual(coloredPixels(screen, color: .green), 0)
+        XCTAssertGreaterThan(coloredPixels(screen, color: .red), 200, "Clearing generated covers preserves original artwork")
+        for (index, name) in names.enumerated() { XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(name + ".flac")), originalFiles[index]) }
+    }
+    func testCachedThumbnailRestoresOfflineAtListSizeAndRejectsChangedFiles() async throws {
+        let fp = try fingerprint("one"), context = self.context
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let large = try XCTUnwrap(UIGraphicsImageRenderer(size: CGSize(width: 1024, height: 1024), format: format).image { renderer in
+            UIColor.cyan.setFill(); renderer.fill(CGRect(x: 0, y: 0, width: 1024, height: 1024))
+        }.pngData())
+        let original = store { _ in large }
+        original.enqueue(owner: "one", fingerprint: fp, enabled: true) { context }
+        try await wait { original.pendingCount == 0 }
+        XCTAssertEqual(original.statuses["one"], .ready)
+        settings.offline = true
+        let reopened = store { _ in XCTFail("A cached row must not generate images"); return large }
+        let thumbnail = try await reopened.cachedThumbnail(owner: "one", fingerprint: fp)
+        let image = try XCTUnwrap(thumbnail?.cgImage)
+        XCTAssertLessThanOrEqual(image.width, 160); XCTAssertLessThanOrEqual(image.height, 160)
+        XCTAssertNil(reopened.currentStatus); XCTAssertEqual(reopened.pendingCount, 0)
+        try Data("replacement audio".utf8).write(to: root.appendingPathComponent("one"))
+        let replaced = try FileFingerprint(root.appendingPathComponent("one"))
+        let stale = try await reopened.cachedThumbnail(owner: "one", fingerprint: replaced)
+        XCTAssertNil(stale, "A replaced audio file must not inherit an old generated cover")
+    }
+    private func coloredPixels(_ image: UIImage, color: UIColor) -> Int {
+        guard let cg = image.cgImage else { return 0 }
+        let width = cg.width, height = cg.height
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(data: &bytes, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return 0 }
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        let target = [Int(red * 255), Int(green * 255), Int(blue * 255)]
+        return stride(from: 0, to: bytes.count, by: 4).reduce(into: 0) { count, pixel in
+            if (0..<3).allSatisfy({ abs(Int(bytes[pixel + $0]) - target[$0]) < 20 }) { count += 1 }
+        }
     }
 
 }

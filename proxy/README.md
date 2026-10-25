@@ -238,10 +238,15 @@ submission after a lost acknowledgement attaches to the same job. Generation run
 independently of the HTTP connection. The app persists the original input and then
 the accepted ID, pauses network monitoring when inactive, and queries the same job
 on return or relaunch. A completed job downloads its PNG through the image route.
-Neither status queries nor repeated submissions retry failed generations. Only
-`POST /v1/artwork/jobs?retry_failed=true` explicitly retries a failed job. This
-also prevents a lost submission acknowledgement from triggering a second attempt.
-The app preserves terminal errors when brought forward.
+Transient generation failures retry automatically, with at most three total
+attempts and delays of 30 and 90 seconds. The attempt budget and next retry time
+are persisted across restarts; waiting does not occupy a generation worker.
+Status queries and repeated submissions reuse that budget instead of starting
+another job. Authentication, configuration and usage-limit errors remain terminal.
+`POST /v1/artwork/jobs?retry_failed=true` explicitly starts a new retry budget for
+a failed job. The app also retries transient connection failures automatically,
+reusing the saved input and accepted ID, and preserves terminal errors when
+brought forward.
 
 Job records and completed images use the existing bounded SQLite cache. After a
 server restart, querying an unfinished job recovers its stored input; a completed
