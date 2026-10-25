@@ -7,6 +7,16 @@ import Foundation
     private var restoration: Task<Void, Never>?
     private var receivedAudioFile = false
     init(player: PlaybackController) { self.player = player }
+    func lookupCacheSize(settings: MetadataAssistantSettings = .shared) async throws -> Int {
+        let queries = try await settings.cache.size()
+        let covers = try await player.generatedArtwork?.cacheSize() ?? 0
+        return queries + covers
+    }
+    func clearLookupCaches(settings: MetadataAssistantSettings = .shared) async throws {
+        try await player.generatedArtwork?.clearCache()
+        try await settings.cache.clear()
+        player.preparationPreferencesDidChange()
+    }
     func openAudioFile(_ url: URL) {
         if player.openAudioFile(url) { receivedAudioFile = true }
     }

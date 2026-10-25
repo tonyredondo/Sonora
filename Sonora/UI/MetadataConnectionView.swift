@@ -1,8 +1,9 @@
 import SonoraCore
 import SwiftUI
 
-struct MetadataConnectionView: View {
-    @State private var settings = MetadataAssistantSettings.shared
+@MainActor struct MetadataConnectionView: View {
+    @State private var settings: MetadataAssistantSettings
+    private let services: AppServices
     @State private var archive = MetadataArchiveController.shared
     @State private var endpoint = ""
     @State private var token = ""
@@ -11,7 +12,12 @@ struct MetadataConnectionView: View {
     @State private var checking = false
     @State private var cacheBytes = 0
     @State private var confirmClear = false
+    @State private var clearingCache = false
     @State private var check: Task<Void, Never>?
+    init(settings: MetadataAssistantSettings = .shared, services: AppServices = .shared) {
+        _settings = State(initialValue: settings)
+        self.services = services
+    }
     private var unsaved: Bool { endpoint != settings.endpoint || token != savedToken }
 
     var body: some View {
@@ -65,24 +71,28 @@ struct MetadataConnectionView: View {
             Section("Caché de consultas en este iPhone") {
                 LabeledContent("Información, letras y carátulas", value: ByteCountFormatter.string(fromByteCount: Int64(cacheBytes), countStyle: .file))
                 Button("Borrar información guardada", role: .destructive) { confirmClear = true }
-                Text("Hasta 100 MB. Borrarla no cambia tu música, sus etiquetas ni las copias de tus ediciones. Las consultas nuevas necesitan conexión.")
+                    .disabled(clearingCache)
+                if clearingCache { ProgressView("Borrando información y portadas…") }
+                Text("Hasta 100 MB de consultas y 256 MB de portadas generadas. Borrarlas no cambia tu música, sus etiquetas ni las copias de tus ediciones. Las consultas nuevas necesitan conexión. Si falta una portada en el servidor, crearla de nuevo consume uso de tu plan de Codex.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }
         .navigationTitle("Asistente de información").navigationBarTitleDisplayMode(.inline)
         .task {
             endpoint = settings.endpoint
-            do { savedToken = try settings.savedToken(); token = savedToken; cacheBytes = try await settings.cache.size() }
+            do { savedToken = try settings.savedToken(); token = savedToken; cacheBytes = try await services.lookupCacheSize(settings: settings) }
             catch { message = error.localizedDescription }
         }
         .onDisappear { check?.cancel(); checking = false }
         .onChange(of: endpoint) { cancelCheck() }
         .onChange(of: token) { cancelCheck() }
         .onChange(of: settings.effectiveOffline) { if settings.effectiveOffline { check?.cancel(); checking = false } }
-        .confirmationDialog("¿Borrar la información guardada para usar sin conexión?", isPresented: $confirmClear, titleVisibility: .visible) {
+        .confirmationDialog("¿Borrar la información y las portadas generadas guardadas en este iPhone?", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Borrar información guardada", role: .destructive) {
                 Task {
-                    do { try await settings.cache.clear(); cacheBytes = try await settings.cache.size(); message = "Información guardada borrada." }
+                    clearingCache = true
+                    defer { clearingCache = false }
+                    do { try await services.clearLookupCaches(settings: settings); cacheBytes = try await services.lookupCacheSize(settings: settings); message = "Información y portadas generadas borradas de este iPhone." }
                     catch { message = error.localizedDescription }
                 }
             }
