@@ -13,6 +13,8 @@ pub mod generated_artwork;
 pub mod interpretation;
 pub mod jobs;
 pub mod metadata_archive;
+pub mod panorama_jobs;
+pub mod panoramic_artwork;
 pub mod providers;
 mod scheduler;
 pub mod transcription;

@@ -1,0 +1,11 @@
+Sonora Android includes dynamically linked, unmodified library sources:
+TagLib 2.3.2, copyright Scott Wheeler and contributors, LGPL 2.1 or MPL 1.1.
+Source: https://taglib.org/releases/taglib-2.3.2.tar.gz
+LAME 4.0 encoder, copyright The LAME Project contributors, LGPL 2 or later.
+Source: https://downloads.sourceforge.net/project/lame/lame/4.0/lame-4.0.tar.gz
+The GPL mpglib decoder is not included. License texts accompany this notice.
+Android build files identify the exact source archive SHA-256 and build settings.
+TagLib includes utf8cpp, copyright Nemanja Trifunovic and contributors,
+under the Boost Software License 1.0 (included as UTFCPP-Boost.txt).
+The shared LLVM libc++ runtime is provided by Android NDK 27.2.12479018
+under Apache License 2.0 with LLVM Exceptions; its notice is included.

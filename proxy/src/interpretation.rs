@@ -298,6 +298,32 @@ impl InterpretationService {
             .filter(|entry| entry.status == 200 && crate::generated_artwork::valid_png(&entry.body))
             .map(|entry| entry.body))
     }
+    /// Durable jobs wait for shared generation capacity without timing out in an HTTP queue.
+    pub(crate) async fn expand_artwork<F, Fut>(
+        &self,
+        source: &crate::panoramic_artwork::Source,
+        started: F,
+    ) -> Result<bytes::Bytes, InterpretationError>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: std::future::Future<Output = Result<(), InterpretationError>> + Send,
+    {
+        if !self.config.enabled {
+            return Err(InterpretationError::Disabled);
+        }
+        let _worker = self
+            .worker
+            .acquire()
+            .await
+            .map_err(|_| InterpretationError::Unavailable)?;
+        started().await?;
+        #[cfg(test)]
+        if let Some(generate) = &self.image_generator {
+            let bytes = generate().await?;
+            return crate::panoramic_artwork::compose(source, &bytes);
+        }
+        crate::panoramic_artwork::run(&self.config, source).await
+    }
     pub fn new(config: CodexConfig, cache: Cache) -> Self {
         Self {
             config,

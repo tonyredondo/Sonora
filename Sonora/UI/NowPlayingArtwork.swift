@@ -42,15 +42,11 @@ struct NowPlayingArtwork: View {
 
     private func carousel(artworkSize: CGSize, topSpace: CGFloat) -> some View {
         ZStack {
-            VStack(spacing: 0) {
-                ArtworkHeaderReflection(image: player.currentDetails?.artwork,
-                                        artworkSize: artworkSize, height: topSpace)
-                ArtworkView(image: player.currentDetails?.artwork, cornerRadius: 0)
-                    .frame(height: artworkSize.height)
-            }
+            ArtworkBackdrop(image: player.currentDetails?.artwork, extensionImage: player.currentArtworkExtension,
+                            artworkSize: artworkSize, height: topSpace)
             .overlay {
-                // Tint the shared artwork, including the status-bar extension,
-                // independently of the native pager's inset content bounds.
+                // Keep one continuous backdrop behind text, including the
+                // generated extension, without a separate toolbar veil.
                 PlayerTheme(scheme).background.opacity(selection == .artwork ? 0 : 0.72)
                     .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: selection)
             }
@@ -67,28 +63,12 @@ struct NowPlayingArtwork: View {
             .accessibilityIdentifier("playerCarousel")
         }
         .clipped()
-        .overlay(alignment: .top) {
-            Rectangle().fill(.ultraThinMaterial)
-                .opacity(0.45)
-                .mask {
-                    // Keep scrolling text recognizable through a light veil,
-                    // then dissolve the material below the toolbar.
-                    VStack(spacing: 0) {
-                        Color.white.frame(height: topSpace)
-                        LinearGradient(colors: [.white, .clear],
-                                       startPoint: .top, endPoint: .bottom)
-                    }
-                }
-                .frame(height: topSpace + 28)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-        }
         .overlay(alignment: .bottom) {
             // Native pages may extend below the visible carousel. Fade the
             // composed artwork and text at its actual edge, outside the pager.
             LinearGradient(colors: [.clear, PlayerTheme(scheme).background],
                            startPoint: .top, endPoint: .bottom)
-                .frame(height: selection == .artwork ? 32 : 64)
+                .frame(height: selection == .artwork ? 8 : 64)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
@@ -130,50 +110,38 @@ struct NowPlayingArtwork: View {
     }
 }
 
-/// The reflected top edge continues the cover without stretching or cropping it.
-/// Only the extension is blurred; the join keeps the original edge's pixels.
-private struct ArtworkHeaderReflection: View {
+/// One photo fills the entire artwork and header viewport, including while
+/// the complete generated portrait is still being prepared.
+struct ArtworkBackdrop: View {
     let image: UIImage?
+    let extensionImage: UIImage?
     let artworkSize: CGSize
     let height: CGFloat
-    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        ZStack {
-            if let image {
-                reflection(image)
-                    .overlay {
-                        reflection(image)
-                            .blur(radius: 24, opaque: true)
-                            .mask {
-                                LinearGradient(stops: [.init(color: .white, location: 0),
-                                                       .init(color: .white, location: 0.94),
-                                                       .init(color: .clear, location: 1)],
-                                               startPoint: .top, endPoint: .bottom)
-                            }
-                    }
+        Group {
+            if let photo = extensionImage ?? image, photo.size.width > 0, photo.size.height > 0 {
+                let viewportHeight = height + artworkSize.height
+                let scale = extensionImage != nil
+                    ? min(artworkSize.width, viewportHeight) / photo.size.width
+                    : max(artworkSize.width / photo.size.width, viewportHeight / photo.size.height)
+                let photoWidth = photo.size.width * scale
+                let photoHeight = photo.size.height * scale
+                // The source square occupies the bottom of the portrait. Spend
+                // any crop on the generated sky, never on the original cover.
+                let photoTop = extensionImage != nil
+                    ? viewportHeight - photoHeight
+                    : (viewportHeight - photoHeight) / 2
+                Image(uiImage: photo).resizable()
+                    .frame(width: photoWidth, height: photoHeight)
+                    .offset(y: photoTop)
+                    .frame(width: artworkSize.width, height: viewportHeight, alignment: .top)
             } else {
-                PlayerTheme(scheme).surface
+                ArtworkView(image: nil, cornerRadius: 0)
             }
-            LinearGradient(stops: [.init(color: headerShade, location: 0),
-                                   .init(color: headerShade, location: 0.35),
-                                   .init(color: .clear, location: 1)],
-                           startPoint: .top, endPoint: .bottom)
         }
-        .frame(width: artworkSize.width, height: height)
+        .frame(width: artworkSize.width, height: height + artworkSize.height)
         .clipped()
-    }
-
-    private var headerShade: Color {
-        PlayerTheme(scheme).background.opacity(scheme == .dark ? 0.6 : 0.8)
-    }
-
-    private func reflection(_ image: UIImage) -> some View {
-        Image(uiImage: image).resizable().scaledToFill()
-            .frame(width: artworkSize.width, height: artworkSize.height)
-            .scaleEffect(x: 1, y: -1)
-            .frame(width: artworkSize.width, height: height, alignment: .bottom)
-            .clipped()
     }
 }
 

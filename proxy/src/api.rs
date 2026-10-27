@@ -29,6 +29,8 @@ struct App {
     metadata: MetadataArchive,
     interpretation: crate::interpretation::InterpretationService,
     artwork_jobs: crate::artwork_jobs::ArtworkJobs,
+    panorama_jobs: crate::panorama_jobs::ExpansionJobs,
+    panorama_uploads: Arc<tokio::sync::Semaphore>,
     character: crate::audio_character::CharacterService,
     character_uploads: Arc<tokio::sync::Semaphore>,
 }
@@ -49,6 +51,15 @@ pub fn router(config: Config) -> Result<Router, Error> {
         client.scheduler.cache(),
     );
     let state = App {
+        panorama_uploads: Arc::new(tokio::sync::Semaphore::new(4)),
+        panorama_jobs: crate::panorama_jobs::ExpansionJobs::open(
+            interpretation.clone(),
+            &client.config().cache.path.with_extension("panorama.sqlite"),
+            client.config().codex.enabled,
+            client.config().server.panorama_max_bytes,
+            client.config().server.max_jobs,
+        )
+        .map_err(|_| Error::Configuration)?,
         character_uploads: Arc::new(tokio::sync::Semaphore::new(8)),
         character: crate::audio_character::CharacterService::new(
             client.config().audio_character.clone(),
@@ -122,6 +133,23 @@ pub fn router(config: Config) -> Result<Router, Error> {
         .route("/v1/identify", post(identify))
         .route("/v1/artwork/{id}", get(artwork))
         .route(
+            "/v1/artwork/expansions/jobs",
+            post(create_panorama_job)
+                .layer(DefaultBodyLimit::max(
+                    crate::panoramic_artwork::MAX_REQUEST_BYTES,
+                ))
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    panorama_admission,
+                )),
+        )
+        .route("/v1/artwork/expansions/jobs/{id}", get(panorama_job))
+        .route(
+            "/v1/artwork/expansions/jobs/{id}/image",
+            get(panorama_image),
+        )
+        .route("/v1/artwork/expansions/jobs/{id}/ack", post(panorama_ack))
+        .route(
             "/v1/artwork/jobs",
             post(create_artwork_job).layer(DefaultBodyLimit::max(64 * 1024)),
         )
@@ -157,10 +185,77 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
         .collect();
     Json(json!({"providers":providers,"metadata_archive_version":1,
         "generated_artwork":{"enabled":app.client.config().codex.enabled,"version":1,"jobs_version":1},
+        "artwork_expansion":{"enabled":app.client.config().codex.enabled,"version":1,"jobs_version":1},
         "audio_character":{"enabled":app.client.config().audio_character.enabled,"version":crate::audio_character::VERSION},
         "lyric_translation":{"enabled":app.client.config().codex.enabled,"version":1,"model":crate::translation::MODEL,"effort":crate::translation::EFFORT},
         "album_interpretation":{"enabled":app.client.config().codex.enabled,"version":crate::album_interpretation::VERSION},
         "lyric_interpretation":{"enabled":app.client.config().codex.enabled,"model":crate::interpretation::MODEL,"effort":crate::interpretation::EFFORT}}))
+}
+
+async fn panorama_admission(
+    State(app): State<App>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let Ok(_permit) = app.panorama_uploads.clone().try_acquire_owned() else {
+        return crate::panorama_jobs::Error::Full.into_response();
+    };
+    next.run(request).await
+}
+async fn create_panorama_job(
+    State(app): State<App>,
+    Query(options): Query<ArtworkJobOptions>,
+    Json(input): Json<crate::panoramic_artwork::Upload>,
+) -> Result<impl IntoResponse, crate::panorama_jobs::Error> {
+    let source = tokio::task::spawn_blocking(move || input.decode())
+        .await
+        .map_err(|_| crate::panorama_jobs::Error::Store)?
+        .map_err(|_| crate::panorama_jobs::Error::Invalid)?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(
+            app.panorama_jobs
+                .create(source, options.retry_failed)
+                .await?,
+        ),
+    ))
+}
+async fn panorama_job(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, crate::panorama_jobs::Error> {
+    Ok(Json(app.panorama_jobs.snapshot(&id).await?))
+}
+async fn panorama_image(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, crate::panorama_jobs::Error> {
+    let (image, digest) = app.panorama_jobs.image(&id).await?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "private, no-store"),
+            (
+                header::HeaderName::from_static("x-content-sha256"),
+                digest.as_str(),
+            ),
+        ],
+        image,
+    )
+        .into_response())
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PanoramaAcknowledgement {
+    sha256: String,
+}
+async fn panorama_ack(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(input): Json<PanoramaAcknowledgement>,
+) -> Result<impl IntoResponse, crate::panorama_jobs::Error> {
+    app.panorama_jobs.acknowledge(&id, &input.sha256).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn generate_artwork(

@@ -85,3 +85,29 @@ final class GeneratedArtworkTests: XCTestCase {
         XCTAssertTrue(variations.allSatisfy { $0.cacheIdentity != input.cacheIdentity })
     }
 }
+
+extension GeneratedArtworkTests {
+    func testHeaderExtensionUsesSeparateDurableRoutesAndAcknowledgesOnlyItsDownloadedHash() async throws {
+        let id=String(repeating: "a",count:64)
+        let http=ArtworkHTTP(.init(data:Data("{\"id\":\"\(id)\",\"state\":\"queued\"}".utf8),status:202,contentType:"application/json"))
+        let client=GeneratedArtworkClient(connection:try .init(endpoint:"http://localhost:8089",token:"fixture"),transport:http,kind:.headerExtension)
+        let original=Data(base64Encoded:"iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGMQMgn7D8IMMAYANAwGbdbSwQUAAAAASUVORK5CYII=")!
+        _ = try await client.submitExtension(original,offline:false)
+        var calls=await http.calls
+        XCTAssertEqual(calls[0].url?.path,"/v1/artwork/expansions/jobs")
+        let json=try XCTUnwrap(JSONSerialization.jsonObject(with:try XCTUnwrap(calls[0].httpBody)) as? [String:String])
+        XCTAssertEqual(json,["image":original.base64EncodedString(),"aspect":"2:3"])
+        let image=Data(base64Encoded:"iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAEUlEQVR4nGMQMgn7D8IMGAwAeWsJo1S5O6UAAAAASUVORK5CYII=")!
+        await http.respond(.init(data:image,status:200,contentType:"image/png"))
+        let downloaded = try await client.image(id,offline:false)
+        XCTAssertEqual(downloaded,image)
+        await http.respond(.init(data:Data("{}".utf8),status:200,contentType:"application/json"))
+        try await client.acknowledge(id,sha256:String(repeating:"b",count:64),offline:false)
+        calls=await http.calls
+        XCTAssertEqual(calls.map{ $0.url?.path },["/v1/artwork/expansions/jobs","/v1/artwork/expansions/jobs/\(id)/image","/v1/artwork/expansions/jobs/\(id)/ack"])
+        XCTAssertTrue(calls.allSatisfy{ $0.value(forHTTPHeaderField:"Authorization")=="Bearer fixture" })
+        XCTAssertFalse(GeneratedArtworkClient.isPNG(image))
+        XCTAssertTrue(GeneratedArtworkClient.isHeaderPNG(image))
+        XCTAssertFalse(GeneratedArtworkClient.isHeaderPNG(original))
+    }
+}

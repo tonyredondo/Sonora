@@ -14,6 +14,7 @@ final class PlaybackController: NSObject {
     let lyricInterpretations: LyricInterpretationStore
     let albumInterpretations: AlbumInterpretationStore
     let generatedArtwork: GeneratedArtworkStore?
+    let artworkExtensions: ArtworkExtensionStore?
     var currentAlbum: AlbumPreparationRequest?
     var albumPreparationPreferences: QueuePreparationPreferences { QueuePreparationPreferences(defaults: defaults) }
     @ObservationIgnored lazy var queuePreparation = QueuePreparationStore { [weak self] item, preferences in
@@ -100,6 +101,11 @@ final class PlaybackController: NSObject {
             value.artwork = generatedArtwork?.image(owner: GeneratedArtworkStore.owner(track, folder: access), fingerprint: fingerprint)
         }
         return value
+    }
+    var currentArtworkExtension: UIImage? {
+        guard let track = current, let fingerprint = currentDetails?.fingerprint,
+              let access = try? folderAccess(for: track) else { return nil }
+        return artworkExtensions?.image(owner: GeneratedArtworkStore.owner(track, folder: access), fingerprint: fingerprint)
     }
     var currentSongTools: SongToolsResult? {
         guard let track = current, let folder = try? folderAccess(for: track),
@@ -219,6 +225,7 @@ final class PlaybackController: NSObject {
     func translationPreferencesDidChange() { preparationPreferencesDidChange() }
     func preparationPreferencesDidChange() {
         generatedArtwork?.retry()
+        artworkExtensions?.retry(failed: false)
         refreshQueuePreparation()
         prepareCurrentSongTools()
     }
@@ -228,6 +235,7 @@ final class PlaybackController: NSObject {
         lyricInterpretations.retryAutomatic()
         albumInterpretations.retry()
         generatedArtwork?.retry(failed: retryArtworkFailures)
+        artworkExtensions?.retry(failed: retryArtworkFailures)
         refreshQueuePreparation(retry: true)
         retrySongAnalysis()
     }
@@ -307,6 +315,7 @@ final class PlaybackController: NSObject {
         let preferences = QueuePreparationPreferences(defaults: defaults)
         let source = preferences.source, target = preferences.target
         generatedArtwork?.select(owner: GeneratedArtworkStore.owner(track, folder: access), fingerprint: fingerprint)
+        artworkExtensions?.select(owner: GeneratedArtworkStore.owner(track, folder: access), fingerprint: fingerprint)
         let request = SongAnalysisRequest(url: track.url(in: access.url).standardizedFileURL,
                                           localID: track.localID, fingerprint: fingerprint,
                                           translationKey: LyricUnderstanding.translationKey(lyrics, source: source, target: target),
@@ -497,7 +506,7 @@ final class PlaybackController: NSObject {
         return try await body(token)
     }
 
-    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil, musicTools: MusicToolsStore? = nil, lyricTranslations: LyricTranslationStore? = nil, lyricInterpretations: LyricInterpretationStore? = nil, albumInterpretations: AlbumInterpretationStore? = nil, audioCharacter: AudioCharacterStore? = nil, generatedArtwork: GeneratedArtworkStore? = nil, activateSession: (() async throws -> Void)? = nil) {
+    init(defaults: UserDefaults = .standard, audioPlayer: AudioPlayer = AudioPlayer(), localStorage: URL = LocalMusicImport.defaultStorage, metadataArchive: MetadataArchiveController? = nil, musicTools: MusicToolsStore? = nil, lyricTranslations: LyricTranslationStore? = nil, lyricInterpretations: LyricInterpretationStore? = nil, albumInterpretations: AlbumInterpretationStore? = nil, audioCharacter: AudioCharacterStore? = nil, generatedArtwork: GeneratedArtworkStore? = nil, artworkExtensions: ArtworkExtensionStore? = nil, activateSession: (() async throws -> Void)? = nil) {
         self.defaults = defaults
         self.musicTools = musicTools ?? MusicToolsStore()
         self.audioCharacter = audioCharacter ?? AudioCharacterStore()
@@ -505,6 +514,7 @@ final class PlaybackController: NSObject {
         self.lyricInterpretations = lyricInterpretations ?? LyricInterpretationStore()
         self.albumInterpretations = albumInterpretations ?? AlbumInterpretationStore()
         self.generatedArtwork = generatedArtwork
+        self.artworkExtensions = artworkExtensions
         self.metadataArchive = metadataArchive
         player = audioPlayer
         self.activateSession = activateSession ?? { try await AudioSessionCoordinator.shared.activate() }
@@ -521,6 +531,11 @@ final class PlaybackController: NSObject {
             .flatMap { try? JSONDecoder().decode(TransitionSettings.self, from: $0) }?.validated ?? TransitionSettings()
         super.init()
         self.generatedArtwork?.onImageChanged = { [weak self] in self?.updateNowPlaying() }
+        self.generatedArtwork?.onArtworkPrepared = { [weak self] owner, fingerprint, data in
+            guard let self else { return }
+            await self.artworkExtensions?.enqueue(owner: owner, fingerprint: fingerprint, source: data,
+                enabled: self.albumPreparationPreferences.artwork)
+        }
         events = PlayerEvents(equalizer: equalizer.processor) { [weak self] event in Task { @MainActor in self?.handle(event) } }
         player.delegate = events
         systemControls = SystemPlaybackControls(owner: self)

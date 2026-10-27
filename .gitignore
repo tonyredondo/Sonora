@@ -9,3 +9,11 @@ proxy/target/
 proxy/sonora-proxy.toml
 proxy/*.sqlite*
 proxy/*.lockfile
+
+# Android local build output
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/**/build/
+android/.native-deps/
+android/app/.cxx/

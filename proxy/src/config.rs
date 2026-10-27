@@ -134,6 +134,8 @@ pub struct ServerConfig {
     pub max_jobs: usize,
     pub max_tracks_per_job: usize,
     pub max_job_result_bytes: usize,
+    /// Durable panorama sources and undelivered results, separate from the evictable provider cache.
+    pub panorama_max_bytes: u64,
     pub job_retention_seconds: u64,
 }
 impl Default for ServerConfig {
@@ -144,6 +146,7 @@ impl Default for ServerConfig {
             max_jobs: 64,
             max_tracks_per_job: 100,
             max_job_result_bytes: 4_000_000,
+            panorama_max_bytes: 512 * 1024 * 1024,
             job_retention_seconds: 3600,
         }
     }
@@ -361,6 +364,14 @@ impl Config {
         {
             return Err(invalid(
                 "metadata storage requires a separate path and a 22 MB-1 TiB budget",
+            ));
+        }
+        let panorama = self.cache.path.with_extension("panorama.sqlite");
+        if config_paths_overlap(&panorama, &self.metadata.path)
+            || !(22_000_000..=10 * 1024 * 1024 * 1024).contains(&self.server.panorama_max_bytes)
+        {
+            return Err(invalid(
+                "panorama jobs require a separate path and a 22 MB-10 GiB budget",
             ));
         }
         if self.user_agent.len() < 10
