@@ -85,7 +85,11 @@ extension XCUIApplication {
         navigationBars["Fuentes"].buttons["Listo"].tap()
     }
     @MainActor func beginLinkingFolder() {
-        buttons["Añadir música"].tap()
+        // The empty library remains in the accessibility tree below Sources.
+        guard let add = buttons.matching(identifier: "Añadir música").allElementsBoundByIndex.first(where: \.isHittable) else {
+            XCTFail("No visible add-music action in the current screen"); return
+        }
+        add.tap()
         XCTAssertTrue(buttons["linkMusicFolder"].waitForExistence(timeout: 5))
         buttons["linkMusicFolder"].tap()
     }

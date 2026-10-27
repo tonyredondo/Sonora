@@ -134,30 +134,105 @@ final class InlineLyricsUITests: XCTestCase {
             XCTAssertNotEqual(before,after,"The artwork's lyric region must still scroll")
             lyrics.coordinate(withNormalizedOffset:CGVector(dx:0.45,dy:0.25)).press(forDuration:0.05,thenDragTo:lyrics.coordinate(withNormalizedOffset:CGVector(dx:0.45,dy:0.75)))
             XCTAssertTrue(close.exists,"A downward lyric scroll must not minimize the player")
-            app.sliders["Posición de reproducción"].adjust(toNormalizedSliderPosition:0.2)
+            let waveform = app.descendants(matching: .any).matching(identifier: "songWaveform").firstMatch
+            let slider = app.sliders["Posición de reproducción"]
+            let timeline = waveform.exists ? waveform : slider
+            XCTAssertTrue(timeline.exists, "The player must expose its waveform or its loading slider")
+            // With large text, scroll the outer player from its metadata area;
+            // dragging inside the lyrics must keep reading instead.
+            for _ in 0..<5 where !timeline.isHittable || !app.buttons["playerTransport"].isHittable {
+                let y = min(app.frame.height - 100, app.staticTexts["playerTitle"].frame.midY)
+                let start = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 10, dy: max(150, y)))
+                start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -300)))
+            }
+            XCTAssertTrue(timeline.isHittable)
+            XCTAssertTrue(app.buttons["playerTransport"].isHittable)
+            if waveform.exists {
+                timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)).press(forDuration: 0.05,
+                    thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5)))
+            } else {
+                slider.adjust(toNormalizedSliderPosition: 0.2)
+            }
             XCTAssertTrue(close.exists)
             let seconds = Int(app.staticTexts["playerElapsedTime"].label.split(separator:":").last ?? "") ?? -1
             XCTAssertGreaterThan(seconds,20,"The timeline must still seek")
             app.buttons["playerTransport"].tap()
+            for _ in 0..<5 where close.frame.minY < originalFrame.minY - 1 {
+                // Use the visible metadata; the waveform owns drags in either direction.
+                let artist = app.staticTexts["playerArtist"]
+                XCTAssertTrue(artist.isHittable)
+                let start = artist.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 250)))
+            }
+            XCTAssertTrue(close.isHittable)
+            XCTAssertEqual(close.frame.minY, originalFrame.minY, accuracy: 1, "The outer player must scroll back to its header")
             header.press(forDuration:0.05,thenDragTo:header.withOffset(CGVector(dx:0,dy:220)),withVelocity:.slow,thenHoldForDuration:0.1)
             XCTAssertTrue(close.waitForNonExistence(timeout:5),"Dragging the header must minimize the player")
             app.assertLibraryHome()
             XCTAssertEqual(app.buttons["miniTransport"].label,"Pausar","Minimizing must keep the song playing")
             capture("player-drag-minimized-" + theme,app)
+            app.buttons["miniTransport"].tap()
             app.buttons["openNowPlaying"].tap(); XCTAssertTrue(close.waitForExistence(timeout:5))
-            app.buttons["playerTransport"].tap(); app.selectPlayerPage(0)
+            app.selectPlayerPage(0)
             XCTAssertTrue(lyrics.waitForNonExistence(timeout:5))
             let artwork = app.descendants(matching:.any).matching(identifier:"playerArtwork").firstMatch
             XCTAssertTrue(artwork.exists)
             capture("player-drag-uncovered-artwork-" + theme,app)
             let cover = artwork.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.25))
             cover.press(forDuration:0.05,thenDragTo:cover.withOffset(CGVector(dx:0,dy:220)),withVelocity:.slow,thenHoldForDuration:0.1)
-            XCTAssertTrue(close.exists,"Artwork gestures are reserved for paging; only the header minimizes playback")
-            close.tap()
+            XCTAssertTrue(close.waitForNonExistence(timeout: 5), "A downward cover pull must minimize; text pages retain their scrolling gestures")
             app.assertLibraryHome(); XCTAssertEqual(app.buttons["miniTransport"].label,"Reproducir")
             app.buttons["openNowPlaying"].tap(); XCTAssertTrue(close.waitForExistence(timeout:5))
             close.tap(); app.assertLibraryHome(); app.terminate()
         }
+    }
+
+    @MainActor func testArtworkSwipeDownMinimizesTheScrollablePlayer() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        openPlayer(app, theme: "noche", track: "02 - Letra sincronizada QA.flac", accessibility: true)
+        app.selectPlayerPage(0)
+        let close = app.buttons["Cerrar reproductor"]
+        let artwork = app.descendants(matching: .any).matching(identifier: "playerArtwork").firstMatch
+        XCTAssertTrue(artwork.exists)
+        capture("artwork-minimize-before", app)
+        let start = artwork.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
+        let originalFrame = close.frame
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 30)), withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertTrue(close.exists)
+        XCTAssertEqual(close.frame.minY, originalFrame.minY, accuracy: 1, "A cancelled cover pull must return to the same layout")
+        app.selectPlayerPage(1)
+        app.selectPlayerPage(0)
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 220)), withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertTrue(close.waitForNonExistence(timeout: 5), "Pulling down on the cover must minimize, including when the playback controls need scrolling")
+        app.assertLibraryHome()
+        XCTAssertEqual(app.buttons["miniTransport"].label, "Reproducir")
+        app.buttons["openNowPlaying"].tap()
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        capture("artwork-minimize-reopened", app)
+    }
+
+    @MainActor func testHeaderSwipeDownPreservesReadingAndCancelsShortPulls() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        openPlayer(app, theme: "noche", track: "02 - Letra sincronizada QA.flac", accessibility: true)
+        let close = app.buttons["Cerrar reproductor"], expansion = app.buttons["expandLyrics"]
+        let originalFrame = close.frame
+        let header = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: (close.frame.maxX + expansion.frame.minX) / 2, dy: close.frame.midY))
+        header.press(forDuration: 0.05, thenDragTo: header.withOffset(CGVector(dx: 0, dy: 30)), withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertTrue(close.exists)
+        XCTAssertEqual(close.frame.minY, originalFrame.minY, accuracy: 1)
+        let lyrics = app.scrollViews["playerLyrics"]
+        let before = lyrics.buttons.allElementsBoundByIndex.filter(\.isHittable).map(\.label)
+        let from = lyrics.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
+        from.press(forDuration: 0.05, thenDragTo: lyrics.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)))
+        XCTAssertTrue(close.exists)
+        XCTAssertNotEqual(before, lyrics.buttons.allElementsBoundByIndex.filter(\.isHittable).map(\.label))
+        lyrics.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).press(forDuration: 0.05, thenDragTo: from)
+        XCTAssertTrue(close.exists, "Reading downward must not dismiss the text page")
+        header.press(forDuration: 0.05, thenDragTo: header.withOffset(CGVector(dx: 0, dy: 220)), withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertTrue(close.waitForNonExistence(timeout: 5), "Header dismissal must still work on a text page with scrollable controls")
+        app.assertLibraryHome()
     }
 
     @MainActor func testArtworkAdvancesWithActualAudioPlayback() {

@@ -231,6 +231,31 @@ private actor HeaderHTTP: MetadataLookupTransport {
         XCTAssertGreaterThan(bytes[pixel + 1], 240, "The bottom of the original cover must remain inside the viewport")
         XCTAssertLessThan(bytes[pixel], 10)
     }
+    func testPreparingCoverKeepsBothSideEdgesBelowTheHeader() throws {
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let source = UIGraphicsImageRenderer(size: CGSize(width: 100, height: 100), format: format).image { context in
+            UIColor.gray.setFill(); context.fill(CGRect(x: 0, y: 0, width: 100, height: 100))
+            UIColor.red.setFill(); context.fill(CGRect(x: 0, y: 0, width: 10, height: 100))
+            UIColor.blue.setFill(); context.fill(CGRect(x: 90, y: 0, width: 10, height: 100))
+        }
+        for headerHeight in [40.0, 120.0] {
+            let content = ArtworkBackdrop(image: source, extensionImage: nil,
+                artworkSize: CGSize(width: 100, height: 100), height: headerHeight)
+            let renderer = ImageRenderer(content: content); renderer.scale = 1
+            let image = try XCTUnwrap(renderer.uiImage?.cgImage)
+            let context = try XCTUnwrap(CGContext(data: nil, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            let bytes = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+            let row = Int(headerHeight) + 50
+            let left = (row * image.width + 5) * 4, right = (row * image.width + 95) * 4
+            XCTAssertGreaterThan(bytes[left], 240, "The left edge must remain visible while the extension is pending or unavailable")
+            XCTAssertLessThan(bytes[left + 2], 10)
+            XCTAssertGreaterThan(bytes[right + 2], 240, "The right edge must remain visible while the extension is pending or unavailable")
+            XCTAssertLessThan(bytes[right], 10)
+        }
+    }
     func testPreparingArtworkShowsOneContinuousPhotoWithoutAReflectedSection() throws {
         let format = UIGraphicsImageRendererFormat(); format.scale = 1
         let original = UIGraphicsImageRenderer(size: CGSize(width: 100, height: 100), format: format).image { context in

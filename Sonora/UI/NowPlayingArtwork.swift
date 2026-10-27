@@ -110,8 +110,8 @@ struct NowPlayingArtwork: View {
     }
 }
 
-/// One photo fills the entire artwork and header viewport, including while
-/// the complete generated portrait is still being prepared.
+/// Keep the source cover intact while its upper extension is being prepared.
+/// A completed portrait adds the header area without enlarging the source square.
 struct ArtworkBackdrop: View {
     let image: UIImage?
     let extensionImage: UIImage?
@@ -124,14 +124,12 @@ struct ArtworkBackdrop: View {
                 let viewportHeight = height + artworkSize.height
                 let scale = extensionImage != nil
                     ? min(artworkSize.width, viewportHeight) / photo.size.width
-                    : max(artworkSize.width / photo.size.width, viewportHeight / photo.size.height)
+                    : min(artworkSize.width / photo.size.width, artworkSize.height / photo.size.height)
                 let photoWidth = photo.size.width * scale
                 let photoHeight = photo.size.height * scale
                 // The source square occupies the bottom of the portrait. Spend
                 // any crop on the generated sky, never on the original cover.
-                let photoTop = extensionImage != nil
-                    ? viewportHeight - photoHeight
-                    : (viewportHeight - photoHeight) / 2
+                let photoTop = viewportHeight - photoHeight
                 Image(uiImage: photo).resizable()
                     .frame(width: photoWidth, height: photoHeight)
                     .offset(y: photoTop)
