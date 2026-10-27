@@ -33,6 +33,7 @@ struct SonoraApp: App {
                 .onChange(of: metadata.effectiveOffline) { if !metadata.effectiveOffline { player.retryQueuePreparation(retryArtworkFailures: false) } }
                 .onChange(of: phase) {
                     player.generatedArtwork?.setActive(phase == .active)
+                    player.artworkExtensions?.setActive(phase == .active)
                     if phase == .active {
                         player.metadataArchive?.start()
                         player.retryQueuePreparation(retryArtworkFailures: false)

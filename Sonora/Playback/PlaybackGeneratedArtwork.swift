@@ -13,9 +13,13 @@ extension PlaybackController {
             let snapshot = try await MetadataService.read(url: track.url(in: folder.url), folder: folder)
             guard snapshot.fingerprint == expected else { throw MetadataIOError.changed }
             let realCover = try await CoordinatedAudioRead.read(track: track, folder: folder, expected: expected) { url, _ in
-                Self.hasArtwork(snapshot.artwork) || Self.hasArtwork(LocalArtwork.data(for: url))
+                Self.hasArtwork(snapshot.artwork) ? snapshot.artwork : LocalArtwork.data(for: url)
             }
-            guard !realCover else { return nil }
+            if let realCover, Self.hasArtwork(realCover) {
+                await artworkExtensions?.enqueue(owner: owner, fingerprint: expected, source: realCover,
+                    enabled: albumPreparationPreferences.artwork)
+                return nil
+            }
             // Indexing publishes complete album membership at its boundary.
             // This wait belongs to artwork preparation, never the decoder.
             await library.waitForIndexing()

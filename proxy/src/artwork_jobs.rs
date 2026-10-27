@@ -135,7 +135,17 @@ impl ArtworkJobs {
             .get(id)
             .cloned();
         if let Some(current) = current {
-            if !retry_failed || matches!(current.state, State::Queued | State::Running) {
+            if current.state == State::Completed {
+                if self
+                    .0
+                    .service
+                    .cached_artwork(&format!("{CACHE_PREFIX}{id}"))
+                    .await?
+                    .is_some()
+                {
+                    return Ok(current);
+                }
+            } else if !retry_failed || matches!(current.state, State::Queued | State::Running) {
                 return Ok(current);
             }
         }
@@ -181,7 +191,12 @@ impl ArtworkJobs {
                 return Ok(record.snapshot.clone());
             }
         }
-        let attempts = if retry_failed {
+        // A successful image later evicted by cache pressure is a new preparation, not a failed retry.
+        let attempts = if retry_failed
+            || record
+                .as_ref()
+                .is_some_and(|record| record.snapshot.state == State::Completed)
+        {
             0
         } else {
             record.as_ref().map_or(0, |record| record.attempts)
@@ -937,6 +952,42 @@ mod tests {
                     State::Completed
                 );
             }
+        }
+    }
+    #[tokio::test]
+    async fn completed_image_eviction_is_recovered_even_after_several_successes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = Cache::open(&tmp.path().join("cache.sqlite"), 1_000_000, 100).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let generator: TestImageGenerator = Arc::new({
+            let calls = calls.clone();
+            move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(png()) })
+            }
+        });
+        let jobs = jobs(cache.clone(), generator, 4);
+        let source = input("Eviction QA");
+        let key = source.key().unwrap();
+        let id = jobs.create(source, false).await.unwrap().id;
+        for expected in 1..=5 {
+            if expected > 1 {
+                cache.remove(&key).await.unwrap();
+                jobs.snapshot(&id).await.unwrap();
+            }
+            tokio::time::timeout(Duration::from_millis(500), async {
+                loop {
+                    if calls.load(Ordering::SeqCst) == expected
+                        && jobs.snapshot(&id).await.unwrap().state == State::Completed
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(jobs.image(&id).await.unwrap(), png());
         }
     }
 }

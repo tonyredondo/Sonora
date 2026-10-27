@@ -26,6 +26,7 @@ final class GeneratedArtworkStore {
     private var selected: Selection?
     private var selectedImage: UIImage?
     @ObservationIgnored var onImageChanged: (() -> Void)?
+    @ObservationIgnored var onArtworkPrepared: (@MainActor (String, FileFingerprint, Data) async -> Void)?
     @ObservationIgnored private let settings: MetadataAssistantSettings
     @ObservationIgnored private let bindings: MusicToolsCache
     @ObservationIgnored private let images: MetadataLookupCache
@@ -149,6 +150,7 @@ final class GeneratedArtworkStore {
         guard revision == cacheRevision, !clearingCache else { return false }
         if selected == Selection(owner: owner, fingerprint: fingerprint) { selectedImage = image; onImageChanged?() }
         statuses[owner] = .ready
+        await onArtworkPrepared?(owner, fingerprint, entry.data)
         return true
     }
     func retry(failed: Bool = true) {
@@ -338,7 +340,7 @@ final class GeneratedArtworkStore {
             }
         }
     }
-    private static func retryableConnection(_ error: Error) -> Bool {
+    static func retryableConnection(_ error: Error) -> Bool {
         let code = (error as? URLError)?.code.rawValue ?? (error as? MetadataTransportFailure)?.code
         if let code {
             return [URLError.timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost,

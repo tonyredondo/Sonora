@@ -65,21 +65,25 @@ public struct GeneratedArtworkJob: Codable, Equatable, Sendable {
 }
 
 public actor GeneratedArtworkClient {
+    public enum Kind: Sendable { case square, headerExtension }
+    private let kind: Kind
+    private var jobsPath: String { kind == .square ? "v1/artwork/jobs" : "v1/artwork/expansions/jobs" }
     private let connection: MetadataProxyConnection
     private let transport: any MetadataLookupTransport
     private let jobsTransport: any MetadataLookupTransport
     private let imageTransport: any MetadataLookupTransport
     public init(connection: MetadataProxyConnection,
-                transport: (any MetadataLookupTransport)? = nil) {
+                transport: (any MetadataLookupTransport)? = nil, kind: Kind = .square) {
+        self.kind = kind
         self.connection = connection
         self.transport = transport ?? MetadataURLSessionTransport(requestTimeout: 225, resourceTimeout: 240)
         jobsTransport = transport ?? MetadataURLSessionTransport(requestTimeout: 15, resourceTimeout: 30)
         imageTransport = transport ?? MetadataURLSessionTransport(requestTimeout: 30, resourceTimeout: 180)
     }
     public func submit(_ input: GeneratedArtworkInput, retryFailed: Bool = false, offline: Bool) async throws -> GeneratedArtworkJob {
-        guard input.isValid else { throw MetadataLookupError.invalidSearch }
+        guard kind == .square, input.isValid else { throw MetadataLookupError.invalidSearch }
         guard !offline else { throw MetadataLookupError.notCached }
-        var request = try connection.request(path: "v1/artwork/jobs", parameters: retryFailed ? [URLQueryItem(name: "retry_failed", value: "true")] : [])
+        var request = try connection.request(path: jobsPath, parameters: retryFailed ? [URLQueryItem(name: "retry_failed", value: "true")] : [])
         request.httpMethod = "POST"; request.httpBody = try JSONEncoder().encode(input)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let response = try await jobsTransport.send(request)
@@ -87,10 +91,43 @@ public actor GeneratedArtworkClient {
         try checkJobResponse(response, accepted: [200, 202])
         return try decodeJob(response)
     }
+    /// A separate display derivative. The supplied square remains the source of truth.
+    public func submitExtension(_ image: Data, retryFailed: Bool = false, offline: Bool) async throws -> GeneratedArtworkJob {
+        guard kind == .headerExtension, Self.isPNG(image) else { throw MetadataLookupError.invalidSearch }
+        guard !offline else { throw MetadataLookupError.notCached }
+        struct Input: Encodable { let image: String; let aspect: String }
+        var request = try connection.request(path: jobsPath, parameters: retryFailed ? [URLQueryItem(name: "retry_failed", value: "true")] : [])
+        request.httpMethod = "POST"
+        request.httpBody = try JSONEncoder().encode(Input(image: image.base64EncodedString(), aspect: "2:3"))
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let response = try await jobsTransport.send(request)
+        if response.status == 404 || response.status == 405 { throw GeneratedArtworkIssue.serverUpdateRequired }
+        try checkJobResponse(response, accepted: [200, 202])
+        return try decodeJob(response)
+    }
+    public func acknowledge(_ id: String, sha256: String, offline: Bool) async throws {
+        guard kind == .headerExtension, GeneratedArtworkJob.validID(id), GeneratedArtworkJob.validID(sha256) else { throw MetadataLookupError.invalidSearch }
+        guard !offline else { throw MetadataLookupError.notCached }
+        var request = try connection.request(path: "\(jobsPath)/\(id)/ack")
+        request.httpMethod = "POST"
+        request.httpBody = try JSONEncoder().encode(["sha256": sha256])
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let response = try await jobsTransport.send(request)
+        if response.status == 404 { throw MetadataLookupError.notFound }
+        try checkJobResponse(response, accepted: [200, 204])
+    }
+    public static func isHeaderPNG(_ data: Data) -> Bool {
+        guard (45...10_000_000).contains(data.count), data.starts(with: [137,80,78,71,13,10,26,10]),
+              Array(data[12..<16]) == [73,72,68,82], data.suffix(12) == Data([0,0,0,0,73,69,78,68,174,66,96,130]) else { return false }
+        func word(_ offset: Int) -> UInt32 { data[offset..<(offset + 4)].reduce(0) { ($0 << 8) | UInt32($1) } }
+        let width = word(16), height = word(20)
+        // Integer canvases round the height up for odd-width square sources.
+        return width > 0 && height <= 2048 && (UInt64(width) * 3 + 1) / 2 == UInt64(height)
+    }
     public func job(_ id: String, offline: Bool) async throws -> GeneratedArtworkJob {
         guard GeneratedArtworkJob.validID(id) else { throw MetadataLookupError.invalidSearch }
         guard !offline else { throw MetadataLookupError.notCached }
-        let response = try await jobsTransport.send(connection.request(path: "v1/artwork/jobs/\(id)"))
+        let response = try await jobsTransport.send(connection.request(path: "\(jobsPath)/\(id)"))
         if response.status == 404 { throw MetadataLookupError.notFound }
         try checkJobResponse(response, accepted: [200])
         let value = try decodeJob(response)
@@ -100,13 +137,13 @@ public actor GeneratedArtworkClient {
     public func image(_ id: String, offline: Bool) async throws -> Data {
         guard GeneratedArtworkJob.validID(id) else { throw MetadataLookupError.invalidSearch }
         guard !offline else { throw MetadataLookupError.notCached }
-        var request = try connection.request(path: "v1/artwork/jobs/\(id)/image")
+        var request = try connection.request(path: "\(jobsPath)/\(id)/image")
         request.setValue("image/png", forHTTPHeaderField: "Accept")
         let response = try await imageTransport.send(request)
         if response.status == 404 || response.status == 409 { throw MetadataLookupError.notFound }
         try checkJobResponse(response, accepted: [200])
         guard response.contentType?.split(separator: ";").first?.trimmingCharacters(in: .whitespaces).lowercased() == "image/png",
-              Self.isPNG(response.data) else { throw GeneratedArtworkIssue.invalidImage }
+              (kind == .square ? Self.isPNG(response.data) : Self.isHeaderPNG(response.data)) else { throw GeneratedArtworkIssue.invalidImage }
         return response.data
     }
     private func checkJobResponse(_ response: MetadataHTTPResponse, accepted: Set<Int>) throws {
@@ -126,7 +163,7 @@ public actor GeneratedArtworkClient {
         return job
     }
     public func generate(_ input: GeneratedArtworkInput, offline: Bool) async throws -> Data {
-        guard input.isValid else { throw MetadataLookupError.invalidSearch }
+        guard kind == .square, input.isValid else { throw MetadataLookupError.invalidSearch }
         guard !offline else { throw MetadataLookupError.notCached }
         var request = try connection.request(path: "v1/artwork/generate")
         request.httpMethod = "POST"; request.httpBody = try JSONEncoder().encode(input)

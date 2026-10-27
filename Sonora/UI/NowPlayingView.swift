@@ -28,31 +28,14 @@ struct NowPlayingView: View {
         NavigationStack {
             GeometryReader { geometry in
                 let compact = geometry.size.height < 700 || dynamicTypeSize.isAccessibilitySize
-                VStack(spacing: 8) {
-                    header.contentShape(.rect).simultaneousGesture(minimizeGesture)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, 20)
-                        .zIndex(1)
-                    // Artwork yields its height before text or touch targets are compressed.
-                    NowPlayingArtwork(player: player, scrollRequest: lyricsScrollRequest, selection: $selectedPage,
-                                      topSafeArea: geometry.safeAreaInsets.top)
-                        .id(player.current?.id)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .layoutPriority(-1)
-                        .contentShape(.rect)
-                        .accessibilityElement(children:.contain).accessibilityLabel("Carátula").accessibilityIdentifier("playerArtwork")
-                        .accessibilityValue(player.currentDetails?.artwork == nil ? "Sin portada" : "Portada disponible")
-                    trackInformation(compact: compact).fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, 20)
-                    PlaybackTimeline(player: player, tint: theme.accent).fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, 20)
-                    transport.fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, 20)
-                    output.fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, 20)
+                ViewThatFits(in: .vertical) {
+                    playerContent(width: geometry.size.width, topSafeArea: geometry.safeAreaInsets.top, compact: compact)
+                    if !compact {
+                        playerContent(width: geometry.size.width, topSafeArea: geometry.safeAreaInsets.top, compact: true)
+                    }
+                    scrollablePlayerContent(width: geometry.size.width, topSafeArea: geometry.safeAreaInsets.top)
                 }
-                .padding(.top, 8)
-                .frame(width: geometry.size.width, height: geometry.size.height)
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
                 .coordinateSpace(name: NowPlayingArtwork.coordinateSpace)
                 .offset(y:completedDrag ?? downwardDrag)
                 .animation(downwardDrag == 0 && completedDrag == nil && !reduceMotion ? .spring(response:0.3,dampingFraction:0.85) : nil,value:downwardDrag)
@@ -64,7 +47,7 @@ struct NowPlayingView: View {
             } message: { Text(player.songAnalysisIssue ?? "") }
             .alert("Estado de la portada", isPresented: $showArtworkIssue) {
                 Button("Listo", role: .cancel) { }
-            } message: { Text(player.generatedArtwork?.currentIssue ?? player.generatedArtwork?.automaticIssue ?? "") }
+            } message: { Text(player.artworkExtensions?.currentIssue ?? player.generatedArtwork?.currentIssue ?? player.generatedArtwork?.automaticIssue ?? "") }
             .sheet(isPresented: $showQueue) { QueueView(player: player) }
             .sheet(item: $expandedPage, onDismiss: { lyricsScrollRequest += 1 }) { page in
                 if page == .album {
@@ -104,6 +87,42 @@ struct NowPlayingView: View {
             .sheet(isPresented: $showTimer) {
                 NavigationStack { SleepTimerView(player: player).toolbar { ToolbarItem(placement: .confirmationAction) { Button("Listo") { showTimer = false } } } }
             }
+    }
+    @ViewBuilder private func scrollablePlayerContent(width: CGFloat, topSafeArea: CGFloat) -> some View {
+        let content = ScrollView {
+            playerContent(width: width, topSafeArea: topSafeArea, compact: true)
+        }
+        if #available(iOS 26.0, *) {
+            content.scrollEdgeEffectHidden(true, for: .top)
+        } else {
+            content
+        }
+    }
+    private func playerContent(width: CGFloat, topSafeArea: CGFloat, compact: Bool) -> some View {
+        VStack(spacing: compact ? 4 : 8) {
+            header.contentShape(.rect).simultaneousGesture(minimizeGesture)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 20)
+                .zIndex(1)
+            // Keep the entire square below the toolbar. Use compact spacing,
+            // then scrolling on short screens instead of cropping the record sleeve.
+            NowPlayingArtwork(player: player, scrollRequest: lyricsScrollRequest, selection: $selectedPage,
+                              topSafeArea: topSafeArea)
+                .id(player.current?.id)
+                .frame(width: width, height: width)
+                .contentShape(.rect)
+                .accessibilityElement(children: .contain).accessibilityLabel("Carátula").accessibilityIdentifier("playerArtwork")
+                .accessibilityValue(player.currentArtworkExtension != nil ? "Portada ampliada" : (player.currentDetails?.artwork == nil ? "Sin portada" : "Portada disponible"))
+            trackInformation(compact: compact).fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 20)
+            PlaybackTimeline(player: player, tint: theme.accent).fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 20)
+            transport.fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 20)
+            output.fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 20)
+        }
+        .padding(.top, 8)
     }
     private var minimizeGesture: some Gesture {
         DragGesture(minimumDistance:18,coordinateSpace:.global)
@@ -195,6 +214,25 @@ struct NowPlayingView: View {
                 }
                 .font(.caption).foregroundStyle(.secondary)
                 .accessibilityElement(children: .contain).accessibilityIdentifier("generatedArtworkStatus")
+            }
+            if player.currentDetails?.artwork != nil, let status = player.artworkExtensions?.currentStatus {
+                HStack(spacing: 6) {
+                    switch status {
+                    case .preparing, .connecting, .queued, .generating, .downloading:
+                        ProgressView().controlSize(.mini)
+                        Text("Ampliando portada…")
+                    case .paused:
+                        Label("La ampliación continuará al volver", systemImage: "clock")
+                    case .waitingForConnection:
+                        Label("Ampliación pendiente de conexión", systemImage: "wifi.exclamationmark")
+                    case .waiting:
+                        if automaticArtwork { Text("Ampliación de portada pendiente") }
+                    case .failed:
+                        Button("No se pudo ampliar la portada", systemImage: "exclamationmark.circle") { showArtworkIssue = true }
+                    case .ready: EmptyView()
+                    }
+                }.font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("artworkExtensionStatus")
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }

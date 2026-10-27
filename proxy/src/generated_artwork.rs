@@ -100,6 +100,19 @@ pub(crate) fn valid_png(data: &[u8]) -> bool {
 }
 
 pub(crate) async fn run(config: &CodexConfig, input: &ArtworkInput) -> Result<Bytes, E> {
+    let prompt = format!(
+        "{INSTRUCTIONS}\n\nCONTEXT_JSON:\n{}",
+        serde_json::to_string(input).map_err(|_| E::Invalid)?
+    );
+    run_native_image(config, &prompt, None, valid_png).await
+}
+
+pub(crate) async fn run_native_image(
+    config: &CodexConfig,
+    prompt: &str,
+    attachment: Option<&Path>,
+    validator: fn(&[u8]) -> bool,
+) -> Result<Bytes, E> {
     let temp = tempfile::Builder::new()
         .prefix("sonora-artwork-")
         .tempdir()
@@ -155,6 +168,9 @@ pub(crate) async fn run(config: &CodexConfig, input: &ArtworkInput) -> Result<By
     ] {
         command.env_remove(name);
     }
+    if let Some(path) = attachment {
+        command.arg("--image").arg(path);
+    }
     command
         .arg("-")
         .stdin(Stdio::piped())
@@ -164,10 +180,6 @@ pub(crate) async fn run(config: &CodexConfig, input: &ArtworkInput) -> Result<By
     let mut child = command.spawn().map_err(|_| E::Unavailable)?;
     let mut stdin = child.stdin.take().ok_or(E::Unavailable)?;
     let stdout = child.stdout.take().ok_or(E::Unavailable)?;
-    let prompt = format!(
-        "{INSTRUCTIONS}\n\nCONTEXT_JSON:\n{}",
-        serde_json::to_string(input).map_err(|_| E::Invalid)?
-    );
     tokio::time::timeout(Duration::from_secs(180), async {
         stdin
             .write_all(prompt.as_bytes())
@@ -188,7 +200,8 @@ pub(crate) async fn run(config: &CodexConfig, input: &ArtworkInput) -> Result<By
             .map(PathBuf::from)
             .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
             .ok_or(E::Unavailable)?;
-        let image = read_output(&events, &codex_home.join("generated_images"))?;
+        let image =
+            read_output_validated(&events, &codex_home.join("generated_images"), validator)?;
         if !exit.success() {
             return Err(E::Unavailable);
         }
@@ -199,7 +212,16 @@ pub(crate) async fn run(config: &CodexConfig, input: &ArtworkInput) -> Result<By
 }
 
 /// Accept only native artifacts in this completed CLI thread's namespace.
+#[cfg(test)]
 fn read_output(events: &[u8], root: &Path) -> Result<Bytes, E> {
+    read_output_validated(events, root, valid_png)
+}
+
+fn read_output_validated(
+    events: &[u8],
+    root: &Path,
+    validator: fn(&[u8]) -> bool,
+) -> Result<Bytes, E> {
     let mut thread = None;
     let mut completed = false;
     for line in events
@@ -267,7 +289,7 @@ fn read_output(events: &[u8], root: &Path) -> Result<Bytes, E> {
         return Err(E::InvalidResponse);
     }
     let data = std::fs::read(&path).map_err(|_| E::InvalidResponse)?;
-    if !valid_png(&data) {
+    if !validator(&data) {
         return Err(E::InvalidResponse);
     }
     // Remove only this ephemeral request's native file, never other outputs.
