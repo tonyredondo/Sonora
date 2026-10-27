@@ -21,6 +21,10 @@ struct NowPlayingView: View {
     @State private var showAnalysisIssue = false
     @State private var showArtworkIssue = false
     @State private var songAction: SongActionRequest?
+    @State private var headerFrame = CGRect.zero
+    @State private var artworkFrame = CGRect.zero
+    @State private var dragCanMinimize: Bool?
+    @GestureState private var dragActive = false
     @GestureState private var downwardDrag: CGFloat = 0
     @State private var completedDrag: CGFloat?
     private var theme: PlayerTheme { PlayerTheme(scheme) }
@@ -37,8 +41,14 @@ struct NowPlayingView: View {
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
                 .coordinateSpace(name: NowPlayingArtwork.coordinateSpace)
+                // A child gesture is cancelled by the outer scroll view. Observe
+                // it here, but accept only drags starting on the header or cover.
+                .simultaneousGesture(minimizeGesture)
                 .offset(y:completedDrag ?? downwardDrag)
                 .animation(downwardDrag == 0 && completedDrag == nil && !reduceMotion ? .spring(response:0.3,dampingFraction:0.85) : nil,value:downwardDrag)
+                .onChange(of: dragActive) { _, active in
+                    if !active { dragCanMinimize = nil }
+                }
             }.background(theme.background).toolbar(.hidden, for: .navigationBar)
         }.tint(theme.accent)
             .alert("No se pudo analizar el audio", isPresented: $showAnalysisIssue) {
@@ -100,9 +110,10 @@ struct NowPlayingView: View {
     }
     private func playerContent(width: CGFloat, topSafeArea: CGFloat, compact: Bool) -> some View {
         VStack(spacing: compact ? 4 : 8) {
-            header.contentShape(.rect).simultaneousGesture(minimizeGesture)
+            header.contentShape(.rect)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 20)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { headerFrame = $0 }
                 .zIndex(1)
             // Keep the entire square below the toolbar. Use compact spacing,
             // then scrolling on short screens instead of cropping the record sleeve.
@@ -111,6 +122,7 @@ struct NowPlayingView: View {
                 .id(player.current?.id)
                 .frame(width: width, height: width)
                 .contentShape(.rect)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { artworkFrame = $0 }
                 .accessibilityElement(children: .contain).accessibilityLabel("Carátula").accessibilityIdentifier("playerArtwork")
                 .accessibilityValue(player.currentArtworkExtension != nil ? "Portada ampliada" : (player.currentDetails?.artwork == nil ? "Sin portada" : "Portada disponible"))
             trackInformation(compact: compact).fixedSize(horizontal: false, vertical: true)
@@ -126,11 +138,19 @@ struct NowPlayingView: View {
     }
     private var minimizeGesture: some Gesture {
         DragGesture(minimumDistance:18,coordinateSpace:.global)
+            .updating($dragActive) { _, active, _ in active = true }
             .updating($downwardDrag) { value,offset,_ in
+                guard dragCanMinimize ?? canMinimize(from: value.startLocation) else { return }
                 let distance = value.translation.height
                 offset = distance > abs(value.translation.width) * 1.25 ? max(0,distance) : 0
             }
+            .onChanged { value in
+                // Keep the initial hit region even as the player moves or scrolls.
+                if dragCanMinimize == nil { dragCanMinimize = canMinimize(from: value.startLocation) }
+            }
             .onEnded { value in
+                defer { dragCanMinimize = nil }
+                guard dragCanMinimize == true else { return }
                 let distance = value.translation.height
                 guard distance > abs(value.translation.width) * 1.25,
                       distance > 120 || distance > 45 && value.predictedEndTranslation.height > 240 else { return }
@@ -138,6 +158,9 @@ struct NowPlayingView: View {
                 completedDrag = max(0,distance)
                 dismiss()
             }
+    }
+    private func canMinimize(from point: CGPoint) -> Bool {
+        headerFrame.contains(point) || selectedPage == .artwork && artworkFrame.contains(point)
     }
     private var header: some View {
         PlayerGlassGroup {
